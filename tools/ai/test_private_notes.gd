@@ -45,6 +45,14 @@ func run() -> void:
 		["private note</brain", "", "partial orphan closer"],
 		["Let's use our brains and find a book.", "Let's use our brains and find a book.", "ordinary dialogue preserved"],
 		["The book says WANT: a new beginning.", "The book says WANT: a new beginning.", "labels without note delimiters preserved"],
+		["[brain]WANT: find a book.\nNEXT: read it.[/brain]Hello!", "Hello!", "square brain wrappers"],
+		["private note[/brain]Hello!", "Hello!", "square orphan closer"],
+		["<brain>private note[/brain]Hello!", "Hello!", "mixed wrapper styles"],
+		["[story]private note[/story]Hello!", "Hello!", "square story wrappers"],
+		["WANT: find a book.\nELSEWHERE: a shop closes.\nNEXT: choose a book.\nDONE: lunch.\nHello!", "Hello!", "bare director block"],
+		["Hello!\nWANT luna: find a book.\nNEXT: choose a book.", "Hello!", "bare notes after speech with pony id"],
+		["luna: WANT: find a book.\nluna: NEXT: choose a book.\nluna: Hello!", "luna: Hello!", "speaker-prefixed bare notes"],
+		["NEXT: turn left at the gate.", "NEXT: turn left at the gate.", "single label stays speech"],
 	]
 	var director: Node = DIRECTOR.new()
 	director.set("_current", "pinkie_pie")
