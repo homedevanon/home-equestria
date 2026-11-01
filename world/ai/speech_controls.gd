@@ -8,7 +8,12 @@ const EMOTIONS := ["neutral", "happy", "sad", "angry", "annoyed", "fearful", "su
 ## An orphan closer discards the ambiguous prefix; an unclosed opener discards its suffix.
 ## Keep this independent of story storage and call it again at the final TTS boundary.
 static func without_private_notes(text: String) -> String:
-	if not "<" in text: return text.strip_edges()
+	# Models also substitute [brain] for <brain>. Removing only the square tags
+	# would leave their contents to be spoken as ordinary dialogue.
+	if "[" in text:
+		var square := RegEx.create_from_string("(?i)\\[\\s*(/?)\\s*(brain|story)\\s*\\]")
+		text = square.sub(text, "<$1$2>", true)
+	if not "<" in text: return _without_bare_private_notes(text)
 	var tags := RegEx.create_from_string("(?is)<\\s*(/?)\\s*(?:brain|story)\\b[^>]*(?:>|$)")
 	var out := ""
 	var cursor := 0
@@ -24,7 +29,25 @@ static func without_private_notes(text: String) -> String:
 			out = ""
 		cursor = tag.get_end()
 	if depth == 0: out += text.substr(cursor)
-	return out.strip_edges()
+	return _without_bare_private_notes(out)
+
+## With no delimiters, require multiple reserved fields before treating lines as
+## a broken director block. A lone label or a sentence mentioning WANT stays speech.
+static func _without_bare_private_notes(text: String) -> String:
+	var upper := text.to_upper()
+	if not "WANT" in upper: return text.strip_edges()
+	var field := RegEx.create_from_string("(?i)^[ \\t]*(?:[a-z_][a-z0-9_]*:[ \\t]*)?(WANT|ELSEWHERE|NEXT|DONE)(?:[ \\t]+[a-z_][a-z0-9_]*)?[ \\t]*:")
+	var lines := text.split("\n")
+	var fields := {}
+	for line: String in lines:
+		var note := field.search(line)
+		if note != null: fields[note.get_string(1).to_upper()] = true
+	if not fields.has("WANT") or not (fields.has("ELSEWHERE") or fields.has("NEXT")):
+		return text.strip_edges()
+	var speech: PackedStringArray = []
+	for line: String in lines:
+		if field.search(line) == null: speech.append(line)
+	return "\n".join(speech).strip_edges()
 
 static func spans(text: String) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
