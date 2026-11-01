@@ -190,8 +190,8 @@ func _ready() -> void:
 		return
 	_saved_cap = Engine.max_fps
 	if not xr_active: Engine.max_fps = 60
-	_clock = {"hours": TimeOfDay.hours, "day": TimeOfDay.day, "paused": TimeOfDay.paused}
-	TimeOfDay.paused = true
+	_clock = {"hours": TimeOfDay.hours, "day": TimeOfDay.day}
+	TimeOfDay.hold("title")
 	_build_camera()
 	scenery = BAKED.new()
 	add_child(scenery)
@@ -1355,7 +1355,7 @@ func _restore_clock() -> void:
 		if TimeOfDay.time_changed.is_connected(callback): TimeOfDay.time_changed.disconnect(callback)
 	TimeOfDay.day = _clock.day
 	TimeOfDay.hours = _clock.hours
-	TimeOfDay.paused = _clock.paused
+	TimeOfDay.release("title")
 	# The player's own FPS cap (Settings), not whatever the menu found at start.
 	Engine.max_fps = Settings.fps_cap()
 	_clock.clear()

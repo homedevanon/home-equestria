@@ -67,7 +67,6 @@ var _when: Label
 var _where: Label
 var _column: Control
 var _logo: TextureRect
-var _clock_paused := false
 var _old_lock := false
 var _mouse_mode: int = Input.MOUSE_MODE_VISIBLE
 var _input_states: Dictionary = {}
@@ -306,7 +305,7 @@ func open() -> void:
 	var saves := _saves()
 	if saves != null: saves.remember_view(self)
 	opened = true
-	_clock_paused = TimeOfDay.paused; TimeOfDay.paused = true
+	TimeOfDay.hold("pause_menu")
 	_pause_world(true)
 	_old_lock = player_body.controls_locked; player_body.controls_locked = true
 	_mouse_mode = Input.mouse_mode; Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -330,7 +329,7 @@ func close() -> void:
 	for node in _input_states:
 		if is_instance_valid(node): node.set_process_input(_input_states[node])
 	_input_states.clear()
-	TimeOfDay.paused = _clock_paused
+	TimeOfDay.release("pause_menu")
 	_pause_world(false)
 	_menu_sound("prop_ui_back")
 	player_body.controls_locked = _old_lock
@@ -349,6 +348,8 @@ func _pause_world(paused: bool) -> void:
 ## A load or quit replaces the scene; the next world must not start paused.
 func _exit_tree() -> void:
 	if opened: get_tree().paused = false
+	# Loading a save from this menu reloads the scene without close(): let go of the clock here.
+	TimeOfDay.release("pause_menu")
 
 
 func _show(page_name: String) -> void:

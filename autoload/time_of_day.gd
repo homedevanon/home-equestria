@@ -17,11 +17,32 @@ const DEFAULT_DAY_LENGTH_MINUTES := 60.0
 
 var day_length_minutes := DEFAULT_DAY_LENGTH_MINUTES
 var _last_clock_usec := 0
-var paused := false:
+## The clock stands still while anything holds it (player report 2026-11-01: time stopped for
+## good after loading a save from the in-game menu). Each owner holds and releases its own key, so
+## the pause menu, the loading screen and the title can no longer restore each other's stale
+## "was paused" copy. `paused` reads true while any hold is on; writing it sets the "manual"
+## hold (tools, tests and the capture harness write it directly).
+var _holds: Dictionary = {}
+var paused: bool:
+	get: return not _holds.is_empty()
 	set(value):
-		if paused == value: return
-		paused = value
-		_last_clock_usec = _clock_usec()
+		if value: hold("manual")
+		else: release("manual")
+
+func hold(owner: String) -> void:
+	if _holds.has(owner): return
+	var was := paused
+	_holds[owner] = true
+	if not was: _last_clock_usec = _clock_usec()
+
+func release(owner: String) -> void:
+	if not _holds.has(owner): return
+	_holds.erase(owner)
+	if not paused: _last_clock_usec = _clock_usec()
+
+## Who is holding the clock, for logs and tests.
+func holders() -> Array:
+	return _holds.keys()
 ## Broad evening slowdown, with smooth entry/exit rather than a clock pause.
 var sunset_clock_rate := 0.4
 var active_seconds := 0.0

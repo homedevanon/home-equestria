@@ -19,13 +19,12 @@ func _init(owner_node: Node3D) -> void:
 ## (population.begin_startup loads their scenes in parallel), so the world is complete when
 ## the player gets control. The clock stands still meanwhile. Gives up after 3 minutes.
 func _load_everything(cover: Node) -> bool:
-	var clock_paused: bool = TimeOfDay.paused
-	TimeOfDay.paused = true
+	TimeOfDay.hold("loading")
 	cover.show_text("Loading the world…")
 	cover.set_progress(0.6)
 	await ZoneManager.wait_until_idle()
 	if SHUTDOWN.active or not host.is_inside_tree() or host.is_queued_for_deletion():
-		TimeOfDay.paused = clock_paused
+		TimeOfDay.release("loading")
 		return false
 	if host.population != null:
 		host.population.begin_startup()
@@ -39,11 +38,11 @@ func _load_everything(cover: Node) -> bool:
 			for i in 10:
 				if not await SHUTDOWN.physics_frame(host): stepped = false; break
 			if not stepped:
-				TimeOfDay.paused = clock_paused
+				TimeOfDay.release("loading")
 				return false
 		host.population.end_startup()
 		print("[game] loading screen: %d ponies out" % host.population.live.size())
-	TimeOfDay.paused = clock_paused
+	TimeOfDay.release("loading")
 	# This also runs after TitleVista restores the saved place on Continue.
 	# Only certified old terrain positions qualify, while body physics is held.
 	TERRAIN_RESUME.repair_loaded_position(host)

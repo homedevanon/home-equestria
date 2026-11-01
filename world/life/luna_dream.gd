@@ -203,15 +203,13 @@ func _space(on: bool) -> void:
 			game.inventory.hud_hidden = true
 		_saved.paused = []
 		var clock := get_node_or_null("/root/TimeOfDay")
-		if clock != null:
-			_saved.clock_paused = clock.paused
-			clock.paused = true
+		if clock != null: clock.hold("luna_dream")
 		for node: Variant in [get_node_or_null("/root/ZoneManager"), WorldTerrain.instance, game.get("population")]:
 			if is_instance_valid(node): _saved.paused.append([node, node.process_mode]); node.process_mode = Node.PROCESS_MODE_DISABLED
 	else:
 		if sky != null and sky.has_method("end_luna_dream"): sky.end_luna_dream()
 		var clock := get_node_or_null("/root/TimeOfDay")
-		if clock != null and _saved.has("clock_paused"): clock.paused = bool(_saved.clock_paused)
+		if clock != null: clock.release("luna_dream")
 		for pair: Array in _saved.get("paused", []):
 			if is_instance_valid(pair[0]): pair[0].process_mode = pair[1]
 		var map: Variant = (_saved.map_owner as WeakRef).get_ref() if _saved.get("map_owner") is WeakRef else null
