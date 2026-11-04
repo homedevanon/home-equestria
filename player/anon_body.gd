@@ -51,6 +51,9 @@ const STEP_MAX_SPEED := 1.5
 ## Camera sits between the eyebrows; camera-local offset from there to the
 ## head bone (down and back).
 @export var head_offset := Vector3(0, -0.089, 0.083)
+## Desktop only: how much further forward (camera-local, metres at scale 1) the body sits under
+## the eye than head_offset puts it. The camera itself never moves.
+@export var desktop_body_forward := 0.05
 ## Head-to-hip drop when standing straight (measured spine length + neck).
 @export var hip_drop := 0.652
 ## Lateral distance from the hips to each planted foot.
@@ -148,6 +151,8 @@ func _ready() -> void:
 	# Unclothed base plus separate garments, fully dressed until a wardrobe says otherwise.
 	preload("res://world/customization/anon_garments.gd").assemble(self)
 	_load_calibration()
+	var settings := get_node_or_null("/root/Settings")
+	if settings != null and settings.has_signal("changed"): settings.changed.connect(_on_setting_changed)
 	if _skeleton != null:
 		for side: String in ["left", "right"]:
 			var prefix := side.capitalize()
@@ -258,6 +263,7 @@ func _update_fists(delta: float) -> void:
 	# Grip closes everything but the index (a point); trigger closes the index
 	# too, so grip + trigger is the full fist (dev, 2026-09-07).
 	var sources := {"left": _left_hand, "right": _right_hand}
+	var run_fist := _run_fist()
 	for side: String in ["left", "right"]:
 		var grip_target := 0.0
 		var trigger_target := 0.0
@@ -269,6 +275,12 @@ func _update_fists(delta: float) -> void:
 			grip_target = clampf(c.get_float("grip"), 0.0, 1.0)
 			trigger_target = clampf(c.get_float("trigger"), 0.0, 1.0)
 		if _trigger_input[side] != null: trigger_target = clampf(float(_trigger_input[side]), 0.0, 1.0)
+		# Desktop running: fists, not open hands (dev 2026-11-03). desktop_anon.gd sends grip 0 for a
+		# resting hand every frame, so only an action that drives the index (boop's point) opts out;
+		# a held item already grips at least this much.
+		if _trigger_input[side] == null:
+			grip_target = maxf(grip_target, run_fist)
+			trigger_target = maxf(trigger_target, run_fist)
 		_grip[side] = move_toward(float(_grip[side]), grip_target, delta / 0.08)
 		_trigger[side] = move_toward(float(_trigger[side]), trigger_target, delta / 0.08)
 		var grip := float(_grip[side])
@@ -490,9 +502,15 @@ func _process_step(delta: float) -> void:
 			standing_eye_height = eye_height
 			height_calibrated = true
 		_update_height(delta, eye_height)
-	elif not is_instance_valid(couch_rest_frame): _update_height(delta, eye_height / _tracking_scale())
+	elif not is_instance_valid(couch_rest_frame):
+		if not _chosen_height_checked: _first_chosen_height()
+		_update_height(delta, eye_height / _tracking_scale())
 	var scale := model_scale
-	var head: Transform3D = _camera.global_transform.translated_local(head_offset * scale)
+	# Desktop: the body sits DESKTOP_BODY_FORWARD further forward under the camera (dev 2026-11-03:
+	# "my viewpoint is pushed too far forward. move my body forward, not my viewpoint back").
+	var offset := head_offset
+	if is_instance_valid(desktop_pose_driver): offset.z -= desktop_body_forward
+	var head: Transform3D = _camera.global_transform.translated_local(offset * scale)
 	_head_target.global_transform = Transform3D(head.basis * REST_FACING, head.origin)
 
 	# Head-right remains well-defined when looking through straight up/down;
@@ -532,7 +550,9 @@ func _process_step(delta: float) -> void:
 	_low_seconds = _low_seconds + delta if low else 0.0
 	seated = force_seated or _low_seconds >= seated_delay
 	if _leg_hide != null:
-		_leg_hide.influence = move_toward(_leg_hide.influence, 1.0 if seated and not is_instance_valid(couch_rest_frame) else 0.0, delta / 0.25)
+		# Animated desktop legs sit and crouch properly, so they stay visible (anon_motion.gd).
+		var animated_legs: bool = _motion != null and _motion.amount > .5
+		_leg_hide.influence = move_toward(_leg_hide.influence, 1.0 if seated and not is_instance_valid(couch_rest_frame) and not animated_legs else 0.0, delta / 0.25)
 
 	# Feet: ideal spots under the hips, reached by alternating steps.
 	var hip_flat := Vector3(head.origin.x, floor_y, head.origin.z)
@@ -550,6 +570,7 @@ func _process_step(delta: float) -> void:
 	_left_foot.global_transform = Transform3D(Basis(Vector3.UP, _feet[0].yaw) * REST_FACING, _foot_position(0))
 	_right_foot.global_transform = Transform3D(Basis(Vector3.UP, _feet[1].yaw) * REST_FACING, _foot_position(1))
 
+	if is_instance_valid(desktop_pose_driver): _apply_desktop_motion(delta, hip_flat, yaw_angle, scale)
 	if is_instance_valid(couch_rest_frame): _apply_couch_targets(head, scale)
 	if is_instance_valid(desktop_pose_driver): desktop_pose_driver.apply_torso_pose(_hip_target, facing)
 
@@ -560,6 +581,91 @@ func _process_step(delta: float) -> void:
 	if right_source != null and (right_source as Transform3D).is_finite():
 		_right_target.global_transform = (right_source as Transform3D) * right_hand_offset
 	_update_fists(delta)
+
+
+## Desktop body animation (player/anon_motion.gd, dev 2026-11-03): the retargeted clips pose the
+## body; the pelvis, feet, knees and resting hands follow them as IK targets. The camera head
+## stays authoritative (valve_body_ik.gd pins the head to it), so does every action, held item
+## and couch rest. desktop_anon.gd supplies the movement state; tracked VR never comes here.
+const MOTION := preload("res://player/anon_motion.gd")
+var _motion: RefCounted
+var _motion_failed := false
+var _motion_frame := Transform3D.IDENTITY
+var _motion_frame_local := Transform3D.IDENTITY
+var _motion_head := Vector3.INF
+var _body_ik: SkeletonModifier3D
+
+func _apply_desktop_motion(delta: float, hip_flat: Vector3, yaw_angle: float, body_scale: float) -> void:
+	if _motion_failed or _skeleton == null: return
+	if _motion == null:
+		_motion = MOTION.new(_skeleton)
+		_body_ik = find_child("BodyIK", true, false) as SkeletonModifier3D
+		if not _motion.valid() or _body_ik == null or not "knee_hints" in _body_ik:
+			_motion = null
+			_motion_failed = true
+			return
+	var state: Dictionary = {}
+	if not is_instance_valid(couch_rest_frame) and desktop_pose_driver.has_method("motion_state"):
+		state = desktop_pose_driver.motion_state()
+	if not state.is_empty(): state["scale"] = body_scale
+	var was_on: bool = _motion.amount > 0.0
+	_motion.update(delta, state)
+	if _motion.amount <= 0.0:
+		if was_on:
+			_motion.reset_pose()
+			_body_ik.knee_hints = {}
+			_body_ik.leg_stretch = true
+		return
+	var body_yaw := yaw_angle
+	if state.has("seat_yaw"): body_yaw = lerp_angle(yaw_angle, float(state.seat_yaw), float(_motion.seated))
+	var frame_basis := Basis(Vector3.UP, body_yaw + float(_motion.leg_yaw)) * REST_FACING
+	# The clip's head sits over the camera head, so the pelvis needs no sideways pin (a leaning
+	# jog or crouch would otherwise drag its planted feet along).
+	# Averaged over about a stride, so the frame follows the clip's lean, not each bob.
+	var head_model: Vector3 = _motion.point("Head", Transform3D.IDENTITY, 1.0)
+	_motion_head = head_model if not _motion_head.is_finite() else _motion_head.lerp(head_model, 1.0 - exp(-delta / .35))
+	var head_offset: Vector3 = frame_basis * (_motion_head * body_scale)
+	var origin := hip_flat - Vector3(head_offset.x, 0.0, head_offset.z)
+	if state.get("seat") is Vector3 and float(_motion.seated) > 0.0:
+		# Seat bones on the seat point (desktop_player.gd sits the body there): the hip joints ride
+		# about 9 cm above them, as the procedural seated hips did.
+		var on_seat: Vector3 = Vector3(state.seat) + Vector3.UP * .09 * body_scale - frame_basis * (_motion.seated_hips() * body_scale)
+		origin = origin.lerp(on_seat, float(_motion.seated))
+	_motion_frame = Transform3D(frame_basis, origin)
+	# Hand markers are read by desktop_anon.gd every rendered frame: keep them on the moving body.
+	_motion_frame_local = global_transform.affine_inverse() * _motion_frame
+	var amount: float = _motion.amount
+	_hip_target.global_transform = _blend_frame(_hip_target.global_transform, _motion.target("Hips", _motion_frame, body_scale), amount)
+	var feet: float = _motion.feet_amount
+	_left_foot.global_transform = _blend_frame(_left_foot.global_transform, _motion.foot_target(0, _motion_frame, body_scale, delta), feet)
+	_right_foot.global_transform = _blend_frame(_right_foot.global_transform, _motion.foot_target(1, _motion_frame, body_scale, delta), feet)
+	var animated_legs := feet > .5
+	_body_ik.knee_hints = {"left": _motion.point("LeftLowerLeg", _motion_frame, body_scale),
+		"right": _motion.point("RightLowerLeg", _motion_frame, body_scale)} if animated_legs else {}
+	_body_ik.leg_stretch = not animated_legs
+
+static func _blend_frame(from: Transform3D, to: Transform3D, weight: float) -> Transform3D:
+	if weight >= 1.0: return to
+	if weight <= 0.0: return from
+	return Transform3D(from.basis.orthonormalized().slerp(to.basis.orthonormalized(), weight), from.origin.lerp(to.origin, weight))
+
+## Loose-fist share while the desktop body jogs or sprints (anon_motion.gd weights).
+const RUN_FIST := 0.9
+func _run_fist() -> float:
+	if _motion == null or float(_motion.amount) <= 0.0: return 0.0
+	var weights: Dictionary = _motion.weights()
+	return RUN_FIST * float(_motion.amount) * clampf(float(weights.get("jog", 0.0)) + float(weights.get("sprint", 0.0)), 0.0, 1.0)
+
+## How much of the body the desktop animation owns now (0 when absent).
+func motion_amount() -> float:
+	return float(_motion.amount) if _motion != null else 0.0
+
+## Animated resting hand as a desktop presentation hand marker (the IK target is
+## marker * hand offset). Null while no animation runs.
+func motion_hand_marker(side: String) -> Variant:
+	if _motion == null or float(_motion.amount) <= 0.0: return null
+	var bone_target: Transform3D = _motion.target("LeftHand" if side == "left" else "RightHand", global_transform * _motion_frame_local, model_scale)
+	return bone_target * (left_hand_offset if side == "left" else right_hand_offset).affine_inverse()
 
 
 ## Reclining along the mattress uses a spine-length hip offset and reachable foot targets.
@@ -659,6 +765,11 @@ func save_height_calibration(value: float) -> bool:
 	standing_eye_height = value
 	height_calibrated = true
 	calibration_message = "Height saved: %.2f m eye level." % value
+	# The player's own rig: the measurement is Anon's height too (Settings, World tab), shown in
+	# feet and inches; the 12 cm crown above the eye matches Settings.anon_eye_height_m.
+	var settings := get_node_or_null("/root/Settings")
+	if not calibration_path.is_empty() and settings != null and settings.has_method("anon_eye_height_m"):
+		settings.call("set_value", "player/height_cm", (value + 0.12) * 100.0)
 	return true
 
 func _load_calibration() -> void:
@@ -669,6 +780,31 @@ func _load_calibration() -> void:
 	if (value is float or value is int) and is_finite(float(value)) and value >= .8 and value <= 2.5:
 		standing_eye_height = float(value)
 		height_calibrated = true
+
+
+## Anon's chosen height (Settings player/height_cm, dev 2026-11-03) sizes the tracked VR body and
+## hands; the headset keeps the camera. Only the player's own tracked rig (a calibration path and an
+## XR camera) follows it: desktop bodies take the rig's eye (player/desktop_anon.gd), previews theirs.
+var _chosen_height_checked := false
+func _follows_chosen_height() -> bool:
+	return not is_instance_valid(desktop_pose_driver) and not calibration_path.is_empty() and _camera is XRCamera3D
+
+## First tracked frame: a stored choice wins over a saved headset measurement (which also stores
+## one since 2026-11-03); with neither, the tallest-steady estimate stays.
+func _first_chosen_height() -> void:
+	_chosen_height_checked = true
+	var settings := get_node_or_null("/root/Settings")
+	if _follows_chosen_height() and settings != null and settings.has_method("is_chosen") and bool(settings.call("is_chosen", "player/height_cm")):
+		_use_chosen_height()
+
+func _use_chosen_height() -> void:
+	var settings := get_node_or_null("/root/Settings")
+	if settings == null or not settings.has_method("anon_eye_height_m"): return
+	standing_eye_height = float(settings.call("anon_eye_height_m"))
+	height_calibrated = true
+
+func _on_setting_changed(key: String) -> void:
+	if key == "player/height_cm" and _follows_chosen_height(): _use_chosen_height()
 
 
 func _tracking_scale() -> float:

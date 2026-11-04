@@ -15,7 +15,8 @@ static func tables() -> Dictionary:
 	return _tables
 
 ## info: {"wings": bool, "friends": [ids], "others": [ids], "wake": hour, "bed": hour (may be
-## past 24 for a night owl)}. Returns [{action, handler, target, item, reason, posture, minutes,
+## past 24 for a night owl), "season", "events": [ids], "station_needs": [ids] (the mechanics hub,
+## optional)}. Returns [{action, handler, target, item, reason, posture, minutes,
 ## start, until, night}], ordered by start hour.
 static func roll(id: String, day: int, info: Dictionary) -> Array:
 	var t := tables()
@@ -112,6 +113,17 @@ static func _fits(when: Dictionary, id: String, info: Dictionary) -> bool:
 	if when.has("horn") and bool(when.horn) != bool(info.get("horn", false)): return false
 	if when.has("only_id") and id not in when.only_id: return false
 	if when.has("not_id") and id in when.not_id: return false
+	# The shared mechanics (docs/MECHANICS_ARCHITECTURE_2026_11_01.md 10.1): today's season, town
+	# events and station work, filled by day_runner._info (absent = none, so old cards stay the same).
+	if when.has("season"):
+		var seasons: Array = when.season if when.season is Array else [str(when.season)]
+		if str(info.get("season", "")) not in seasons: return false
+	var events: Array = info.get("events", []) if info.get("events") is Array else []
+	if when.has("event") and str(when.event) not in events: return false
+	if when.has("not_event") and str(when.not_event) in events: return false
+	if when.has("station_needs"):
+		var needs: Array = info.get("station_needs", []) if info.get("station_needs") is Array else []
+		if str(when.station_needs) not in needs: return false
 	return true
 
 ## "visit Fluttershy for tea" with the place/pony names filled in by `label`.

@@ -737,7 +737,10 @@ struct GroundSearch::Impl {
 						continue;
 					}
 					const float d = distance_squared3(ground.point(handle), position);
-					if (double(d) <= best_d && ground.pure_room(handle)) {
+					// A goal inside a blocked disc (a pony standing on it) is no goal: the search
+					// then ends on the nearest free cell of the GOAL_REACH region instead.
+					if (double(d) <= best_d && ground.pure_room(handle) &&
+							(options.blocked.empty() || !blocked_cell(handle))) {
 						best_d = double(d);
 						best = handle;
 					}

@@ -334,6 +334,34 @@ const SET_PROPS := [
 	["chest", 4.15, 2.05, -PI * 0.5, 0.0, true], ["rug_rectangle", 2.45, -0.2, 0.0, 0.003, false],
 	["kitchen_table", -2.9, -0.6, PI * 0.5, 0.0, true], ["kitchen_bench", -3.75, -0.6, PI * 0.5, 0.0, false],
 	["salad_bowl", -2.9, -0.6, 0.0, 0.7292, false], ["pitcher", -2.75, -1.2, 0.0, 0.7267, false]]
+## Real seats on the set's sofa, armchair and kitchen bench (thread 43671981, 2026-11-03: "there's
+## no actual seats in her cottage other than her bed"). Same shape as interior_kit.json "seating"
+## (metres, from the model's bottom centre, the sitter facing +Z) and built by the shared
+## FURNISHER._add_seating, so ponies (Seating) and Anon (E / trigger) sit on them like on kit
+## furniture. The sofa and armchair face their model +X (backs on -X, tools/fluttershy/
+## probe_set_seats.gd), so their seat frame is turned a quarter; the bench faces the table on +Z.
+## Seat tops: sofa and armchair cushions 0.29 m, bench 0.26 m (set heights x 0.85).
+const SET_SEATING := {
+	"sofa_long": {"turn": PI * 0.5, "couch": true, "seating": {
+		"seats": [[-0.62, 0.29, 0.12], [0.0, 0.29, 0.12], [0.62, 0.29, 0.12]], "depth": 0.5,
+		"solid": [[[0.0, 0.145, 0.0], [1.9, 0.29, 0.8]]],
+		"upper": [[[0.0, 0.62, -0.32], [2.0, 0.66, 0.22]]]}},
+	"armchair": {"turn": PI * 0.5, "couch": false, "seating": {
+		"seats": [[0.0, 0.29, 0.1]], "depth": 0.5,
+		"solid": [[[0.0, 0.145, 0.05], [0.8, 0.29, 0.75]]],
+		"upper": [[[0.0, 0.75, -0.36], [0.95, 0.9, 0.16]], [[-0.42, 0.42, 0.0], [0.14, 0.26, 0.7]], [[0.42, 0.42, 0.0], [0.14, 0.26, 0.7]]]}},
+	"kitchen_bench": {"turn": 0.0, "couch": false, "seating": {
+		"seats": [[-0.36, 0.26, 0.0], [0.36, 0.26, 0.0]], "depth": 0.35,
+		"solid": [[[0.0, 0.13, 0.0], [1.42, 0.26, 0.35]]], "upper": []}},
+}
+
+## Seat frame for one set prop (SET_SEATING): turned so its +Z is the sitter's facing, at the
+## model's world scale so the specs stay in metres. Replaces the prop's whole-box solid.
+func _add_set_seating(model: Node3D, box: AABB, spec: Dictionary) -> void:
+	var turn := Node3D.new(); turn.name = "SeatTurn"; turn.rotation.y = float(spec.turn)
+	model.add_child(turn)
+	var k: float = model.global_basis.get_scale().x
+	FURNISHER._add_seating(turn, spec.seating, turn.transform.affine_inverse() * box, k, bool(spec.couch))
 
 func _build_decor() -> void:
 	# The set's own furniture, at its own scale under the set node.
@@ -356,11 +384,14 @@ func _build_decor() -> void:
 				# The one lamp lights the sitting room and the kitchen end, not just its corner.
 				bulb.position = Vector3(box.get_center().x, box.end.y - .25, box.get_center().z)
 				(bulb as OmniLight3D).omni_range = 6.5
-		if bool(row[5]):
+		if SET_SEATING.has(str(row[0])):
+			_add_set_seating(model, box, SET_SEATING[str(row[0])])
+		elif bool(row[5]):
 			var solid := BoxShape3D.new(); solid.size = box.size
 			var body := StaticBody3D.new(); body.name = "FurnitureSolid"; body.collision_mask = 0
 			var holder := CollisionShape3D.new(); holder.shape = solid; holder.position = box.get_center()
 			body.add_child(holder); model.add_child(body)
+		if bool(row[5]):
 			for x: float in [-1., 1.]:
 				for z: float in [-1., 1.]:
 					var corner := box.get_center() + Vector3(x * (box.size.x * .5 + .55), -box.size.y * .5, z * (box.size.z * .5 + .55))

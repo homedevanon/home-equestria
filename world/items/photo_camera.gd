@@ -5,8 +5,9 @@ extends Node3D
 ##   black surround (the camera body); the other eye keeps the world. Trigger takes the photo.
 ## - Desktop: hold right click to look through it (the same vignetted view over the screen); click
 ##   takes the photo.
-## A photo is a finished picture in the painting registry (kind "photo", painting_registry.gd):
-## a print slides out of the camera's top and is an owned item to keep, hang or show to a pony.
+## A photo is a finished picture in the painting registry (kind "photo", painting_registry.gd) and
+## goes straight into the photo journal (photo_journal.gd), which prints it once for a bit. The
+## first photo brings the journal into the briefcase.
 const REGISTRY := preload("res://world/painting/painting_registry.gd")
 const SFX := preload("res://world/audio/interaction_sounds.gd")
 const FINDER_SHADER := preload("res://world/items/photo_finder.gdshader")
@@ -19,8 +20,7 @@ const IPD_HALF := 0.032
 ## Desktop: the lens sits this far ahead of the player's eye, past his hands and the camera body.
 const DESKTOP_NEAR := 0.45
 const SHOT_GAP := 1.2
-const PRINT_RISE := 0.11
-const PRINT_SECONDS := 1.4
+const JOURNAL := "photo-journal"
 
 var item: Node3D
 var lens: Node3D
@@ -134,8 +134,8 @@ func _set_overlay(on_: bool) -> void:
 	# The overlay is a child of this tool, so it goes when the camera leaves the hand.
 	add_child(_overlay)
 
-## Takes the photo: one render from the lens, written as this world's next picture, and a print
-## sliding out of the camera's top once the frame is drawn. False while the last shot settles.
+## Takes the photo: one render from the lens, written into the journal once the frame is drawn.
+## False while the last shot settles.
 func snap(inventory: Node, desktop_eye: Camera3D) -> bool:
 	var now := Time.get_ticks_msec() * 0.001
 	if now < _next_shot or not is_instance_valid(inventory): return false
@@ -160,23 +160,19 @@ func _developed(inventory_ref: WeakRef) -> void:
 	if not REGISTRY.write_png(image, "art_%s.png" % id):
 		_say(inventory, "Could not save the photo."); return
 	REGISTRY.add_art(id, "L", "", REGISTRY.KIND_PHOTO)
-	# The print comes out of the top, face to the player (the camera's back is +Z).
-	var top := item.global_transform
-	var start := top
-	start.origin += top.basis.y.normalized() * 0.02
-	var print_: RigidBody3D = inventory.call("spawn_owned_drop", "art:" + id, start)
-	if print_ == null:
-		_say(inventory, "No room for the print: the photo is saved for when there is."); return
-	print_.freeze = true
-	print_.set_meta("ai_label", "a photo Anon took")
-	var rise := print_.create_tween()
-	rise.tween_method(func(t: float) -> void:
-		if is_instance_valid(item) and is_instance_valid(print_):
-			var pose := item.global_transform
-			pose.origin += pose.basis.y.normalized() * (0.02 + PRINT_RISE * t)
-			print_.global_transform = pose, 0.0, 1.0, PRINT_SECONDS)
-	rise.tween_callback(func() -> void: if is_instance_valid(print_): print_.freeze = false)
+	_keep_journal(inventory)
+	SFX.play_at(item, "page", item.global_position)
 	print("[photo] took photo ", id)
+
+## The journal arrives with the first photo; a later one replaces it if it was thrown away.
+func _keep_journal(inventory: Node) -> void:
+	var store: Variant = inventory.get("inventory")
+	if not store is Object: return
+	for row: Variant in (store as Object).get("slots"):
+		if row is Dictionary and str((row as Dictionary).get("id", "")) == JOURNAL: return
+	for loan: Variant in ((store as Object).get("loans") as Dictionary).values():
+		if str((loan as Dictionary).get("id", "")) == JOURNAL: return
+	if int((store as Object).call("grant", JOURNAL, 1)) < 0: _say(inventory, "No room for your photo journal: the photo is saved.")
 
 func _say(inventory: Node, text: String) -> void:
 	var store: Variant = inventory.get("inventory")

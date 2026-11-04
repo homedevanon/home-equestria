@@ -2,9 +2,18 @@ extends RefCounted
 const CONTROLS := preload("res://world/ai/speech_controls.gd")
 const PLACES := preload("res://world/navigation/place_directory.gd")
 const MEET_TIME := preload("res://world/life/appointments/meet_time.gd")
+const ITEM_CATALOG := preload("res://world/inventory/item_catalog.gd")
+const ASK_RULES := preload("res://world/mechanics/asks/ask_rules.gd")
 ## Data only. Never turn model text into method names, code, paths or coordinates.
 const AGREED_KINDS := ["dating", "date", "outing", "move_in", "engagement", "marriage"]
-const TYPES := ["look_at", "approach", "call_pony", "send_pony", "follow", "go_to", "step", "lead", "stay", "cancel", "resume_routine", "sit", "stand", "lie_down", "fly_to", "hover", "land", "loop_de_loop", "barrel_roll", "circle_over", "sonic_rainboom", "sit_on_seat", "go_home", "air_show", "relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle", "kiss_player", "wake_up", "teleport_to_ponyville", "send_letter", "give_house", "magic_show", "take_off", "put_on", "meet", "meet_cancel"]
+const TYPES := ["look_at", "approach", "call_pony", "send_pony", "follow", "go_to", "step", "lead", "stay", "cancel", "resume_routine", "sit", "stand", "lie_down", "fly_to", "hover", "land", "loop_de_loop", "barrel_roll", "circle_over", "sonic_rainboom", "sit_on_seat", "go_home", "go_to_bed", "air_show", "relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle", "kiss_player", "wake_up", "teleport_to_ponyville", "send_letter", "give_house", "magic_show", "take_off", "put_on", "meet", "meet_cancel", "pay_player", "give", "offer_job", "use", "ask", "invite", "sell", "buy"]
+## Actions that need spoken words in the same reply (docs/MECHANICS_ARCHITECTURE_2026_11_01.md 4.6).
+const SPEECH_REQUIRED := ["relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle",
+	"teleport_to_ponyville", "give_house", "meet", "meet_cancel", "pay_player", "give", "ask", "offer_job", "invite", "sell", "buy"]
+## One intention per channel per reply; everything not listed is "movement".
+const CHANNELS := {"look_at": "gaze", "give_house": "grant", "magic_show": "grant", "pay_player": "money",
+	"take_off": "wardrobe", "put_on": "wardrobe", "meet": "plan", "meet_cancel": "plan",
+	"give": "trade", "sell": "trade", "buy": "trade", "ask": "plan", "offer_job": "plan", "invite": "plan"}
 const SPEECH_LIMIT := 2880
 const STEP_DIRECTIONS := ["forward", "back", "left", "right", "away", "aside"]
 const STEP_SPELLINGS := {"forwards": "forward", "ahead": "forward", "backward": "back", "backwards": "back", "backward_s": "back",
@@ -12,14 +21,14 @@ const STEP_SPELLINGS := {"forwards": "forward", "ahead": "forward", "backward": 
 	"side": "aside", "away_from_player": "away", "away_from_you": "away"}
 const FIELDS := {
 	"teleport_to_ponyville": [], "give_house": [], "magic_show": [], "take_off": ["kind"], "put_on": ["kind"],
-	"meet": ["location_id", "day", "time"], "meet_cancel": [],
+	"meet": ["location_id", "day", "time"], "meet_cancel": [], "pay_player": ["amount"], "give": ["item"], "use": ["station_id"], "offer_job": ["job_id"], "ask": ["want", "reward"], "invite": ["event_id"], "sell": ["item", "price"], "buy": ["item", "price"],
 	"call_pony": ["pony_id"], "send_pony": ["pony_id", "target_id"],
 	"request_space": [], "buck_player": [], "cuddle": [], "kiss_player": [], "wake_up": [], "send_letter": [], "relationship_offer": ["kind", "activity", "location_id"], "relationship_answer": ["offer_id", "accept"], "agreed": ["kind"],
 	"look_at": ["target_id", "duration_s"], "approach": ["target_id", "distance_m"],
 	"follow": ["target_id", "formation", "distance_m"], "go_to": ["location_id", "pace"],
 	"step": ["direction", "distance_m"],
 	"lead": ["target_id", "location_id", "wait_distance_m"],
-	"stay": ["duration_s", "until_cancel"], "cancel": ["action_id"], "resume_routine": [], "sit": [], "stand": [], "lie_down": [], "fly_to": ["location_id"], "hover": ["duration_s"], "land": [], "loop_de_loop": [], "barrel_roll": [], "circle_over": ["target_id"], "sonic_rainboom": [], "sit_on_seat": [], "go_home": [], "air_show": ["moves", "target_id"]}
+	"stay": ["duration_s", "until_cancel"], "cancel": ["action_id"], "resume_routine": [], "sit": [], "stand": [], "lie_down": [], "fly_to": ["location_id"], "hover": ["duration_s"], "land": [], "loop_de_loop": [], "barrel_roll": [], "circle_over": ["target_id"], "sonic_rainboom": [], "sit_on_seat": [], "go_home": [], "go_to_bed": ["bed"], "air_show": ["moves", "target_id"]}
 ## Air show figures (pony_flight.gd SHOW_MOVES) and the tag spellings that name one. A reply with
 ## [air_show: loop, dive, ...] or with several trick tags ([loop_de_loop] [dive] [barrel_roll])
 ## becomes one air_show action: one takeoff, the figures in order, one landing.
@@ -50,7 +59,11 @@ const SIGNATURES := {
 	"fly_to": [["location_id", null]], "hover": [["duration_s", 10.0]], "circle_over": [["target_id", "player"]],
 	"relationship_offer": [["kind", null], ["activity", "walk"], ["location_id", ""]], "relationship_answer": [["offer_id", null], ["accept", null]], "agreed": [["kind", null]],
 	"take_off": [["kind", null]], "put_on": [["kind", null]],
-	"meet": [["location_id", null], ["day", "today"], ["time", null]]}
+	"meet": [["location_id", null], ["day", "today"], ["time", null]], "pay_player": [["amount", null]], "give": [["item", null]], "use": [["station_id", null]], "offer_job": [["job_id", null]],
+	"ask": [["want", null], ["reward", "thanks"]], "invite": [["event_id", null]], "sell": [["item", null], ["price", null]], "buy": [["item", null], ["price", null]],
+	"go_to_bed": [["bed", "own"]]}
+## [go_to_bed: here] spellings: the bed in the house where Anon is; anything else is her own bed.
+const BED_HERE := ["here", "this", "this_bed", "that", "that_bed", "there", "player", "anon", "his", "his_bed", "your", "yours", "your_bed", "anons_bed", "anon's_bed"]
 const PLAYER_NAMES := ["me", "you", "anon", "him", "the player", "anonymous"]
 const RANGES := {"duration_s": [0.2, 600.0], "distance_m": [1.0, 6.0], "wait_distance_m": [3.0, 15.0]}
 const ALIASES := {"lookat": "look_at", "look": "look_at", "goto": "go_to", "walk_to": "go_to", "go": "go_to", "flyto": "fly_to",
@@ -60,7 +73,8 @@ const ALIASES := {"lookat": "look_at", "look": "look_at", "goto": "go_to", "walk
 	"roll": "barrel_roll", "circle": "circle_over", "circle_around": "circle_over", "fly_around": "circle_over", "rainboom": "sonic_rainboom",
 	"sonicrainboom": "sonic_rainboom", "lay_down": "lie_down", "lie": "lie_down", "laydown": "lie_down", "liedown": "lie_down",
 	"sitdown": "sit", "sit_down": "sit", "standup": "stand", "stand_up": "stand", "wake": "wake_up", "wakeup": "wake_up",
-	"home": "go_home", "gohome": "go_home", "resume": "resume_routine", "stop": "cancel", "seat": "sit_on_seat", "bench": "sit_on_seat",
+	"home": "go_home", "gohome": "go_home", "bed": "go_to_bed", "gotobed": "go_to_bed", "go_bed": "go_to_bed", "to_bed": "go_to_bed",
+	"bedtime": "go_to_bed", "get_in_bed": "go_to_bed", "lie_in_bed": "go_to_bed", "lay_in_bed": "go_to_bed", "sleep_in_bed": "go_to_bed", "go_to_sleep": "go_to_bed", "resume": "resume_routine", "stop": "cancel", "seat": "sit_on_seat", "bench": "sit_on_seat",
 	"kiss": "kiss_player", "buck": "buck_player", "hug": "cuddle", "space": "request_space",
 	"letter": "send_letter", "send_a_letter": "send_letter", "write_letter": "send_letter", "letter_to_celestia": "send_letter", "send_letter_to_celestia": "send_letter", "fire_letter": "send_letter",
 	"give_home": "give_house", "grant_house": "give_house", "grant_home": "give_house", "assign_house": "give_house", "house_grant": "give_house",
@@ -71,7 +85,16 @@ const ALIASES := {"lookat": "look_at", "look": "look_at", "goto": "go_to", "walk
 	"wear": "put_on", "puton": "put_on", "dress": "put_on", "equip": "put_on",
 	"move": "step", "step_aside": "step", "move_aside": "step", "make_way": "step", "scoot": "step", "shift": "step",
 	"meet_up": "meet", "meet_anon": "meet", "appointment": "meet", "make_appointment": "meet", "schedule_meeting": "meet",
-	"cancel_meet": "meet_cancel", "cancel_meeting": "meet_cancel", "call_off_meeting": "meet_cancel"}
+	"cancel_meet": "meet_cancel", "cancel_meeting": "meet_cancel", "call_off_meeting": "meet_cancel",
+	"pay": "pay_player", "pay_anon": "pay_player", "pay_him": "pay_player", "give_bits": "pay_player", "give_money": "pay_player",
+	"tip": "pay_player", "tip_player": "pay_player", "give_player_bits": "pay_player", "bits": "pay_player",
+	"gift": "give", "give_item": "give", "hand": "give", "hand_over": "give", "give_player": "give",
+	"work": "use", "use_station": "use", "work_station": "use", "operate": "use",
+	"hire": "offer_job", "job": "offer_job", "offer_work": "offer_job", "hire_player": "offer_job", "employ": "offer_job",
+	"favor": "ask", "favour": "ask", "ask_favor": "ask", "ask_favour": "ask", "quest": "ask",
+	"invite_player": "invite", "invite_to": "invite", "invite_event": "invite",
+	"offer_price": "sell", "sell_to_player": "sell", "price": "sell", "haggle": "sell",
+	"buy_from_player": "buy", "purchase": "buy", "offer_to_buy": "buy"}
 ## One line per command for the prompt: the exact tag and what it does.
 const TAG_HELP := {
 	"teleport_to_ponyville": "[teleport_to_ponyville] Twilight takes you both out of the Everfree to Ponyville for shelter at Golden Oak; only available during the active forest rescue; finish explaining first, then regroup beside the newcomer before casting if separated",
@@ -96,6 +119,7 @@ const TAG_HELP := {
 	"sit_on_seat": "[sit_on_seat] walk to the nearest free bench or seat and sit on it",
 	"wake_up": "[wake_up] wake up, or get up out of a bed or off a couch",
 	"go_home": "[go_home] go home to rest a while (say goodbye first)",
+	"go_to_bed": "[go_to_bed] walk to your own bed, climb in and lie there (asleep at night) until you get up; [go_to_bed: here] the bed in the house where Anon is",
 	"relationship_offer": "[relationship_offer: KIND, ACTIVITY] ask Anon for a relationship step (ACTIVITY walk/fishing/orchard/meal/visit, or place plus a LOCATION)",
 	"relationship_answer": "[relationship_answer: OFFER_ID, yes] or no: answer Anon's invitation",
 	"agreed": "[agreed: KIND] you both said yes to a step: Anon asked you for it in his own words and you accept, or he said yes to your offer (KIND dating/date/outing/move_in/engagement/marriage)",
@@ -107,7 +131,19 @@ const TAG_HELP := {
 	"take_off": "[take_off: ITEM] take off something you are wearing (e.g. socks, scarf, hat, glasses), when asked or when you want to; you keep it and can [put_on] it again; works alongside one other action",
 	"put_on": "[put_on: ITEM] put back on something you took off earlier; works alongside one other action",
 	"meet": "[meet: LOCATION, DAY, HH:MM] agree to meet Anon at a place on a day (today, tomorrow or a number of days ahead) and time, e.g. [meet: landmark:town_hall, tomorrow, 15:00]; you will go there a bit early and wait; replaces your earlier meeting with him",
-	"meet_cancel": "[meet_cancel] call off your agreed meeting with Anon"}
+	"meet_cancel": "[meet_cancel] call off your agreed meeting with Anon",
+	"pay_player": "[pay_player: BITS] hand Anon that many bits from your own purse (pay him for work or goods, pay back a loan, tip him, treat him, gift him); only bits you hold, say it out loud; works alongside one other action",
+	"offer_job": "[offer_job: JOB] offer Anon paid work for today (from your list); tell him where it is, he goes himself; works alongside one other action",
+	"use": "[use: STATION] go and work a station near you (from your list), e.g. [use: cider_press]",
+	"ask": "[ask: WANT, REWARD] ask Anon a favour: WANT is items and a count (2 apples), fetch PONY, go to LOCATION or help at JOB; REWARD is bits you hold (10 bits), an item you have, or thanks; one open favour at a time; works alongside one other action",
+	"invite": "[invite: EVENT] invite Anon to a town event today (from your list); it goes in his notebook; works alongside one other action",
+	"give": "[give: ITEM] hand Anon something you really have (from your list); it goes into his hand; say it out loud; works alongside one other action",
+	"sell": "[sell: ITEM, BITS] your price for Anon on something from your stall here (from your list) for two minutes; he takes it from the stall himself; say it out loud",
+	"buy": "[buy: ITEM, BITS] offer Anon bits from your purse for something he is holding (from your list); you pay when he hands it to you; say it out loud"}
+
+## The reply channel of an action type: one intention per channel per reply.
+static func channel(type: String) -> String:
+	return str(CHANNELS.get(type, "movement"))
 
 ## Turns a model's tag name into a TYPES entry ("" when it is not an action).
 static func action_type(raw: String) -> String:
@@ -183,18 +219,19 @@ static func decode_tags(text: String, actor: String, turn: int, context: Diction
 		var action := _tag_action(type, value, turn, actions.size())
 		# A house grant or Trixie's stage show moves nopony now: either may come with her walk or follow.
 		# An agreed meeting (appointments.gd) moves nopony now: it may come with a walk and a look.
-		var channel := "gaze" if type == "look_at" else ("grant" if type in ["give_house", "magic_show"] else "wardrobe" if type in ["take_off", "put_on"] else "plan" if type in ["meet", "meet_cancel"] else "movement")
+		var lane := channel(type)
 		var error := validate(action, context)
-		if error == "" and channel in channels: error = "Only one %s per reply" % ("look_at" if channel == "gaze" else "movement")
+		if error == "" and lane in channels: error = "Only one %s per reply" % ("look_at" if lane == "gaze" else "movement")
 		if error == "" and actions.size() >= 2: error = "At most two actions per reply"
 		if error != "":
 			dropped.append("%s (%s)" % [found.get_string(0), error]); continue
-		channels.append(channel)
+		channels.append(lane)
 		actions.append(action)
 	speech = speech.replace("  ", " ").strip_edges()
+	_follow_to_lead(actions, speech, actor, turn, context)
 	if speech.length() > SPEECH_LIMIT: return {"error": "Speech exceeds 2880 characters; use complete sentences within the limit"}
 	for action: Dictionary in actions:
-		if action.type in ["relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle", "teleport_to_ponyville", "give_house", "meet", "meet_cancel"] and CONTROLS.sanitize(speech).is_empty():
+		if action.type in SPEECH_REQUIRED and CONTROLS.sanitize(speech).is_empty():
 			return {"error": "This action requires spoken words before it can finish"}
 	return {"speech": speech, "actions": actions, "impression": preload("res://world/ai/impressions/pony_impressions.gd").sanitize(impression),
 		"dropped": dropped, "tags": true, "control_only": not silent and actions.is_empty() and CONTROLS.sanitize(speech).is_empty() and not text.strip_edges().is_empty()}
@@ -241,7 +278,89 @@ static func _tag_action(type: String, value: String, turn: int, index: int) -> D
 	if type == "follow" and action.get("formation") not in ["behind", "left", "right", "loose"]: action.formation = "right"
 	if type == "step": action.direction = STEP_SPELLINGS.get(str(action.get("direction", "aside")), str(action.get("direction", "aside")))
 	if type == "go_to" and action.get("pace") not in ["walk", "trot"]: action.pace = "walk"
+	if type == "go_to_bed": action.bed = "here" if str(action.get("bed", "own")).to_lower().replace(" ", "_") in BED_HERE else "own"
+	# [sell: cider keg, 35 bits] / [buy: tea set, 30]: the number is the price.
+	if type in ["sell", "buy"] and action.has("price"):
+		var price_digits := RegEx.create_from_string("\\d+").search(str(action.price))
+		if price_digits != null: action.price = int(price_digits.get_string())
+		else: action.erase("price")
+	# [pay_player: 20 bits] / [pay_player: 20]: the number is the amount.
+	if type == "pay_player" and action.has("amount"):
+		var digits := RegEx.create_from_string("\\d+").search(str(action.amount))
+		if digits != null: action.amount = int(digits.get_string())
+		else: action.erase("amount")
 	return action
+
+## "Walk with me" to a place she is going (thread report 2026-10-31: Rarity said she was going to
+## the library to see Twilight and asked Anon along; on his "Sure" the model sent [follow: player]
+## and she trailed him instead of heading there). Her [follow: player] becomes
+## [lead: player, PLACE] only when she invited him in her own words and the place is certain: a
+## listed location she named ("going to the library", "walk with me to X", "let's go to X"), her
+## own model go_to/lead in progress (context heading_to) or her pending place outing; in the same
+## line or her next reply after that invitation. An open-ended "walk with me" keeps [follow].
+const INVITE_PATTERN := "\\b(walk|come|trot|stroll)( along)? with me\\b|\\bcome (along|too)\\b|\\bjoin me\\b|\\btag along\\b|\\bkeep me company\\b|\\baccompany me\\b|\\byou can come\\b|\\b(want|wanna|care|like) to (come|join)\\b|\\bwhy don't you come\\b|\\bcoming with me\\b"
+const PLACE_PATTERNS := ["\\b(?:walk|come|go|trot|head)\\s+(?:along\\s+|over\\s+)?with me\\s+(?:over\\s+|down\\s+|up\\s+)?to\\s+([^,.!?;:\\n]+)",
+	"\\blet'?s\\s+(?:go|walk|head|trot|stroll)\\s+(?:over\\s+|down\\s+|up\\s+|on\\s+)?to\\s+([^,.!?;:\\n]+)",
+	"(?<!not )(?<!n't )\\b(?:going|heading|headed|off|on my way|walking|trotting|popping|making my way|bound)\\s+(?:over\\s+|down\\s+|up\\s+|back\\s+|out\\s+|across\\s+)?to\\s+([^,.!?;:\\n]+)"]
+## Where a spoken place name ends ("the library to see Twilight").
+const PLACE_CUTS := [" to ", " for ", " and ", " with ", " because ", " so ", " if ", " now ", " today ", " right ", " later ", " soon ", " darling ", " dear "]
+## "going to see/buy/be ..." is a plan, not a place.
+const NOT_PLACES := ["see", "visit", "get", "buy", "have", "be", "do", "make", "try", "ask", "tell", "meet", "help", "find", "pick", "bake",
+	"grab", "check", "talk", "say", "show", "need", "go", "walk", "sleep", "eat", "read", "play", "take", "bring", "fetch", "look", "start",
+	"finish", "work", "practice", "pay", "borrow", "return", "drop", "deliver", "sell", "give", "set", "fix", "stop", "rest", "sit", "fly"]
+## actor -> {"place", "turn", "next"}: her last invitation to a certain place, kept for her next reply.
+static var _invited: Dictionary = {}
+
+static func _follow_to_lead(actions: Array, speech: String, actor: String, turn: int, context: Dictionary) -> void:
+	var line := speech.to_lower().replace("’", "'")
+	var spoken := _spoken_place(line, context)
+	var invite: bool = bool(spoken.invite)
+	var invites := RegEx.new()
+	invites.compile(INVITE_PATTERN)
+	if invites.search(line) != null: invite = true
+	var place: String = str(spoken.place) if invite else ""
+	var pending: Dictionary = context.get("relationship", {}).get("pending", {})
+	var outing := str(pending.get("place", "")) if pending.get("by") == "pony" and pending.get("activity") == "place" else ""
+	if place.is_empty() and invite:
+		for action: Dictionary in actions:
+			if action.type in ["go_to", "lead"] and not str(action.get("location_id", "")).is_empty(): place = str(action.location_id)
+		if place.is_empty(): place = str(context.get("heading_to", ""))
+	# Her own pending place outing is a structured invitation already.
+	if place.is_empty(): place = outing
+	var record: Dictionary = _invited.get(actor, {})
+	# The same turn decoded again (a repair) replaces it; a later turn reads it once, then it lapses.
+	if not record.is_empty() and (int(record.turn) >= turn or (int(record.next) >= 0 and int(record.next) != turn)): record = {}
+	if not record.is_empty(): record.next = turn
+	if not place.is_empty(): _invited[actor] = {"place": place, "turn": turn, "next": -1}
+	elif record.is_empty(): _invited.erase(actor)
+	var destination: String = place if not place.is_empty() else str(record.get("place", ""))
+	if destination.is_empty() or "lead" not in context.get("capabilities", []): return
+	for i in actions.size():
+		var follow: Dictionary = actions[i]
+		if follow.type != "follow" or follow.get("target_id") != "player": continue
+		var lead := _tag_action("lead", "player, " + destination, turn, i)
+		if validate(lead, context) != "": return
+		print("[ai] %s: [follow: player] after her invitation to %s became [lead: player, %s]" % [actor, destination, str(lead.location_id)])
+		actions[i] = lead
+		return
+
+## A listed place she says she is going to or invites Anon to: {"place", "invite"}.
+static func _spoken_place(line: String, context: Dictionary) -> Dictionary:
+	var locations: Array = context.get("locations", [])
+	if locations.is_empty(): return {"place": "", "invite": false}
+	for index in PLACE_PATTERNS.size():
+		var pattern := RegEx.new()
+		pattern.compile(str(PLACE_PATTERNS[index]))
+		for found: RegExMatch in pattern.search_all(line):
+			var clause := found.get_string(1).strip_edges() + " "
+			for cut: String in PLACE_CUTS:
+				var at := clause.find(cut)
+				if at > 0: clause = clause.left(at)
+			var words := PLACES.name_words(clause)
+			if words.is_empty() or words.size() > 5 or words[0] in NOT_PLACES: continue
+			var matched := PLACES.match_name(clause.strip_edges(), locations, context.get("place_labels", {}))
+			if not matched.is_empty(): return {"place": matched, "invite": index < 2}
+	return {"place": "", "invite": false}
 
 ## The FORMAT RULES block for one speaker: only her commands, targets and places.
 static func tag_rules(capabilities: Array, targets: Array, places: String, include_bindings := true) -> String:
@@ -297,11 +416,11 @@ static func decode(text: String, actor: String, turn: int, context: Dictionary, 
 		var error := validate(action, context)
 		if error != "": return {"error": error}
 		if action.id in ids: return {"error": "Duplicate action IDs in reply"}
-		if action.type in ["relationship_offer","relationship_answer","agreed","request_space","buck_player","cuddle","teleport_to_ponyville","give_house","meet","meet_cancel"] and CONTROLS.sanitize(value.speech).is_empty():return {"error":"This action requires spoken words before it can finish"}
+		if action.type in SPEECH_REQUIRED and CONTROLS.sanitize(value.speech).is_empty():return {"error":"This action requires spoken words before it can finish"}
 		ids.append(action.id)
-		var channel := "gaze" if action.type == "look_at" else ("grant" if action.type in ["give_house", "magic_show"] else "wardrobe" if action.type in ["take_off", "put_on"] else "plan" if action.type in ["meet", "meet_cancel"] else "movement")
-		if channel in channels: return {"error": "One intention per channel per reply"}
-		channels.append(channel)
+		var lane := channel(str(action.type))
+		if lane in channels: return {"error": "One intention per channel per reply"}
+		channels.append(lane)
 	return {"speech": value.speech, "actions": value.actions.duplicate(true), "impression":preload("res://world/ai/impressions/pony_impressions.gd").sanitize(value.get("impression")),
 		"control_only": value.actions.is_empty() and not raw_speech.strip_edges().is_empty() and raw_speech.strip_edges() != "[silence]" and CONTROLS.sanitize(value.speech).is_empty()}
 
@@ -353,6 +472,64 @@ static func validate(action: Variant, context: Dictionary) -> String:
 			if not bool(when.ok): return str(when.error)
 			# Normalized, so a second validation (and the appointment store) reads the same meeting.
 			action.day = str(when.day_text); action.time = str(when.time_text)
+		"pay_player":
+			if not (action.get("amount") is int or action.get("amount") is float) or int(action.amount) < 1: return "Name how many bits to give"
+			if int(action.amount) > int(context.get("purse", 0)): return "You only have %d bits" % int(context.get("purse", 0))
+			action.amount = int(action.amount)
+		"give":
+			# Only what she really has (mechanics.gd ai_context "givables"); normalised to its id.
+			if not action.get("item") is String or str(action.item).strip_edges().is_empty() or str(action.item).length() > 80: return "Name the thing to give"
+			var given := ITEM_CATALOG.match_name(str(action.item), context.get("givables", []))
+			if given.is_empty(): return "You do not have that to give"
+			action.item = given
+		"use":
+			# Only a station she can work now (mechanics.gd ai_context "stations", stations.gd workable).
+			if not _id(action.get("station_id")) or action.station_id not in context.get("stations", []): return "No station you can work here"
+		"offer_job":
+			# Only work she hires for that is open now (mechanics.gd ai_context "jobs", jobs.gd offerable).
+			if action.get("job_id") is String: action.job_id = str(action.job_id).trim_prefix("the_")
+			# A spelled-out name ("apple bucking", "day spa", "Cider-Stand") becomes its id (jobs.json names).
+			if action.get("job_id") is String and str(action.job_id) not in context.get("jobs", []):
+				var spelled_job := _event_key(str(action.job_id))
+				var job_names: Dictionary = context.get("job_names", {}) if context.get("job_names") is Dictionary else {}
+				for job: Variant in context.get("jobs", []):
+					if spelled_job == _event_key(str(job)) or spelled_job == _event_key(str(job_names.get(job, ""))): action.job_id = str(job); break
+			if not _id(action.get("job_id")) or action.job_id not in context.get("jobs", []): return "You have no such work to offer now"
+		"ask":
+			# A favour in the shared grammar (world/mechanics/asks/ask_rules.gd), normalised in place so
+			# the second validation (commit) reads the canonical form.
+			if not action.get("want") is String or not action.get("reward", "thanks") is String: return "Say what the favour is"
+			var asked := ASK_RULES.parse(str(action.want), str(action.get("reward", "thanks")), context)
+			if not bool(asked.ok): return str(asked.error)
+			action.want = str(asked.want); action.reward = str(asked.reward)
+		"invite":
+			# Only an event she may invite Anon to today (mechanics.gd ai_context "events"); a spelled-out
+			# name ("Trixie's stage show", "the Cider Season") becomes its id (town_calendar.gd rows).
+			if action.get("event_id") is String and str(action.event_id) not in context.get("events", []):
+				var spelled := _event_key(str(action.event_id))
+				var names: Dictionary = context.get("event_names", {}) if context.get("event_names") is Dictionary else {}
+				for event: Variant in context.get("events", []):
+					if spelled == _event_key(str(event)) or spelled == _event_key(str(names.get(event, ""))): action.event_id = str(event); break
+			if not _id(action.get("event_id")) or action.event_id not in context.get("events", []): return "No such event today"
+		"sell", "buy":
+			# [sell]: only what is on her stall here (mechanics.gd ai_context "sell_items", market.gd), at
+			# 1..2x its card price. [buy]: only what Anon holds beside her ("anon_holding"), within her
+			# purse and at most twice its value (at least 10). Item normalised to its id.
+			if not action.get("item") is String or str(action.item).strip_edges().is_empty() or str(action.item).length() > 80: return "Name the thing"
+			if not (action.get("price") is int or action.get("price") is float) or int(action.price) < 1: return "Name a price in bits"
+			var listed: Array = context.get("sell_items" if action.type == "sell" else "anon_holding", [])
+			var named := ITEM_CATALOG.match_name(str(action.item), listed)
+			if named.is_empty(): return "That is not on your stall here" if action.type == "sell" else "Anon is not holding that"
+			action.item = named
+			action.price = int(action.price)
+			if action.type == "sell":
+				var card: int = int((context.get("sell_prices", {}) as Dictionary).get(named, 0)) if context.get("sell_prices") is Dictionary else 0
+				if action.price > maxi(1, card * 2): return "At most %d bits for that" % maxi(1, card * 2)
+			else:
+				var purse: int = int(context.get("buy_purse", context.get("purse", 0)))
+				if action.price > purse: return "You only have %d bits" % purse
+				var worth: int = int((context.get("holding_values", {}) as Dictionary).get(named, 0)) if context.get("holding_values") is Dictionary else 0
+				if action.price > maxi(10, worth * 2): return "At most %d bits for that" % maxi(10, worth * 2)
 		"take_off", "put_on":
 			if not action.get("kind") is String or str(action.kind).is_empty() or str(action.kind).length() > 40: return "Name the item of clothing"
 		"hover":
@@ -368,6 +545,8 @@ static func validate(action: Variant, context: Dictionary) -> String:
 			if action.type == "follow" and action.get("formation") not in ["behind", "left", "right", "loose"]: return "Unknown formation"
 		"go_to":
 			if action.get("pace") not in ["walk", "trot"]: return "Pace must be walk or trot"
+		"go_to_bed":
+			if action.get("bed", "own") not in ["own", "here"]: return "Bed must be own or here"
 		"step":
 			if action.get("direction") not in STEP_DIRECTIONS: return "Direction must be forward, back, left, right, away or aside"
 			if not _number(action.get("distance_m"), 1.0, 6.0): return "Distance must be 1–6 metres"
@@ -394,6 +573,13 @@ static func _keys(value: Dictionary, allowed: Array) -> bool:
 
 static func _number(value: Variant, low: float, high: float) -> bool:
 	return (value is int or value is float) and is_finite(float(value)) and value >= low and value <= high
+
+## An event id or name reduced to letters and digits, without a leading "the" ([invite]).
+static func _event_key(text: String) -> String:
+	var key := ""
+	for c: String in text.to_lower().trim_prefix("the ").trim_prefix("the_"):
+		if (c >= "a" and c <= "z") or (c >= "0" and c <= "9"): key += c
+	return key
 
 static func _id(value: Variant) -> bool:
 	if not value is String or value.is_empty() or value.length() > 96: return false

@@ -18,9 +18,26 @@ const TRAVEL := preload("res://world/characters/navigation/house_travel.gd")
 const ASK_AFTER := 0.5
 ## Two walkers usually sort out passing themselves (avoidance); giving way waits this long.
 const WALKER_AFTER := 5.0
+## Head on in a lane too narrow for two bodies side by side: one gives way after this long.
+const NARROW_AFTER := 1.0
 const REROUTE_AFTER := 2.5
 const ASK_INTERVAL := 0.75
 const REROUTE_INTERVAL := 4.0
+## Held means no route progress, not only standing still (2026-10-31): a stepping turn pivots on
+## her hooves at about 0.15 m/s, so a walker swinging left and right in front of a pony read as
+## moving and never asked or rerouted. Less than STALL_GAIN metres of corridor progress in
+## STALL_SECONDS is held too.
+const STALL_GAIN := 0.2
+const STALL_SECONDS := 1.5
+## A loiterer with free floor beside her is walked round by the native follower (a committed pass);
+## she is asked to step aside only when neither side is open, or after this long held anyway.
+const SIDE_PATIENCE := 3.0
+## A pony who refused to make room is not asked again for this long.
+const REFUSED_SECONDS := 5.0
+## Reroute discs: the follower's hard separation (body radii + 0.1, + 0.1 without an avoidance
+## answer; navigation_steering.cpp hard_separation), a walk-grid cell (search discs test cell
+## centres) and 0.1 m to spare. navigation_batch.cpp PEER_DISC_PAD is the same value.
+const PEER_DISC_PAD := 0.55
 ## How far ahead along her corridor a standing pony counts as in the way (metres).
 const LOOK_AHEAD := 3.5
 ## The yielder keeps clear of this much of the requester's remaining corridor.
@@ -39,6 +56,12 @@ var held := 0.0
 var _ask_at := 0.0
 var _reroute_at := 0.0
 var _clock := 0.0
+## Route progress anchor for STALL_GAIN / STALL_SECONDS.
+var _anchor_route := -1
+var _anchor_progress := 0.0
+var _anchor_time := 0.0
+## Instance id -> clock until which that pony is not asked again (she refused).
+var _refused := {}
 ## Yielder state: "" (none), "standing", "moving", "waiting".
 var phase := ""
 var goal := Vector3.INF
@@ -142,9 +165,19 @@ func watch(nav: Node, delta: float) -> void:
 	if not enabled: return
 	_clock += delta
 	var pony: CharacterBody3D = nav.pony
-	# Held: (almost) no motion on an active corridor, not turning, arriving or waiting for a route.
-	var waiting: bool = nav._native_active and float(pony.actual_speed) < 0.12 \
-		and int(nav._native_reason) not in [1, 4, 7, 15] and nav._flat_distance(pony.global_position, nav.target) > 1.0
+	# Route progress: re-anchored on every STALL_GAIN gained or on a new corridor.
+	var route: int = int(nav._native_route)
+	var progress: float = float(nav._native_progress)
+	if not nav._native_active or route != _anchor_route or progress >= _anchor_progress + STALL_GAIN or progress < _anchor_progress - 1.0:
+		_anchor_route = route
+		_anchor_progress = progress
+		_anchor_time = _clock
+	var reason := int(nav._native_reason)
+	var stalled := _clock - _anchor_time >= STALL_SECONDS and reason not in [4, 7, 15]
+	# Held: (almost) no motion on an active corridor, not turning, arriving or waiting for a route;
+	# or no route progress at all (creeping, turning back and forth in front of a pony).
+	var waiting: bool = nav._native_active and nav._flat_distance(pony.global_position, nav.target) > 1.0 \
+		and ((float(pony.actual_speed) < 0.12 and reason not in [1, 4, 7, 15]) or stalled)
 	if not nav._has_target or nav.path.size() < 2 or not waiting:
 		held = maxf(0.0, held - delta * 2.0)
 		return
@@ -153,18 +186,32 @@ func watch(nav: Node, delta: float) -> void:
 	_ask_at = _clock + ASK_INTERVAL
 	var blockers := _blockers(nav)
 	if blockers.is_empty(): return
+	if _refused.size() > 16:
+		for key: int in _refused.keys():
+			if float(_refused[key]) < _clock: _refused.erase(key)
 	var making_room := false
+	var mine := priority(nav)
+	var narrow := -1
 	for other: Node in blockers:
 		if other.peer_passage.active() and other.peer_passage.requester_ref != null and other.peer_passage.requester_ref.get_ref() == nav:
 			making_room = true
 			continue
-		var mine := priority(nav)
+		if float(_refused.get(other.get_instance_id(), -INF)) > _clock: continue
 		var theirs := priority(other)
-		if other._has_target and held < WALKER_AFTER: continue
+		if other._has_target and held < WALKER_AFTER:
+			# Walkers sort out passing themselves, unless the lane has no room for two side by side.
+			if held < NARROW_AFTER: continue
+			if narrow < 0: narrow = 1 if _narrow(nav) else 0
+			if narrow == 0: continue
 		if theirs < mine or (theirs == mine and other.get_instance_id() > nav.get_instance_id()):
+			# Free floor beside a standing pony: the native follower walks round her; ask only when
+			# neither side is open (or after a long hold anyway).
+			if not other._has_target and held < SIDE_PATIENCE and _side_open(nav, other): continue
 			asked += 1
 			if other.peer_passage.make_room(other, nav):
 				making_room = true
+			else:
+				_refused[other.get_instance_id()] = _clock + REFUSED_SECONDS
 		elif other._has_target and not active():
 			# Head on with a walker who has right of way: this one gives way instead.
 			if make_room(nav, other): return
@@ -177,6 +224,39 @@ func watch(nav: Node, delta: float) -> void:
 	for other: Node in blockers:
 		if not other._has_target or held >= WALKER_AFTER: standing.append(other)
 	if not standing.is_empty(): _reroute(nav, standing)
+
+
+## Free floor beside `blocker`, across her way, that she can walk to: the native pass gets round.
+func _side_open(nav: Node, blocker: Node) -> bool:
+	var service: Node = nav._service
+	if not is_instance_valid(service) or not service.ready_for_paths: return false
+	var pony: CharacterBody3D = nav.pony
+	var at := pony.global_position
+	var line := corridor(nav, LOOK_AHEAD)
+	var travel: Vector3 = line[-1] - line[0]; travel.y = 0.0
+	travel = travel.normalized() if travel.length() > 0.05 else -pony.global_basis.z
+	var side := travel.cross(Vector3.UP).normalized()
+	var there: Vector3 = blocker.pony.global_position
+	var room: float = float(pony.profile.radius) + float(blocker.pony.profile.radius) + 0.25
+	for sign: float in [1.0, -1.0]:
+		var spot := _floor(service, pony, there + side * sign * room, at.y)
+		if spot.is_finite() and service.is_walkable(spot, pony.profile) and service.steering_segment_clear(at, spot, pony.profile):
+			return true
+	return false
+
+
+## No room for two bodies side by side where she stands (one side of her within a body width is
+## not walkable floor).
+func _narrow(nav: Node) -> bool:
+	var service: Node = nav._service
+	if not is_instance_valid(service) or not service.ready_for_paths: return false
+	var pony: CharacterBody3D = nav.pony
+	var at := pony.global_position
+	var line := corridor(nav, LOOK_AHEAD)
+	var travel: Vector3 = line[-1] - line[0]; travel.y = 0.0
+	travel = travel.normalized() if travel.length() > 0.05 else -pony.global_basis.z
+	var side := travel.cross(Vector3.UP).normalized() * (float(pony.profile.radius) * 2.0 + 0.15)
+	return not service.is_walkable(at + side, pony.profile) or not service.is_walkable(at - side, pony.profile)
 
 
 ## Navigators standing in the next few metres of her corridor (bounded batch-driver query).
@@ -202,9 +282,12 @@ func _reroute(nav: Node, blockers: Array[Node]) -> void:
 	var own: float = float(nav.pony.profile.radius)
 	for other: Node in blockers:
 		var at: Vector3 = other.pony.global_position
-		discs.append_array([at.x, at.z, own + float(other.pony.profile.radius)])
+		discs.append_array([at.x, at.z, own + float(other.pony.profile.radius) + PEER_DISC_PAD])
 	reroutes += 1
-	nav._native_blocked = discs
+	# Peer discs live apart from the native obstruction evidence (a native replan no longer drops
+	# them, and they expire instead of riding along the rest of the trip).
+	nav._peer_discs = discs
+	nav._peer_discs_msec = Time.get_ticks_msec()
 	nav._cancel_queries()
 	nav._needs_path = true
 	nav.reason = "Rerouting around ponies in the way"

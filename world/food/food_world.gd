@@ -187,6 +187,16 @@ func restock() -> void:
 		_stock[id].taken = []
 	stock_changed.emit(snapshot())
 
+## The pony economy's refill (world/mechanics/market/market.gd plan_restock, via shop_world.gd):
+## only the slots each keeper paid for, {display_id: [keys]}.
+func restock_keys(plan: Dictionary) -> void:
+	for display: Node3D in active_displays():
+		display.restock_keys(plan.get(str(display.display_id), []))
+	for id: String in _stock:
+		var refill: Array = plan.get(id, [])
+		_stock[id].taken = (_stock[id].taken as Array).filter(func(key: Variant) -> bool: return not key in refill)
+	stock_changed.emit(snapshot())
+
 func active_displays() -> Array[Node3D]:
 	var result: Array[Node3D] = []
 	for value: Variant in _displays.values():

@@ -34,6 +34,8 @@ const FAR_MESH := preload("res://world/characters/hybrid_mare/hybrid_far_mesh.gd
 const IMPOSTORS := preload("res://world/characters/hybrid_mare/pony_impostors.gd")
 const NEAR_MESH := preload("res://world/characters/hybrid_mare/hybrid_near_mesh.gd")
 const PINKIE_BOUNCE := preload("res://world/characters/hybrid_mare/pinkie_bounce.gd")
+const EXPRESSION_STANCE := preload("res://world/characters/hybrid_mare/expression_stance.gd")
+var expression_stance := EXPRESSION_STANCE.new()
 ## Only Pinkie allocates this optional travel style; every other mare keeps the same gait path.
 var pinkie_bounce: RefCounted
 ## OpenPony model root relative to the native model root, rest to rest. Blender fit translation
@@ -68,6 +70,19 @@ func set_body_scale(scale_factor: float) -> void:
 const HIDDEN_HEAD_MESHES := ["Torso", "Pelvis", "Left Front Leg", "Right Front Leg", "Left Back Leg",
 	"Right Back Leg", "Tail", "Tail Base and LOD", "Wings Pegasus", "Cutie Mark", "Unicorn Horn"]
 const SHADED_HEAD_MESHES := ["Head", "Ears1", "InnerMouth", "Teeth", "Tongue", "Unicorn Horn"]
+## The teeth's shade band: a warm off-white for every coat.
+const TEETH_SHADE := Color(0.88, 0.87, 0.84)
+## The Head's Lip surfaces (the lip lining that curls into the mouth). Their hull, grown the full
+## outline width along the lining's up/down normals, crossed every open speech mouth as a stray
+## ink line and put spurs past the corners (viseme review round 2), but closed it draws the
+## resting lip seam. So it keeps its width at rest and drops to 0 while speech parts the lips
+## (PonyMouth.lip_open_changed); the approved faces are drawn as before.
+var _lip_hulls: Array[ShaderMaterial] = []
+var _lip_open := false
+## [Lip material, the same side's Snout material] pairs: PonyMouth.lip_tone_changed lights the lip
+## colour toward the snout's for the pursed "oo" (viseme review round 3); 0 restores it.
+var _lip_tones: Array = []
+var _lip_tone := 0.0
 ## Native body nodes that only pegasi wear, and the cutie mark patches (Godot imports the
 ## ".L/.R" suffixes as "_L/_R", so match on the prefix).
 const WING_PREFIX := "wing folded"
@@ -209,6 +224,7 @@ func _ready() -> void:
 	super._ready()
 	if skeleton == null or pivot == null:
 		return
+	expression_stance.pony = self
 	var lod_clock := Timer.new(); lod_clock.name = "LodClock"; lod_clock.wait_time = 0.25
 	lod_clock.timeout.connect(func() -> void: _lod_timer = 0.0)
 	add_child(lod_clock)
@@ -285,6 +301,7 @@ func _ready() -> void:
 		reference_face.bind(head_model, head_skeleton)
 	expressions = EXPRESSIONS.new()
 	expressions.bind(head.mouth, eye_motion)
+	if head.show_eyes_enabled: expressions.show_head = head
 	expressions.rest_smile = identity.rest_smile
 	expressions.interest_smile = identity.interest_smile
 	if reference_face_enabled or head.show_eyes_enabled:
@@ -330,7 +347,7 @@ func _ready() -> void:
 	flank.name="FlankTouch";add_child(flank);flank.setup(self)
 	_flank = flank
 	_exclude_world_ink()
-	if identity.id == "pinkie_pie":
+	if identity.character() == "pinkie_pie":
 		pinkie_bounce = PINKIE_BOUNCE.new()
 		pinkie_bounce.bind(self)
 	# Lashes and brows draw at every distance (dev 2026-09-18): a mare whose eyes vanish at
@@ -340,18 +357,55 @@ func _ready() -> void:
 ## Coat and mouth only: the eye cards, lashes and brows keep OpenPonyMare's materials
 ## (a cel outline pass around an alpha-scissor lash card draws a black mask).
 func _dress_head() -> void:
+	var lips: Array[ShaderMaterial] = []
+	var tone := _lip_tone
+	set_lip_tone(0.0)  # the old materials get their lip colour back; the new ones take `tone` below
+	_lip_tone = tone
+	var tones: Array = []
 	for node in _head_model.find_children("*", "MeshInstance3D", true, false):
 		if String(node.name) in SHADED_HEAD_MESHES:
 			if node.name == "Head": SNOUT_DETAIL.prepare(node)
 			_apply_show_shading(node)
+			if String(node.name) in ["InnerMouth", "Teeth", "Tongue"]:
+				# Interior parts keep their real geometry and material colors. A
+				# coat-colored hull around every internal edge obscures open mouths.
+				for surface in node.mesh.get_surface_count():
+					var interior := node.get_active_material(surface) as ShaderMaterial
+					if interior != null: interior.next_pass = null
+					# Teeth read off-white in their shade band, not tinted by the coat's shade
+					# ratio (viseme review round 2: grey-pink/green/lavender teeth in "ss").
+					if interior != null and node.name == "Teeth": interior.set_shader_parameter("shadow_color", TEETH_SHADE)
 			if node.name == "Head":
 				for surface in node.mesh.get_surface_count():
 					var source: Material = node.mesh.surface_get_material(surface)
 					var material := node.get_active_material(surface) as ShaderMaterial
+					if source != null and source.resource_name.ends_with(" Lip") and material != null:
+						var lip_hull := material.next_pass as ShaderMaterial
+						if lip_hull != null: lips.append(lip_hull)
+						var side := source.resource_name.trim_suffix(" Lip")
+						for other in node.mesh.get_surface_count():
+							var twin: Material = node.mesh.surface_get_material(other)
+							var snout := node.get_active_material(other) as ShaderMaterial
+							if twin != null and twin.resource_name == side + " Snout" and snout != null: tones.append([material, snout])
 					if source != null and source.resource_name.ends_with(" Head") and material != null:
 						var hull := material.next_pass as ShaderMaterial
 						if hull != null: hull.set_shader_parameter("native_eye_socket_mask", true)
 			if node.name == "Head" and not reference_face_enabled: SNOUT_DETAIL.dress(node)
+	_lip_hulls = lips
+	_lip_tones = tones
+	var mouth: Variant = head.get("mouth")
+	if mouth is PonyMouth:
+		(mouth as PonyMouth).lip_open_changed = set_lip_hull_open
+		(mouth as PonyMouth).lip_tone_changed = set_lip_tone
+	if _lip_open: set_lip_hull_open(true)
+	if _lip_tone > 0.0: set_lip_tone(_lip_tone)
+	if head.face_sculpt != null:
+		# MLP Vector Club: black at 5–15% over coat for expressive lids, or the
+		# identity's explicit eyeshadow (Rarity, Luna, Maud, etc.).
+		var lid_color: Color = identity.eyeshadow()
+		var makeup := lid_color.a > 0.0
+		head.face_sculpt.set_lid_color(lid_color if makeup else Color(0,0,0,.12), makeup)
+		head.face_sculpt.set_freckles(identity.freckle_color)
 
 
 func _redress() -> void:
@@ -471,6 +525,7 @@ func _hybrid_physics(delta: float) -> void:
 	# Not held and already reset, update() would only reset it again.
 	if _held or _carry_reaction.active: _carry_reaction.update(self, delta)
 	if pinkie_bounce != null: pinkie_bounce.advance(delta)
+	expression_stance.advance(delta)
 	super._physics_process(delta)
 	# The face work below is the tier label minus this one.
 	if started > 0: CROWD_PROFILE.record("hybrid_loco_total", started)
@@ -529,8 +584,8 @@ func _hybrid_physics(delta: float) -> void:
 	# (dev 2026-10-14: "completely still"). Never while held, carried, kissed or asleep.
 	var quiet: bool = resting and not sleeping and not _held and not carry.active and not has_meta("affection_active") and is_in_group("sim_ponies")
 	idle_twitches.advance(delta, self, quiet)
-	if expressions.blush_weight > .05: boop_node.sustain_blush()
-	boop_node.nose_blush = expressions.fluster_amount
+	boop_node.expression_blush = expressions.blush_weight
+	boop_node.nose_blush = maxf(expressions.fluster_amount, expressions.blush_weight * .6)
 	if expressions.fluster_amount > .05: boop_node.sustain_blush()
 	_giggle_after_fluster(delta)
 	# Briefly lead a turning head; once it settles, hold the fixation quietly.
@@ -800,10 +855,43 @@ func _poll_near_mesh() -> void:
 		return
 	_near_waiting = false
 	_near = NEAR_MESH.attach(self, plan, _hair_lod)
+	if _lip_open: NEAR_MESH.set_lip_width(_near, 0.0)
+	if _lip_tone > 0.0: NEAR_MESH.set_lip_tone(_near, _lip_tone)
 	if not _rig_watched.is_empty():
 		for mi in NEAR_MESH.instances(_near): _watch_rig_mesh(mi)  # hidden behind the far mesh
 	if not _near.is_empty() and _ink:
 		_exclude_world_ink()
+
+
+## Speech parted (true) or closed (false) the lips: the lip-lining hull drops to 0 width / returns
+## to the outline width, on the rig head and on the merged near mesh.
+func set_lip_hull_open(open: bool) -> void:
+	_lip_open = open
+	for hull in _lip_hulls:
+		if not hull.has_meta(&"lip_width"): hull.set_meta(&"lip_width", float(hull.get_shader_parameter("outline_width")))
+		hull.set_shader_parameter("outline_width", 0.0 if open else float(hull.get_meta(&"lip_width")))
+	NEAR_MESH.set_lip_width(_near, 0.0 if open else -1.0)
+
+
+## The lip colour (colour and shade) blended `tone` of the way to the snout's, on the rig head and
+## the merged near mesh; 0 puts back the built lip colour. The built colour is kept as metadata
+## while toned, so the near-mesh build and a later restore read the real lip colour.
+func set_lip_tone(tone: float) -> void:
+	_lip_tone = tone
+	for pair: Array in _lip_tones:
+		var lip := pair[0] as ShaderMaterial
+		var snout := pair[1] as ShaderMaterial
+		for param: String in ["color", "shadow_color"]:
+			var key := StringName("lip_base_" + param)
+			if tone <= 0.0:
+				if lip.has_meta(key):
+					lip.set_shader_parameter(param, lip.get_meta(key))
+					lip.remove_meta(key)
+				continue
+			if not lip.has_meta(key): lip.set_meta(key, lip.get_shader_parameter(param))
+			var base: Color = lip.get_meta(key)
+			lip.set_shader_parameter(param, base.lerp(snout.get_shader_parameter(param) as Color, tone))
+	NEAR_MESH.set_lip_tone(_near, tone)
 
 
 func _near_detach() -> void:
@@ -943,6 +1031,7 @@ func _sample_source_pose() -> Array[Transform3D]:
 func _update_body(delta: float) -> void:
 	super._update_body(delta)
 	if pinkie_bounce != null and pinkie_bounce.active(): pinkie_bounce.apply_body()
+	expression_stance.apply_body()
 
 
 func _update_contacts(delta: float) -> void:
@@ -950,6 +1039,7 @@ func _update_contacts(delta: float) -> void:
 	# bounce weight the style owns synchronous contacts, with the usual constrained solve.
 	if pinkie_bounce == null or pinkie_bounce.amount < 1.0: super._update_contacts(delta)
 	if pinkie_bounce != null and pinkie_bounce.active(): pinkie_bounce.contacts(delta)
+	expression_stance.apply_contacts()
 
 
 func body_pinned() -> bool:
@@ -1125,11 +1215,14 @@ func is_speaking() -> bool:
 	return head.is_speaking()
 
 
+## The thinking bubble's centre over her head. Its gap over the skull grows with a body bigger than
+## canon, as the bubble does (pony_speech_indicator.gd), so it clears her ears (thread 43671981).
 func speech_indicator_point() -> Vector3:
-	if boop_node == null or boop_node._head_bone < 0: return listen_point() + Vector3.UP * .4
+	var grow := maxf(1.0, body_scale)
+	if boop_node == null or boop_node._head_bone < 0: return listen_point() + Vector3.UP * .4 * grow
 	var frame: Transform3D = boop_node.head_skeleton.global_transform * boop_node.head_skeleton.get_bone_global_pose(boop_node._head_bone)
 	var center: Vector3 = frame * boop_node.SKULL_LOCAL
-	return center + Vector3.UP * (boop_node.SKULL_RADIUS * maxf(frame.basis.get_scale().x, maxf(frame.basis.get_scale().y, frame.basis.get_scale().z)) + .23)
+	return center + Vector3.UP * (boop_node.SKULL_RADIUS * maxf(frame.basis.get_scale().x, maxf(frame.basis.get_scale().y, frame.basis.get_scale().z)) + .23 * grow)
 
 
 func listen_point() -> Vector3:
@@ -1298,12 +1391,15 @@ func _dress_lashes(model: Node) -> void:
 			var mat := ShaderMaterial.new()
 			mat.shader = preload("res://world/characters/openpony/openpony_lashes.gdshader")
 			mat.set_shader_parameter("use_native_ring", true)
+			mat.set_shader_parameter("authored_liner", mi.mesh.get_meta("authored_liner", false))
 			mat.set_shader_parameter("native_lash_texture", load(CACHED_LASHES))
 			mat.set_shader_parameter("lash_color", source.albedo_color)
 			mat.set_shader_parameter("show_lash_tips", not identity.stallion)
 			mat.set_shader_parameter("tips", style.tips)
 			mat.set_shader_parameter("tip_curl", style.curl)
-			mat.set_shader_parameter("eyeshadow_color", identity.eyeshadow_color)
+			# Authored heads wear lid colour on their moving skin; old heads retain
+			# the source lash-card band as a fallback.
+			mat.set_shader_parameter("eyeshadow_color", Color.TRANSPARENT if head.face_sculpt != null else identity.eyeshadow())
 			mi.set_surface_override_material(si, mat)
 
 

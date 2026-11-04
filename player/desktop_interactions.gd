@@ -195,6 +195,7 @@ func _unclaim() -> void:
 func cancel_desktop_activity() -> void:
 	if _keeps_cradle(): return
 	_finish()
+	if _carry_waits_for_ground(): return
 	if is_instance_valid(interactor) and is_instance_valid(interactor.held): interactor._drop()
 
 
@@ -202,6 +203,34 @@ func cancel_desktop_activity() -> void:
 ## (G, or carrying her normally first). Knocked down, flying or in pony form still lets go.
 func _keeps_cradle() -> bool:
 	return is_instance_valid(interactor) and is_instance_valid(interactor.held) and interactor.cradled 		and is_instance_valid(camera) and is_instance_valid(body) and not body.get_meta("knocked_down", false) 		and body.get("flying") != true and _human()
+
+
+## A carried pony is never let go by the chat box, a menu, the map or alt-tab while he is in
+## the air or she is held out over a drop (thread 43671981: Starlight fell into the pit outside
+## Canterlot when he wing-flew with her and typed to her). That release waits until he stands on
+## ground with ground close under her; his own G tap or throw still lets go at once, and knocked
+## down, debug fly or pony form still let go as before.
+func _carry_waits_for_ground() -> bool:
+	if not is_instance_valid(interactor) or not is_instance_valid(interactor.held) or not is_instance_valid(body): return false
+	if body.get_meta("knocked_down", false) or body.get("flying") == true or not _human(): return false
+	var wings: Variant = body.get("wing_flight")
+	if wings is Object and (wings as Object).get("active") == true: return true
+	if body is CharacterBody3D and not (body as CharacterBody3D).is_on_floor(): return true
+	return over_drop(interactor.held, [body])
+
+## Ground she would fall onto is this far below her when let go: more is a drop.
+const SAFE_DROP := 1.6
+
+## True when nothing solid lies within SAFE_DROP metres straight below `pony`.
+static func over_drop(pony: Node3D, exclude_bodies: Array = []) -> bool:
+	if not is_instance_valid(pony) or not pony.is_inside_tree() or pony.get_world_3d() == null: return false
+	var excluded: Array[RID] = []
+	for item: Variant in [pony] + exclude_bodies:
+		if item is CollisionObject3D and is_instance_valid(item): excluded.append((item as CollisionObject3D).get_rid())
+	var from := pony.global_position + Vector3.UP * .2
+	var query := PhysicsRayQueryParameters3D.create(from, from + Vector3.DOWN * (SAFE_DROP + .2))
+	query.exclude = excluded
+	return pony.get_world_3d().direct_space_state.intersect_ray(query).is_empty()
 
 
 func _begin(action: String, offer: Dictionary) -> bool:
@@ -267,6 +296,10 @@ func _physics_process(delta: float) -> void:
 			_present("carry", interactor.held.get_grip_transform("chest").origin, -camera.global_basis.z)
 			return
 		_finish()
+		if _carry_waits_for_ground():
+			# Held on until he has landed (_carry_waits_for_ground); the drop below runs then.
+			if is_instance_valid(camera): _present("carry", interactor.held.get_grip_transform("chest").origin, -camera.global_basis.z)
+			return
 		if is_instance_valid(interactor) and is_instance_valid(interactor.held): interactor._drop()
 		return
 	if is_instance_valid(interactor) and is_instance_valid(interactor.held):

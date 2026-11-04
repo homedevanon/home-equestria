@@ -394,6 +394,8 @@ func _slider(line: HBoxContainer, key: String, spec: Dictionary) -> void:
 	for end: Variant in ends + [0]:
 		var text := str(spec.zero) if float(end) == 0.0 and spec.has("zero") else str(spec.get("fmt", "%d")) % end
 		widest = maxf(widest, _text_width(text, font_size - 1))
+	# Rows whose value is words (Anon's height: "6 ft 0 in (182.9 cm)") give their widest text.
+	if spec.has("width_sample"): widest = maxf(widest, _text_width(str(spec.width_sample), font_size - 1))
 	value.custom_minimum_size.x = widest + (32.0 if typed else 4.0)
 	# The arrow keys move by `arrow_step` where a fine range has one (mouse sensitivity).
 	# Godot 4.5's Slider has no custom_step: step here, before the slider's own 1-unit move.
@@ -461,7 +463,6 @@ func _build_mods(list: VBoxContainer) -> void:
 	if loader.packs.is_empty():
 		_note(list, "No mods installed. Put .pck mods in the mods folder, then restart the game.")
 		return
-	var disabled := loader.disabled_files()
 	for pack: Dictionary in loader.packs:
 		var line := HBoxContainer.new(); line.add_theme_constant_override("separation", 6); list.add_child(line)
 		var label := Label.new(); label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -472,12 +473,12 @@ func _build_mods(list: VBoxContainer) -> void:
 		var toggle := _button(line, "", func() -> void: pass)
 		toggle.custom_minimum_size.x = font_size * 6
 		var show := func() -> void:
-			var on := file not in loader.disabled_files()
+			var on := loader.switched_on(file)
 			toggle.text = "On" if on else "Off"
 			if on != bool(pack.enabled): Settings.message = "Restart the game to apply mod changes."
 			refresh()
-		toggle.pressed.connect(func() -> void: Mods.switch(file, file in loader.disabled_files()); show.call())
-		toggle.text = "Off" if file in disabled else "On"
+		toggle.pressed.connect(func() -> void: Mods.switch(file, not loader.switched_on(file)); show.call())
+		toggle.text = "On" if loader.switched_on(file) else "Off"
 
 
 ## Which version this is, an update button while a newer one is out, and a check on demand
@@ -505,7 +506,7 @@ func _on_updates_pressed() -> void:
 
 ## Settings > Debug: buttons and a command line for the world's console (world/debug/command_console.gd).
 func _build_debug(list: VBoxContainer) -> void:
-	_note(list, "Developer tools. Also on: the ` console, debug fly (\\), noclip (Shift+\\) and the [ ] time skips. Commands act on the open world.")
+	_note(list, "Developer tools. Also on: the ` console, debug fly (\\), noclip (Shift+\\) and the [ ] time skips, and full logging (the log file records everything, not only errors). Commands act on the open world.")
 	var quick := [["Noclip on / off", "noclip"], ["Fly on / off", "fly"], ["Unstuck (stand on the ground here)", "unstuck"],
 		["Back to the Ponyville spawn", "home"], ["Add 1000 bits", "bits 1000"], ["Bits to 999999", "bits"],
 		["Morning (7:00)", "time 7"], ["Evening (19:00)", "time 19"], ["Night (23:00)", "time 23"]]
@@ -547,17 +548,28 @@ func _debug_run(text: String) -> void:
 
 
 func _mod_text(pack: Dictionary, mods: Array) -> String:
+	var loader := preload("res://world/modding/mod_loader.gd")
 	var lines := PackedStringArray()
 	for mod: Dictionary in mods:
 		if mod.file != pack.file: continue
 		var head := str(mod.name) + ("  " + str(mod.version) if not str(mod.version).is_empty() else "")
 		if not str(mod.author).is_empty(): head += "  by " + str(mod.author)
 		lines.append(head)
+		if loader.claims_game_author(str(mod.author)): lines.append("Third-party mod: its author field names the game itself.")
 		if not str(mod.description).is_empty(): lines.append(str(mod.description))
 		if not mod.errors.is_empty(): lines.append("Not loaded: " + "; ".join(PackedStringArray(mod.errors)))
-	if lines.is_empty(): lines.append(str(pack.file) + "  (replaces game files)")
-	else: lines.append(str(pack.file))
+	if lines.is_empty() and not str(pack.get("title", "")).is_empty(): lines.append(str(pack.title))
+	lines.append(str(pack.file))
 	if not str(pack.error).is_empty(): lines.append("Not loaded: " + str(pack.error))
+	# Old mods that replace game files hide newer game features (thread 43671981, mod_loader.gd is_old()).
+	var overrides: PackedStringArray = pack.get("overrides", PackedStringArray())
+	if loader.is_old(pack):
+		var made := "Made for game %s, this is %s. Old mods that replace game files can hide newer features." % [pack.game_version, loader.game_version()]
+		if bool(pack.get("held", false)): made += " Switched on: it loads the next time the game starts." if loader.switched_on(str(pack.file)) else " Kept off; switch it on to use it anyway."
+		lines.append(made)
+	if not overrides.is_empty():
+		var shown := ", ".join(overrides.slice(0, 6)) + (" and %d more" % (overrides.size() - 6) if overrides.size() > 6 else "")
+		lines.append("Replaces game files: " + shown)
 	return "\n".join(lines)
 
 
@@ -575,8 +587,11 @@ func _open_mods_folder() -> void:
 
 
 func _apply_typed(key: String, text: String) -> void:
-	var digits := text.strip_edges().trim_suffix("%").strip_edges()
-	if digits.is_valid_int(): Settings.set_value(key, digits.to_int())
+	# Leaving the field untouched keeps the exact value (the height row shows it rounded).
+	if text.strip_edges() == Settings.display(key):
+		refresh(); return
+	var typed: Variant = Settings.parse_typed(key, text)
+	if typed != null: Settings.set_value(key, typed)
 	refresh()
 
 

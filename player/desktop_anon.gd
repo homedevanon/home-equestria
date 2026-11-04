@@ -55,7 +55,50 @@ func setup(view: Camera3D, body: Node3D) -> void:
 	avatar.desktop_pose_driver = self
 	add_child(avatar)
 	avatar.setup(camera, _hands.left, _hands.right)
+	_blob_shadow()
+	_sync_height()
+	var settings := get_node_or_null("/root/Settings")
+	if settings != null and settings.has_signal("changed"):
+		settings.changed.connect(_on_setting_changed)
 	advance(0.0)
+
+func _on_setting_changed(key: String) -> void:
+	if key == "player/height_cm": _sync_height.call_deferred()
+
+## His body stands at the rig's standing eye (player/desktop_player.gd apply_height, from Anon's
+## chosen height), not at whatever the camera showed first: a live height change resizes the body,
+## hands and every reach and offset measured in avatar.model_scale. Bare fixtures keep the old
+## first-tall-eye reading.
+func _sync_height() -> void:
+	if not is_instance_valid(avatar) or not is_instance_valid(player_body) or not player_body.has_method("eye_height"): return
+	if is_instance_valid(player_body.get("form_driver") as Object): return
+	avatar.standing_eye_height = float(player_body.call("eye_height"))
+	avatar.height_calibrated = true
+
+## Desktop Anon has no walk cycle, so his cast shadow slid over the ground on still legs
+## (thread 43671981). His body casts none here; a soft contact blob under his feet goes with
+## him and hides with him (pony form, disabled). The headset body keeps its real shadow.
+func _blob_shadow() -> void:
+	for node: Node in avatar.find_children("*", "MeshInstance3D", true, false):
+		(node as MeshInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# The hidden head's shadow-only stand-in (head_hide_modifier.gd) would float alone.
+	for node: Node in avatar.find_children("*", "SkeletonModifier3D", true, false):
+		if "shadow_head" in node: node.set("shadow_head", false)
+	var gradient := Gradient.new()
+	gradient.offsets = PackedFloat32Array([0.0, 0.55, 1.0])
+	gradient.colors = PackedColorArray([Color(0, 0, 0, .5), Color(0, 0, 0, .3), Color(0, 0, 0, 0)])
+	var texture := GradientTexture2D.new()
+	texture.gradient = gradient; texture.width = 64; texture.height = 64
+	texture.fill = GradientTexture2D.FILL_RADIAL
+	texture.fill_from = Vector2(.5, .5); texture.fill_to = Vector2(1.0, .5)
+	var blob := Decal.new()
+	blob.name = "BlobShadow"
+	blob.texture_albedo = texture
+	# Feet level: from a little below the floor to his shins; steep surfaces (his legs, walls) fade out.
+	blob.size = Vector3(.62, .6, .62)
+	blob.position = Vector3(0, .05, 0)
+	blob.normal_fade = .5
+	avatar.add_child(blob)
 
 func set_enabled(value: bool) -> void:
 	var resuming := value and not _avatar_processing
@@ -203,6 +246,13 @@ func advance(delta: float) -> void:
 		var finger_world := (frame * finger).normalized()
 		if finger_world.cross(Vector3.DOWN).length_squared() > .000001:
 			hand_basis = Basis(Quaternion(finger_world, Vector3.DOWN)) * frame
+		# Animated body (player/anon_motion.gd): resting hands swing with the walk and lie on the
+		# knees when seated; actions and held items still start from wherever the hand is.
+		var animated_hand: Variant = avatar.motion_hand_marker(side) if avatar.has_method("motion_hand_marker") else null
+		if animated_hand is Transform3D and (animated_hand as Transform3D).is_finite():
+			var animated_weight: float = avatar.motion_amount()
+			palm = palm.lerp((animated_hand as Transform3D).origin, animated_weight)
+			hand_basis = hand_basis.orthonormalized().slerp((animated_hand as Transform3D).basis.orthonormalized(), animated_weight)
 		var grip := .0
 		var trigger: Variant = null
 		var supported: Node3D = _rest_hands.get(side) as Node3D
@@ -285,6 +335,36 @@ func advance(delta: float) -> void:
 		_contact_done = true
 		action_contact.emit(_kind, _target, active_side)
 	if busy and _elapsed >= _duration: cancel_action()
+
+## Movement state for the animated desktop body (player/anon_motion.gd via anon_body.gd).
+## Empty means "no clip": swimming, a knockdown and AnonPony keep their own presentation.
+func motion_state() -> Dictionary:
+	var body := player_body as CharacterBody3D
+	if body == null or not is_instance_valid(camera): return {}
+	if is_instance_valid(body.get("form_driver") as Object): return {}
+	var knockdown: Variant = body.get("knockdown")
+	if knockdown is Object and bool((knockdown as Object).get("active")): return {}
+	var swimming: Variant = body.get("swimming")
+	if swimming is Object and bool((swimming as Object).get("active")): return {}
+	var seat: Variant = body.get("seat")
+	if seat is Node3D and is_instance_valid(seat):
+		var seat_forward := -(seat as Node3D).global_basis.z
+		return {"seated": true, "seat": body.global_position, "seat_yaw": atan2(-seat_forward.x, -seat_forward.z)}
+	var wings: Variant = body.get("wing_flight")
+	var airborne: bool = body.get("flying") == true or (wings is Object and bool((wings as Object).get("active")))
+	var flat_right := Vector3(camera.global_basis.x.x, 0, camera.global_basis.x.z).normalized()
+	var forward := Vector3.UP.cross(flat_right).normalized()
+	var moving := body.get_real_velocity()
+	moving.y = 0.0
+	var angle := 0.0
+	if moving.length_squared() > .0001:
+		angle = atan2(forward.cross(moving).y, forward.dot(moving))
+	var crouch := 1.0 if body.get("crouching") == true else 0.0
+	var stand_eye: Variant = body.get("_stand_eye")
+	var eye: Variant = body.get("_eye_height")
+	if (stand_eye is float) and (eye is float) and float(stand_eye) > .1:
+		crouch = clampf((float(stand_eye) - float(eye)) / (float(stand_eye) * .45), 0.0, 1.0)
+	return {"speed": moving.length(), "move_angle": angle, "on_floor": body.is_on_floor() and not airborne, "crouch": crouch}
 
 ## Anon body calls this after placing its ordinary inferred pelvis. The head,
 ## camera, feet and tracked VR endpoint code remain owned by their usual paths.

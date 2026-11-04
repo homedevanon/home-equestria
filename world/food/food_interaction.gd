@@ -4,6 +4,10 @@ const CATALOG: Script = preload("res://world/food/food_catalog.gd")
 const STORE: Script = preload("res://world/inventory/inventory_store.gd")
 const PLAYER_MOUTH: Script = preload("res://player/player_mouth.gd")
 const SFX: Script = preload("res://world/audio/interaction_sounds.gd")
+const LEDGER: Script = preload("res://world/mechanics/ledger.gd")
+const MARKET: Script = preload("res://world/mechanics/market/market.gd")
+const TIDY: Script = preload("res://world/inventory/loose_tidy.gd")
+const SHOP_PURCHASE: Script = preload("res://world/shop/shop_purchase.gd")
 const GRASP_REACH: float = 0.16
 const EAT_SECONDS: float = 1.35
 const CUPCAKE_BITE_SECONDS: float = EAT_SECONDS / 3.0
@@ -80,19 +84,25 @@ static func take_world(inventory: Node, side: String, item: RigidBody3D, pose: T
 		return false
 	if is_instance_valid(inventory.player_body) and "controls_locked" in inventory.player_body and inventory.player_body.controls_locked:
 		return false
-	if inventory.inventory.loans.size() >= inventory.MAX_LOOSE:
-		return false
 	var id: String = CATALOG.IDENTITY.canonical(str(item.get_meta("item_id", "")))
 	if not has(id) or not clear_reach(item, pose.origin, 2.5 if side == "desktop" else GRASP_REACH):
 		return false
+	# The loose-item cap used to refuse food silently: buying did nothing (thread report 2026-11-03).
+	# An empty mug or photo left lying about makes room first (world/inventory/loose_tidy.gd).
+	if not TIDY.make_room(inventory):
+		SHOP_PURCHASE._say(inventory, TIDY.full_text(inventory))
+		return false
 	var store: RefCounted = inventory.inventory
 	var price: int = CATALOG.price_bits(id) if bool(item.get_meta("food_for_sale", false)) else 0
+	# A keeper's live [sell] offer on this portion (world/mechanics/market/market.gd) is its price now.
+	if price > 0: price = int(MARKET.live_price(inventory, _display_id(item), id, price))
 	if store.bits < price:
 		store.last_error = "insufficient funds!"
 		if inventory.has_method("_error"): inventory._error()
 		return false
 	var slot: int = STORE._place(store.slots, id, -1)
 	if slot < 0:
+		SHOP_PURCHASE._say(inventory, "No room in your briefcase.")
 		return false
 	# One persisted transaction, rather than grant() then take(): a failed write
 	# never removes the displayed portion or duplicates it into the briefcase.
@@ -104,7 +114,10 @@ static func take_world(inventory: Node, side: String, item: RigidBody3D, pose: T
 	var bites: int = clampi(int(item.get_meta("food_bites", 0)), 0, STORE.MAX_BITES)
 	if bites > 0: checked[token]["bites"] = bites
 	item.set_meta("food_claiming", true)
-	if not store._commit(store.slots, checked, store.bits - price):
+	# A sold portion pays its shop's keeper in the same commit (world/mechanics/ledger.gd); free
+	# portions and food without a display credit nobody, as before.
+	var display_id: String = _display_id(item) if price > 0 else ""
+	if not LEDGER.commit_purchase(inventory, store.slots, checked, price, display_id, id):
 		item.remove_meta("food_claiming")
 		return false
 	item.remove_from_group("world_food")
@@ -133,6 +146,12 @@ static func take_world(inventory: Node, side: String, item: RigidBody3D, pose: T
 	var visual: Node = item.get_meta("food_visual")
 	visual.acquired.emit()
 	return true
+
+## The food display (world/food/food_display.gd) a stocked portion sits on: its spawn parent.
+static func _display_id(item: Node) -> String:
+	var parent: Node = item.get_parent()
+	var found: Variant = parent.get("display_id") if is_instance_valid(parent) else null
+	return str(found) if found is String else ""
 
 ## A portion restored from the case, a drop or a save shows its completed bites again.
 static func restore_bites(item: RigidBody3D, bites: int) -> void:

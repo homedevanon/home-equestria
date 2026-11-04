@@ -195,6 +195,7 @@ func _ready() -> void:
 	var inset_key:=(owner.scene_file_path.get_file().get_basename() if owner!=null else "")+":"+str(name)
 	if ARCH_INSETS.has(inset_key) and not has_meta("arch_inset"):
 		position+=transform.basis*Vector3(0,0,-float(ARCH_INSETS[inset_key]));set_meta("arch_inset",true)
+	if ARCH_INSETS.has(inset_key):_line_inset_jamb(inset_key)
 	# Offline-cleaned panels preserve the artwork without overlapping triangles.
 	if _panel_replacements.is_empty():
 		_panel_replacements=JSON.parse_string(FileAccess.get_file_as_string("res://world/buildings/door_panels/replacements.json"))
@@ -235,6 +236,27 @@ func _process(delta:float) -> void:
 	if pulls!=null:OUTLINE.set_amount(pulls,_glow_level)
 	if _glow_level==want:set_process(false)
 func handle_world() -> Vector3:return to_global(handle)
+
+## Hung on the room side, the leaf sits up to ~50 cm behind the back of its outer reveal, which was
+## fitted to the old outside hinge: an open ring round the shut door showed the room (dev
+## 2026-11-03: "the door frame around them are totally empty"). A jamb lining made in Blender
+## (door_frames/<house>_<door>.res, house units, threshold left open) runs from the reveal's back to
+## the leaf face, painted like the reveal. Visual only: the reveal and walls keep the collision.
+func _line_inset_jamb(key:String) -> void:
+	var house:=get_parent() as Node3D
+	var reveal_name:="DoorReveal" if name==&"FrontDoor" else str(name)+"Reveal"
+	var path:="res://world/buildings/door_frames/"+key.replace(":","_")+".res"
+	if house==null or house.get_node_or_null(reveal_name+"Inset")!=null or not ResourceLoader.exists(path):return
+	var jamb:=MeshInstance3D.new();jamb.name=reveal_name+"Inset";jamb.mesh=load(path)
+	# Read the reveal now: window_batcher.gd merges it (and drops its mesh) on a later deferred call.
+	var reveal:=house.get_node_or_null(reveal_name) as MeshInstance3D
+	if reveal!=null and reveal.mesh!=null:
+		jamb.material_override=reveal.get_active_material(0)
+		jamb.layers=reveal.layers;jamb.cast_shadow=reveal.cast_shadow
+		jamb.visibility_range_end=reveal.visibility_range_end;jamb.visibility_range_end_margin=reveal.visibility_range_end_margin
+		jamb.visibility_range_fade_mode=reveal.visibility_range_fade_mode
+	# The house is still adding its children; a DoorReveal* sibling joins the batched window draw.
+	house.add_child.call_deferred(jamb)
 
 ## Real handles and their colliders belong to the moving leaf: desktop's existing
 ## body ray can hit either handle and still calls this door's toggle_door().

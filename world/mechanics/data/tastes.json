@@ -1,0 +1,13 @@
+{
+	"version": 1,
+	"default": {"love": [], "like": ["sweet", "plant", "drink"], "dislike": [], "signature": []},
+	"twilight_sparkle": {"love": ["book"], "like": ["stationery", "tea", "art"], "dislike": [], "signature": []},
+	"rarity": {"love": ["fashion", "fabric", "gem"], "like": ["art", "home_good", "tea"], "dislike": ["fish"], "signature": ["wear:scarf:5"]},
+	"pinkie_pie": {"love": ["sweet", "party"], "like": ["drink", "photo"], "dislike": [], "signature": ["food:cupcake"]},
+	"applejack": {"love": ["apple", "cider"], "like": ["apple_food", "farm_food", "plantable"], "dislike": [], "signature": ["apple", "food:apple-fritter"]},
+	"fluttershy": {"love": ["animal_feed", "tea", "plant"], "like": ["fabric", "cozy"], "dislike": ["fish"], "signature": ["carrot"]},
+	"rainbow_dash": {"love": ["sporty"], "like": ["cider", "drink", "meal"], "dislike": [], "signature": []},
+	"spike": {"love": ["gem", "sweet"], "like": ["book"], "dislike": [], "signature": []},
+	"big_mcintosh": {"love": ["apple"], "like": ["farm_food", "cider"], "dislike": [], "signature": ["apple"]},
+	"apple_bloom": {"love": ["sweet"], "like": ["apple_food"], "dislike": [], "signature": []}
+}

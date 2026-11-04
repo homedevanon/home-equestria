@@ -20,6 +20,11 @@ var approach_goal: Vector3 = Vector3.INF
 var _basket_close: bool = false
 const GATHER_POSE := preload("res://world/minigames/apple_bucking/gather_mouth_pose.gd")
 const MOUTH_CONTACT: float = .18
+const LEGACY := preload("res://world/mechanics/legacy.gd")
+const QUEUE := preload("res://world/mechanics/jobs/customer_queue.gd")
+## The jobs core's shared lease bookkeeping (world/mechanics/jobs/customer_queue.gd); `-- --old-jobs`
+## keeps the copied code below.
+var _leases: RefCounted = QUEUE.new()
 ## How the last carried apple left her mouth: "deposit", "deposit_drop" or "released:<phase>".
 var last_release := ""
 
@@ -254,15 +259,27 @@ func _claim() -> bool:
 	if not (previous == "life:applejack" or (previous.is_empty() and nav.wander_enabled)): return false
 	var first: RigidBody3D = activity.next_apple(actor.global_position)
 	if first == null: return false
-	lease = {"owner":"leisure:apple_bucking:%d" % get_instance_id(), "previous":previous,
-		"wander":nav.wander_enabled, "speed":nav.command_speed_limit, "pace":nav.command_pace_target,
-		"arrival":nav.arrival_distance}
-	_old_gaze = nav.face_point
-	nav.stay()
-	nav.command_owner = lease.owner
-	nav.command_speed_limit = INF
-	nav.command_pace_target = -1.0
-	actor.set_meta("apple_bucking", lease.owner)
+	if LEGACY.old_jobs():
+		lease = {"owner":"leisure:apple_bucking:%d" % get_instance_id(), "previous":previous,
+			"wander":nav.wander_enabled, "speed":nav.command_speed_limit, "pace":nav.command_pace_target,
+			"arrival":nav.arrival_distance}
+		_old_gaze = nav.face_point
+		nav.stay()
+		nav.command_owner = lease.owner
+		nav.command_speed_limit = INF
+		nav.command_pace_target = -1.0
+		actor.set_meta("apple_bucking", lease.owner)
+	else:
+		# The shared lease saves and later restores the four navigation fields plus her arrival
+		# distance and gaze, and sets the meta. A refused owner leaves her unowned (_owned false).
+		var owner := "leisure:apple_bucking:%d" % get_instance_id()
+		_old_gaze = nav.face_point
+		_leases.life = activity.host.get("life") as Node
+		_leases.claim("applejack", actor, {"apple_bucking": owner}, {"owner": owner, "fields": ["arrival_distance", "face_point"]})
+		var saved: Dictionary = _leases.previous("applejack")
+		lease = {"owner": owner, "previous": previous, "wander": saved.get("wander", nav.wander_enabled),
+			"speed": saved.get("speed", nav.command_speed_limit), "pace": saved.get("pace", nav.command_pace_target),
+			"arrival": saved.get("arrival_distance", nav.arrival_distance)}
 	var existing: RefCounted = actor.get("activity_mouth_pose") as RefCounted
 	if existing != null and existing != _mouth_pose:
 		release(); return false
@@ -312,7 +329,11 @@ func release() -> void:
 	if _mouth_pose != null: _mouth_pose.release(str(lease.get("owner", "")))
 	if is_instance_valid(actor) and actor.get("action_gaze_target") == _gaze_target and actor.has_method("set_action_gaze"):
 		actor.set_action_gaze(null)
-	if _owned():
+	if not LEGACY.old_jobs():
+		# Restores (while still hers) the fields saved at claim, reissues her goal, removes the meta.
+		if is_instance_valid(activity) and is_instance_valid(activity.host): _leases.life = activity.host.get("life") as Node
+		_leases.release("applejack", "released", -1.0, _owned())
+	elif _owned():
 		nav.stay()
 		nav.command_owner = lease.previous
 		nav.wander_enabled = lease.wander

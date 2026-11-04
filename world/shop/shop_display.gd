@@ -148,6 +148,41 @@ func restock() -> void:
 	populate()
 	stock_changed.emit(snapshot())
 
+# Uniform stock API for the market (world/mechanics/market/market.gd, P7): ponies buy and give
+# from stalls, keepers refill only the slots they pay for, and [sell] offers show on the card.
+
+## Untaken goods on the table: [{key, id, node}].
+func stock_rows() -> Array[Dictionary]:
+	var rows: Array[Dictionary] = []
+	for key: String in _items:
+		if is_instance_valid(_items[key]) and not _taken.has(key): rows.append({"key": key, "id": str((_items[key] as Node).get_meta("item_id", "")), "node": _items[key]})
+	return rows
+
+## A pony took this slot (bought it or gave it away): the good leaves the table.
+func take(key: String) -> bool:
+	if key.is_empty() or _taken.has(key): return false
+	var item: Variant = _items.get(key)
+	if is_instance_valid(item): (item as Node).queue_free()
+	sold(key)
+	return true
+
+## The 06:00 refill of only these slots (the keeper paid for them).
+func restock_keys(keys: Array) -> void:
+	var changed := false
+	for key: Variant in keys:
+		if _taken.erase(str(key)): changed = true
+	if not changed: return
+	populate()
+	stock_changed.emit(snapshot())
+
+## A [sell] price on one card (`price` < 0 puts the list price back).
+func refresh_card(key: String, price: int) -> void:
+	var card: Node3D = _cards.get(key)
+	var label: Label3D = card.get_node_or_null("PriceLabel") as Label3D if is_instance_valid(card) else null
+	if label == null: return
+	var id := key.substr(key.find(":") + 1)
+	label.text = card_text(id, false) if price < 0 else "%s\n%s" % [str(ITEMS.definition(id).name), CURRENCY.amount(price)]
+
 func snapshot() -> Dictionary:
 	return {"display_id": display_id, "taken": _taken.keys()}
 

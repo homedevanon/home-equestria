@@ -210,6 +210,9 @@ struct FollowEvent {
 	bool alternative = false;
 	double distance = 0.0;
 	std::vector<BlockedDisc> blocked;
+	// Replan/alternate held up by ponies: discs round the ones standing on her way ahead. Search
+	// discs for the next route only (never steering constraints: they would outlive the pony).
+	std::vector<BlockedDisc> peers;
 };
 
 struct CorridorRequest {
@@ -275,6 +278,19 @@ struct FollowState {
 	// Seconds the walk grid has had no floor where she stands.
 	double unlocated = 0.0;
 	double intent_progress = 0.0;
+	// Committed pass round a pony (navigation_steering.h SteeringInput::pass_*), the side kept per
+	// pony for a while, the last in-place turn's direction and age, and the seconds since a pony
+	// last held or refused her.
+	uint64_t pass_id = 0;
+	int32_t pass_side = 0;
+	double pass_time = 0.0;
+	double pass_distance = 0.0;
+	uint64_t side_memory_id = 0;
+	int32_t side_memory = 0;
+	double side_memory_age = 1e9;
+	int32_t turn_sign = 0;
+	double turn_sign_age = 1e9;
+	double neighbour_age = 1e9;
 	SteeringOutput last;
 	CorridorProjection last_projection;
 	uint64_t steps = 0;
@@ -427,6 +443,9 @@ private:
 		double speed = 0.0;
 		Actor *actor = nullptr;
 		ActorHandle handle;
+		// Who this row is across ticks (a neighbour's id): (slot << 32) | generation for a handle,
+		// an observer row's second key when it gives one, else 0.
+		uint64_t identity = 0;
 		FollowGround *ground = nullptr; // pre-resolved for a parallel step
 	};
 	struct FollowBatch {

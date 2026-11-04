@@ -26,6 +26,7 @@ static func hold_local(id:String)->Transform3D:
 	match id:
 		"carrot":return Transform3D(Basis.IDENTITY,Vector3(0,.025,-.025))
 		"notebook":return Transform3D(Basis.IDENTITY,Vector3(0,-.01,-.06))
+		"photo-journal":return Transform3D(Basis.IDENTITY,Vector3(0,-.01,-.06))
 		"river-fish":return Transform3D(Basis(Vector3.UP,PI*.5),Vector3(0,-.02,-.09))
 	if CATALOG.is_book(id):return Transform3D(Basis.IDENTITY,Vector3(0,-.014,-.12))
 	# The folded easel: one hand at the strap, mid-stick (world/painting/). A finished painting

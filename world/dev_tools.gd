@@ -5,7 +5,7 @@ extends RefCounted
 ## launches and tester builds keep everything. The plain FPS counter and quick saves stay.
 
 ## Launch arguments a player may pass (launchers, VR restart, seated play).
-const PLAYER_ARGS := ["--require-vr", "--seated", "--room-scale"]
+const PLAYER_ARGS := ["--require-vr", "--seated", "--room-scale", "--verbose-log"]
 
 
 static func enabled() -> bool:

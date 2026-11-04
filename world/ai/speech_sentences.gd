@@ -65,9 +65,16 @@ static func expand(beats:Array) -> Array:
 		var found:=tag.search(beat.speech)
 		if found:emotion=found.get_string(1)+" "
 		var parts:=audio_parts(beat.speech)
+		# Per-sentence faces from the raw tagged line (pony_dialogue_tags.gd sentence_faces).
+		var faces:Array=beat.get("face_map",[])
+		var cursor:=[0]
+		var face:=str(beat.get("face",""))
 		for sentence_index in parts.size():
 			var sentence:String=parts[sentence_index]
-			var next:=beat.duplicate(true);next.speech=sentence
+			var next:=beat.duplicate(true);next.speech=sentence;next.erase("face_map")
+			if not faces.is_empty():
+				face=preload("res://world/ai/pony_dialogue_tags.gd").face_for(faces,sentence,cursor,face)
+				next.face=face
 			if not first:next.actions=[];next.speech=emotion+sentence
 			if sentence_index<parts.size()-1:next.erase("impression")
 			next["continuation"]=not first

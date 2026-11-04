@@ -2,43 +2,55 @@ extends RefCounted
 ## Paying ponies (dev 2026-10-28: "pay ponies needs to be a UI thing that causes a prompt letting
 ## the AI know it has the money now and every pony needs to have a wallet with how many bits they
 ## have. Models interpreting shit incorrectly can't affect gameplay like that"). Only the Pay panel
-## (world/ui/pay_panel.gd) moves bits; the pony's model is told afterwards and never moves any
-## itself. Every pony's purse is saved with the world (world_context.state.pony_wallets) and her
+## (world/ui/pay_panel.gd) moves Anon's bits; the pony's model is told afterwards. Her model may
+## pay Anon from her own purse with [pay_player: N] (pay_player below). Every pony's purse is saved with the world (world_context.state.pony_wallets) and her
 ## prompt shows what she holds (situation_line).
-const SFX := preload("res://world/audio/interaction_sounds.gd")
-const STATE_KEY := "pony_wallets"
-const MAX_PURSE := 999999
+const LEDGER := preload("res://world/mechanics/ledger.gd")
+const STATE_KEY := LEDGER.PURSES_KEY
+const MAX_PURSE := LEDGER.MAX_PURSE
 
 ## What a pony carries before Anon ever pays her: 20-200 bits, the same in every world.
 static func starting(id: String) -> int:
-	return 20 + absi(hash("wallet:" + id)) % 181
+	return LEDGER.starting(id)
 
 static func balance(context: Node, id: String) -> int:
-	if not is_instance_valid(context) or id.is_empty(): return 0
-	var wallets: Variant = context.state.get(STATE_KEY)
-	if not wallets is Dictionary: return starting(id)
-	var held: Variant = (wallets as Dictionary).get(id)
-	if not (held is int or held is float) or not is_finite(float(held)): return starting(id)
-	return clampi(int(held), 0, MAX_PURSE)
+	return LEDGER.purse(context, id)
 
 ## Moves `amount` bits from Anon's purse to pony `id`. Returns "" when paid, else why not.
+## The move itself is world/mechanics/ledger.gd transfer() (one path for every payment, which also
+## records the payment as a "paid" fact and her memory).
 static func pay(game: Node, pony: Node3D, id: String, amount: int) -> String:
 	if not is_instance_valid(game) or id.is_empty(): return "Nobody to pay."
 	if amount <= 0: return "Nothing to pay."
 	var context: Node = game.get("world_context")
-	var store: RefCounted = game.inventory.inventory if is_instance_valid(game.get("inventory")) else null
-	if not is_instance_valid(context) or bool(context.get("_read_only")) or store == null: return "Bits cannot change hooves right now."
-	if int(store.bits) < amount: return "You only have %d bits." % int(store.bits)
+	if not is_instance_valid(context) or bool(context.get("_read_only")): return "Bits cannot change hooves right now."
 	var before := balance(context, id)
-	if before + amount > MAX_PURSE: return "Her purse is full."
-	if not store.debit_bits(amount): return str(store.last_error) if not str(store.last_error).is_empty() else "Could not pay."
-	if not context.state.get(STATE_KEY) is Dictionary: context.state[STATE_KEY] = {}
-	context.state[STATE_KEY][id] = before + amount
-	context._changed()
-	if is_instance_valid(pony): SFX.play_purchase(pony)
-	context.record("payment", "Anon paid %s %d bits." % [id.replace("_", " ").capitalize(), amount], [id, "player"], [id, "player"])
-	print("[bits] Anon paid %s %d bits (her purse %d -> %d)" % [id, amount, before, before + amount])
+	var name := id.replace("_", " ").capitalize()
+	var error: String = str(LEDGER.transfer(game, "player", id, amount, "pay_panel",
+		{"pony": pony, "text": "Anon paid %s %d bits." % [name, amount], "witnesses": [id, "player"]}))
+	if not error.is_empty(): return error
+	print("[bits] Anon paid %s %d bits (her purse %d -> %d)" % [id, amount, before, balance(context, id)])
 	return ""
+
+## A pony pays Anon from her own purse ([pay_player: N], dev 2026-11-01: "add the ability for the
+## ai to make ponies pay the player"). Her model chooses to pay; the game still bounds it: only bits
+## she actually holds move, never more, and only into a writable world. Returns "" when paid.
+static func pay_player(game: Node, pony: Node3D, id: String, amount: int) -> String:
+	if not is_instance_valid(game) or id.is_empty(): return "Nobody to pay you."
+	if amount <= 0: return "Name how many bits to give him."
+	var context: Node = game.get("world_context")
+	if not is_instance_valid(context) or bool(context.get("_read_only")): return "Bits cannot change hooves right now."
+	var before := balance(context, id)
+	var name := id.replace("_", " ").capitalize()
+	var error: String = str(LEDGER.transfer(game, id, "player", amount, "pay_player",
+		{"pony": pony, "say": "%s gave you %d bits." % [name, amount], "text": "%s paid Anon %d bits." % [name, amount], "witnesses": [id, "player"]}))
+	if not error.is_empty(): return error
+	print("[bits] %s paid Anon %d bits (her purse %d -> %d)" % [id, amount, before, balance(context, id)])
+	return ""
+
+## A short note on the wrist/HUD message line (same line as shop messages).
+static func _say(inventory: Node, text: String) -> void:
+	LEDGER.say(inventory, text)
 
 ## Her purse in her prompt's situation block.
 static func situation_line(context: Node, id: String) -> String:

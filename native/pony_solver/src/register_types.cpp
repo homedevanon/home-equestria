@@ -7,6 +7,7 @@
 #include "pony_column_sampler.h"
 #include "pony_gait_sampler.h"
 #include "pony_navigation_native.h"
+#include "pony_ponese_voice.h"
 #include "pony_wander_job.h"
 #include "pony_solver_native.h"
 #include "texture_codec.h"
@@ -31,6 +32,7 @@ void initialize_pony_solver(ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(PonyAirNavigation);
 	GDREGISTER_CLASS(PonyTextureCodec);
 	GDREGISTER_CLASS(PonyFoliageFill); // dev 2026-10-20 multithreading: foliage cell fill
+	GDREGISTER_CLASS(PonyPoneseVoice); // 2026-11-02 ponese v3: WORLD vocoder syllables
 	GDREGISTER_CLASS(PonyTrailWeights); // 2026-10-24 script profile: walk-grid trail weights per chunk
 }
 

@@ -6,7 +6,10 @@ const LIBRARY := preload("res://world/books/book_library.gd")
 const FOOD := preload("res://world/food/food_catalog.gd")
 const SHOP := preload("res://world/shop/shop_items.gd")
 const RESOURCE_IMAGE := preload("res://world/resource_image.gd")
+const ICON_CAMERA := preload("res://world/inventory/item_icon_camera.gd")
 const IDENTITY := preload("res://world/inventory/item_identity.gd")
+## Tags and value (docs/MECHANICS_ARCHITECTURE_2026_11_01.md P0); forwarded below.
+const TAGS := preload("res://world/inventory/item_tags.gd")
 ## Finished paintings are "art:<id>" (world/painting/painting_registry.gd); their scene and icon
 ## scripts load only where a painting exists.
 const PAINTINGS := preload("res://world/painting/painting_registry.gd")
@@ -18,6 +21,7 @@ const BOOK_STACK := 16
 const ITEMS := {
 	"spray-bottle": {"name": "Water spray bottle", "description": "Aim and squeeze trigger / click to spray plain water.", "stack": 1},
 	"notebook": {"name": "Notebook", "description": "A small notebook for a day in Equestria.", "stack": 1},
+	"photo-journal": {"name": "Photo journal", "description": "Every photo you take lands here. Open it to look through them; hold the click or trigger on one to print it for 1 bit.", "stack": 1},
 	"river-fish": {"name": "River fish", "description": "Caught from Ponyville's river.", "stack": 16},
 	"hoof-file": {"name": "Hoof file", "description": "The day spa's hoof file. Rub it across a raised front hoof. It stays at the spa.", "stack": 1},
 }
@@ -79,7 +83,7 @@ static func definition(id: String) -> Dictionary:
 	if is_letter(id): return _letter_definition(id)
 	if is_art(id):
 		if PAINTINGS.is_photo(PAINTINGS.art_id(id)):
-			return {"name": "Photo", "description": "A photo you took. Hang it, set it down, keep it, or show it to a pony.", "stack": 1, "art": true}
+			return {"name": "Photo", "description": "A photo you took. Click to look at it. Hang it at home, give it to a pony or show it to one.", "stack": 1, "art": true}
 		var label := str(PAINTINGS.art(PAINTINGS.art_id(id)).get("label", ""))
 		return {"name": "Painting: " + label if not label.is_empty() else "Painting", "description": "Your own painting from the easel. Hang it on a wall at home, set it down anywhere, or keep it.", "stack": 1, "art": true}
 	if is_book(id):
@@ -112,12 +116,45 @@ static func icon(id: String) -> Texture2D:
 		if picture != null and not picture.is_empty():
 			_icons[id] = ImageTexture.create_from_image(picture)
 			return _icons[id]
+	# No baked picture: the game photographs the item the first time it is shown; the views repaint
+	# when the picture arrives, and the drawn badge below stands in until then.
+	var photo: Texture2D = ICON_CAMERA.shot(id)
+	if photo != null: return photo
+	if ICON_CAMERA.wanted(id): ICON_CAMERA.request(id, scene(id))
 	if FOOD.has(id): return FOOD.icon(id)
 	if SHOP.has(id): return SHOP.icon(id)
 	if not ITEMS.has(id): return null
 	if _icons.has(id): return _icons[id]
-	var image: Image = RESOURCE_IMAGE.read("res://world/inventory/icons/%s.svg" % id)
+	# An item with no drawn icon (the journal) waits for its photograph.
+	var drawn := "res://world/inventory/icons/%s.svg" % id
+	if not ResourceLoader.exists(drawn) and not FileAccess.file_exists(drawn): return null
+	var image: Image = RESOURCE_IMAGE.read(drawn)
 	if image == null: return null
 	var texture: ImageTexture = ImageTexture.create_from_image(image)
 	_icons[id] = texture
 	return texture
+
+## Item tags and value (world/inventory/item_tags.gd, P0 of the unified mechanics). Every system
+## asks by tag ("giftable", "ingredient", "apple"), never by a hard-coded id list.
+static func tags(id: String) -> PackedStringArray:
+	return _tags().tags(id)
+static func has_tag(id: String, tag: String) -> bool:
+	return _tags().has_tag(id, tag)
+## Bits, >= 0 (shops, gifts, asks and wages in kind use this one number).
+static func value(id: String) -> int:
+	return _tags().value(id)
+## Enumerable ids with the tag (books, paintings and letters are dynamic and never listed).
+static func with_tag(tag: String) -> Array[String]:
+	return _tags().with_tag(tag)
+## "" or the id in `ids` that `text` names (exact id, name, part of a name, tag word, plural).
+static func match_name(text: String, ids: Array) -> String:
+	return _tags().match_name(text, ids)
+## Station/job ids (world/mechanics/data/*.json) that make or use the item.
+static func made_by(id: String) -> PackedStringArray:
+	return _tags().made_by(id)
+static func used_by(id: String) -> PackedStringArray:
+	return _tags().used_by(id)
+## The tag rules describe this catalogue's ids; they never reference it themselves.
+static func _tags() -> Script:
+	if not TAGS.bound(): TAGS.bind_catalog(load("res://world/inventory/item_catalog.gd") as Script)
+	return TAGS

@@ -95,8 +95,11 @@ group_uniforms;
 
 // HOME-EQUESTRIA: pony coat slap wobble (off unless pony_flank_touch.gd drives it).
 #include "res://world/characters/hybrid_mare/flank_jiggle.gdshaderinc"
+#include "res://world/characters/openpony/lid_color.gdshaderinc"
 
 void vertex() {
+	eyelid_region = COLOR.rg;
+	eyelid_position = (eyelid_rest_from_pose * vec4(VERTEX, 1.0)).xyz;
 	VERTEX += flank_jiggle(VERTEX);
 	UV = UV * uv_scale.xy + uv_offset.xy;
 	#if !USE_HEIGHT_MAP
@@ -163,6 +166,8 @@ void fragment() {
 
 	vec3 fill = color.rgb * coat_texture_rgb(base_uv);
 	vec3 shade = shadow_color.rgb * coat_texture_rgb(base_uv);
+	fill = freckled(colored_lid(fill, vec3(1.0)), vec3(1.0), base_uv);
+	shade = freckled(colored_lid(shade, shadow_color.rgb / max(color.rgb, vec3(0.001))), shadow_color.rgb / max(color.rgb, vec3(0.001)), base_uv);
 	ALBEDO = mix(fill, shade, shadow_color.a);
 	// HOME-EQUESTRIA: no environment specular. The shader does its own banded
 	// specular in light(); Godot's default SPECULAR 0.5 on top added a flat sky
@@ -182,7 +187,7 @@ void light() {
 			BACKLIGHT
 	);
 #else
-	vec3 lit_fill = mix(ALBEDO, color.rgb * coat_texture_rgb(base_uv), shadow_color.a);
+	vec3 lit_fill = mix(ALBEDO, freckled(colored_lid(color.rgb * coat_texture_rgb(base_uv), vec3(1.0)), vec3(1.0), base_uv), shadow_color.a);
 	DIFFUSE_LIGHT += diffuse_light(
 			lit_fill,
 			LIGHT_COLOR,

@@ -310,10 +310,24 @@ func _tick(gid: String) -> void:
 			g.until=_clock+rng.randf_range(settled_span.x,settled_span.y)
 	_publish(gid)
 
-## Town travel uses a relaxed trot; walking remains for night and final approaches.
+## Walking together: mostly the everyday stroll (the baked trot clip, dev's "walk"), and in
+## company a pony dawdles far more often than alone, easing down to the slow trot (trot_slow) for
+## stretches and back up again (dev 2026-10-31: slow "if they're with somepony ... vary their
+## speeds NATURALLY"). A smooth per-leader mood drifts over a minute or two, never a step; lazy
+## hours dawdle more. The four-beat walk remains for final approaches.
+const OUTING_STROLL := Vector2(1.2, 1.8)
+const OUTING_DAWDLE := 0.85
 func _outing_speed(id: String) -> float:
-	var walk: Vector2 = _band(id, "walk_speed")
-	return lerpf(walk.y, _band(id, "trot_speed").x, daytime_activity())
+	var body: float = _band(id, "trot_speed").x / 2.2
+	var activity: float = daytime_activity()
+	var stroll: Vector2 = DAILY.walk_band(OUTING_STROLL * body, activity)
+	var t := _clock * 0.045 + float(absi(hash(id)) % 997)
+	var mood := sin(t) * 0.6 + sin(t * 2.3 + 1.7) * 0.4
+	# Below the threshold they amble at the slow trot: about half the time in a lazy hour, a
+	# third in a busy one.
+	var amble := 1.0 - smoothstep(-0.25, 0.15, mood - lerpf(0.05, -0.3, activity))
+	var cruise := lerpf(stroll.x, stroll.y, 0.5 + 0.5 * sin(t * 3.7 + 0.4))
+	return lerpf(cruise, OUTING_DAWDLE * body * (1.0 + 0.1 * sin(t * 5.1)), amble)
 
 func _band(id: String, name: String) -> Vector2:
 	var actor: Node = actors.get(id)

@@ -263,7 +263,9 @@ func take(side: String, item: Node3D) -> bool:
 	if not working() or item in held.values(): return false
 	var role: String = item.get_meta("kitchen_role","")
 	if role == "source":
-		if loose.size() >= MAX_LOOSE: return false
+		# Stock never locks (thread 2026-11-01: "any food that i need to use will not be able to be
+		# built" until the shift restarted): at the cap the oldest stray piece is cleared away.
+		if loose.size() >= MAX_LOOSE and not _clear_oldest_stray(): return false
 		var stock_pose: Transform3D = item.global_transform
 		item = _piece(str(item.get_meta("ingredient"))); item.global_transform = stock_pose; loose.append(item)
 	elif role == "grill":
@@ -276,7 +278,8 @@ func take(side: String, item: Node3D) -> bool:
 			item = _piece("raw"); item.position = GRILL; _tint(item,Color("39281b")); item.set_meta("burnt",true); loose.append(item)
 		else: return false
 	elif role != "burger" and item not in loose: return false
-	if role == "burger" and not restaurant.shift.snapshot().tray.has("lid"): return false
+	# An unfinished burger may be carried too, to the scraps bin: before, a half-built stack whose
+	# customer had gone could not be lifted, so nothing new could be built on the tray (board #307).
 	held[side] = item; item.freeze = true; item.collision_layer = 0
 	SFX.play_event(self, "prop_pickup", {"intensity": .5, "material": "soft"}, item.global_position)
 	refresh(); return true
@@ -309,10 +312,23 @@ func release(side: String, intentional: bool = true) -> bool:
 		var event := "prop_harvest_deposit" if _in_bin(at) else "prop_grill" if kind == "raw" and _over(at,GRILL,Vector2(.65,.34),.32) else "prop_serve"
 		SFX.play_event(self, event, {"intensity": .65}, item.global_position)
 		_remove(item)
+	elif role == "burger" and not intentional:
+		# The stack is the tray's burger: dropped by a lost hand, Q or the chat box taking the mouse,
+		# it goes back on the build board instead of falling somewhere out of reach.
+		item.transform = Transform3D(Basis.IDENTITY, PREP); item.collision_layer = 2
 	else:
 		item.freeze = false; item.collision_layer = 2; item.linear_velocity = Vector3.ZERO; item.angular_velocity = Vector3.ZERO
 	refresh()
 	return accepted
+
+## Frees the oldest loose piece nopony needs: not in a hand and not the lifted golden patty (the
+## grill's "held" state lives in it). False when there is none.
+func _clear_oldest_stray() -> bool:
+	for item: RigidBody3D in loose:
+		if not is_instance_valid(item) or item in held.values() or item.get_meta("cooked", false): continue
+		_remove(item)
+		return true
+	return false
 
 func reset_food() -> void:
 	_sync_grill_audio(false)
@@ -449,10 +465,8 @@ func pickup_text(item: Node3D) -> String:
 			"finish": return "Ring the bell: finish and get paid"
 		return "Ring the bell"
 	if not working(): return ""
-	if role == "source" and loose.size() >= MAX_LOOSE: return ""
 	if role == "grill" and restaurant.shift.snapshot().grill_state not in ["ready","burnt"]: return ""
-	if role == "burger" and not restaurant.shift.snapshot().tray.has("lid"): return ""
-	if role == "burger": return "Pick up finished hayburger"
+	if role == "burger": return "Pick up finished hayburger" if restaurant.shift.snapshot().tray.has("lid") else "Pick up unfinished burger"
 	if role == "grill" and restaurant.shift.snapshot().grill_state == "burnt": return "Remove burnt patty"
 	return "Pick up " + str(INGREDIENT_NAMES.get(item.get_meta("ingredient",""),"hay patty"))
 
@@ -463,7 +477,7 @@ func release_hint(side: String, world_point: Vector3 = Vector3.INF) -> Dictionar
 	var kind: String = item.get_meta("ingredient","")
 	if _in_bin(at): return {"target":stations.bin,"text":"Discard in scraps"}
 	if item.get_meta("kitchen_role","") == "burger":
-		if _over(at,PASS,Vector2(.34,.29),.38): return {"target":stations.pass,"text":"Serve hayburger"}
+		if _over(at,PASS,Vector2(.34,.29),.38) and restaurant.shift.snapshot().tray.has("lid"): return {"target":stations.pass,"text":"Serve hayburger"}
 	elif kind == "raw" and _over(at,GRILL,Vector2(.65,.34),.32): return {"target":stations.grill,"text":"Place patty on grill"}
 	elif _over(at,PREP,Vector2(.30,.26),.45): return {"target":stations.prep,"text":"Add to burger"}
 	return {"target":item,"text":"Place / drop"}

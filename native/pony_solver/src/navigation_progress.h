@@ -1,7 +1,7 @@
 // Native pony navigation, progress and stall classification (docs/NAVIGATION_PHASE_2_2026_10_02.md).
 // Pure C++17, no Godot types.
 //
-// Each follower keeps a fixed ring of 10 Hz samples over five seconds (time, route, corridor
+// Each follower keeps a fixed ring of 10 Hz samples over ten seconds (time, route, corridor
 // progress, intent progress, position, yaw, command and actual speed, permitted speed, contact
 // normal, class and reason). The class is decided before any timer advances:
 //   FOLLOWING      expects corridor progress in proportion to the permitted speed;
@@ -12,7 +12,8 @@
 // Held, asleep and paused actors are not stepped at all, so nothing advances for them.
 //
 // A stall is genuine blocked progress while following, circling (a full heading sweep with no
-// gain toward the goal) or oscillation (corridor projection reversing back and forth). Recovery
+// gain toward the goal), oscillation (corridor projection reversing back and forth) or heading
+// oscillation (big turns left, right, left with next to no route progress). Recovery
 // escalates deterministically: local repair, obstacle update + replan, alternate route, then one
 // terminal failure. Each level has its own deadline; a total stalled-time budget caps the whole
 // intent so different failures cannot repeat forever. A replacement route does not erase the
@@ -90,11 +91,18 @@ struct ProgressTuning {
 	double oscillation_window = 5.0;
 	double oscillation_amplitude = 0.15;
 	int oscillation_reversals = 3;
+	// Heading oscillation: this many alternating turns of at least `heading_lobe` radians inside
+	// `heading_window` seconds, with less than `heading_progress` metres of intent progress.
+	double heading_window = 8.0;
+	double heading_lobe = 60.0 * 3.14159265358979323846 / 180.0;
+	int heading_lobes = 3;
+	double heading_progress = 0.4;
 };
 
 class ProgressMonitor {
 public:
-	static constexpr int CAPACITY = 50;
+	// Ten seconds at 10 Hz: the circling and heading windows (8 s) fit inside it.
+	static constexpr int CAPACITY = 100;
 
 	void set_tuning(const ProgressTuning &value) { tuning = value; }
 	const ProgressTuning &get_tuning() const { return tuning; }
@@ -136,6 +144,7 @@ public:
 	// Analysers over the ring (also used by the tests on synthetic traces).
 	bool circling() const;
 	bool oscillating() const;
+	bool heading_oscillating() const;
 
 private:
 	void push(const ProgressSample &sample);

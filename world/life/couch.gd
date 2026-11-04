@@ -161,7 +161,7 @@ func eligible(actor: Node3D) -> bool:
 	if actor.get("hoof_hold") != null and actor.hoof_hold.active(): return false
 	if actor.get("carry") != null and actor.carry.blend > 0.0: return false
 	if not str(actor.get("_interaction")).is_empty(): return false
-	if float(actor.get("body_scale")) > 1.05: return false
+	if not fits(actor): return false
 	var nav := actor.get_node_or_null("Navigator")
 	if nav != null and "reserved_by" in nav and not str(nav.reserved_by).is_empty(): return false
 	if nav == null or nav._has_target or is_instance_valid(nav._follow_target): return false
@@ -170,6 +170,35 @@ func eligible(actor: Node3D) -> bool:
 
 func rest_word() -> String:
 	return "couch"
+
+## Her settled lie-down reaches this far from her root along her length (pony_postures.res lie_down
+## bounds: -0.33..+0.42 m at canon size); she lies along the cushions at most this far off centre
+## (pony_transform: beside him -0.22, on his chest 0.08, on his shoulder 0.23).
+const MARE_HALF_LENGTH := 0.42
+const MARE_OFF_CENTRE := 0.23
+var _cushion_half := -1.0
+
+## Whether she lies within the cushions at her size. Canon size (and smaller) always did; a bigger
+## mare (size setting, thread 43671981) joins when her length fits the seat (the 1.6 m sofa takes
+## JRHNBR size, not "same height as Anon").
+func fits(actor: Node3D) -> bool:
+	var scale_factor := float(actor.get("body_scale"))
+	if scale_factor <= 1.05: return true
+	return MARE_OFF_CENTRE + MARE_HALF_LENGTH * scale_factor <= cushion_half_span()
+
+## Half the seat cushions' length along the sofa (its SeatSolid boxes), measured once; 0 if none.
+func cushion_half_span() -> float:
+	if _cushion_half >= 0.0: return _cushion_half
+	_cushion_half = 0.0
+	var solid := get_parent().get_node_or_null("SeatSolid") if get_parent() != null else null
+	if solid == null: return _cushion_half
+	for node: Node in solid.find_children("*", "CollisionShape3D", true, false):
+		var holder := node as CollisionShape3D
+		if not holder.shape is BoxShape3D: continue
+		var middle := to_local(holder.global_position).x
+		var half := (holder.shape as BoxShape3D).size.x * 0.5
+		_cushion_half = maxf(_cushion_half, maxf(absf(middle - half), absf(middle + half)))
+	return _cushion_half
 
 ## Tell her AI that Anon is lying here (once per 90 s per mare).
 func ask_company(actor: Node3D) -> void:

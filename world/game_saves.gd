@@ -15,6 +15,9 @@ const SAVE_FILE=preload("res://world/save_file.gd")
 const FOOD_WORLD=preload("res://world/food/food_world.gd")
 const SHOP_WORLD=preload("res://world/shop/shop_world.gd")
 const APPLE_BUCKING=preload("res://world/minigames/apple_bucking/apple_bucking.gd")
+const LEDGER=preload("res://world/mechanics/ledger.gd")
+const LEGACY=preload("res://world/mechanics/legacy.gd")
+const JOBS=preload("res://world/mechanics/jobs/jobs.gd")
 ## Save document format. Bump it whenever the document shape changes and add
 ## MIGRATIONS[old] = func(doc) -> doc that returns format old+1. Formats 1 and 2 predate
 ## the `format` key; their `version` field is their format.
@@ -370,7 +373,23 @@ static func _day_plans(value:Variant)->Dictionary:
 		if not (day is int or day is float) or not (index is int or index is float):continue
 		if not is_finite(float(day)) or not is_finite(float(index)) or float(day)<0 or float(day)>1e9 or float(index)<0 or float(index)>64:continue
 		plans[id]={"day":int(day),"index":int(index)}
+		if row.get("mech") is Dictionary:plans[id].mech=_plan_mech(row.mech)
 	return plans
+
+## The season, events and station work a day card rolled with (DayRunner._rolled_mech; absent in
+## older saves, which roll from the live answers as before).
+static func _plan_mech(mech:Dictionary)->Dictionary:
+	var out:={}
+	var season:Variant=mech.get("season")
+	if season is String and CONTEXT.valid_id(season):out.season=season
+	for key in ["events","station_needs"]:
+		var list:Variant=mech.get(key)
+		if not list is Array:continue
+		var clean:Array=[]
+		for item in list:
+			if item is String and CONTEXT.valid_id(item) and clean.size()<32:clean.append(item)
+		out[key]=clean
+	return out
 
 ## "Your home, Ponyville", "Near Sugarcube Corner, Ponyville", "Near Everfree Forest".
 func _place_text(at:Vector3)->String:
@@ -428,7 +447,9 @@ func commit_harvest(receipt:String,amount:int,proposed:Dictionary)->bool:
 	if busy or restoring or not ready_to_save or not is_instance_valid(host):return false
 	if not ("apple_bucking" in host) or not is_instance_valid(host.apple_bucking):return false
 	if host.world_context._read_only or not host.inventory.inventory.writable or not host.inventory.clothing.writable:return false
-	if amount != APPLE_BUCKING.STATE.REWARD or not APPLE_BUCKING.valid_snapshot(proposed):return false
+	# The basket pay is the ledger's own (REWARD, or the town calendar's Applebuck Season pay).
+	var basket_pay:Variant=host.apple_bucking.ledger.get("reward") if host.apple_bucking.get("ledger") is RefCounted else null
+	if amount != (int(basket_pay) if basket_pay is int else APPLE_BUCKING.STATE.REWARD) or not APPLE_BUCKING.valid_snapshot(proposed):return false
 	var activity:Node=host.apple_bucking
 	var expected:Dictionary=activity.snapshot()
 	var found:bool=false
@@ -442,12 +463,27 @@ func commit_harvest(receipt:String,amount:int,proposed:Dictionary)->bool:
 	var doc:Dictionary=snapshot()
 	doc.harvest=proposed.duplicate(true)
 	busy=true
-	var paid:bool=host.inventory.inventory.credit_bits_with_checkpoint(amount,func(next_inventory:Dictionary)->bool:
+	var persist:Callable=func(next_inventory:Dictionary)->bool:
 		doc.inventory=next_inventory
 		_result=OK
 		_save_task(directory.path_join("autosave.json"),doc,host.context_world_id)
-		return not _invalid and _result==OK)
+		return not _invalid and _result==OK
+	# One pay path (world/mechanics/ledger.gd): the same checkpointed credit, plus a receipt, a
+	# "paid" fact and the "harvested" fact (counters only; shared_activity owns the memory), all
+	# staged into doc.context so the one checkpoint holds them. The town pays until the jobs core
+	# moves the basket wage to Applejack (WP5).
+	var harvested:Dictionary={"actor":"player","target":"applejack","item":"apple","count":1,"ref":receipt,"key":"harvested:"+receipt}
+	var opts:Dictionary={"persist":persist,"receipt":receipt,"checkpoint":doc.context,"facts":[["harvested",harvested]]}
+	var jobs:Node=JOBS.of(host.get_tree()) if host.is_inside_tree() else null
+	if jobs!=null and jobs.get("context")!=host.world_context:jobs=null
+	if not LEGACY.old_jobs():
+		# Jobs core (row "orchard_bucking"): Applejack pays the basket from her purse, then Big
+		# Mac, then the town; the "worked" fact rides in the same checkpoint. `-- --old-jobs`: the town.
+		opts["payers"]=JOBS.payers_for(jobs.spec("orchard_bucking").get("payers") if jobs!=null else ["applejack","big_mcintosh","town"],"")
+		opts["facts"].append(["worked",{"actor":"player","target":"applejack","item":"apple","count":1,"ref":"orchard_bucking","key":"worked:"+receipt}])
+	var paid:bool=LEDGER.transfer(host,"town","player",amount,"harvest",opts).is_empty()
 	busy=false
+	if paid and jobs!=null and not LEGACY.old_jobs():jobs.count_unit("orchard_bucking","player")
 	if paid:
 		_timer=0.0
 		message="Harvest saved · %d bits earned"%amount
@@ -478,11 +514,12 @@ func commit_arrival_welcome(proposed: Dictionary) -> bool:
 	var doc: Dictionary = snapshot()
 	doc.context.arrival = proposed.duplicate(true)
 	busy = true
-	var paid: bool = host.inventory.inventory.credit_bits_with_checkpoint(arrival.STARTING_BITS, func(next_inventory: Dictionary) -> bool:
+	var persist: Callable = func(next_inventory: Dictionary) -> bool:
 		doc.inventory = next_inventory
 		_invalid = false; _result = OK
 		_save_task(directory.path_join("autosave.json"), doc, host.context_world_id)
-		return not _invalid and _result == OK)
+		return not _invalid and _result == OK
+	var paid: bool = LEDGER.transfer(host, "town", "player", arrival.STARTING_BITS, "reward", {"persist": persist}).is_empty()
 	busy = false
 	if paid: _timer = 0.0
 	return paid

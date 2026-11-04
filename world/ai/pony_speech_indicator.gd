@@ -51,5 +51,12 @@ func _update_pose() -> void:
 	if not is_inside_tree() or not is_instance_valid(actor) or not actor.is_inside_tree(): return
 	global_position = actor.speech_indicator_point() if actor.has_method("speech_indicator_point") else (actor.listen_point() if actor.has_method("listen_point") else actor.global_position) + Vector3.UP * .4
 	if is_instance_valid(viewer) and viewer.is_inside_tree():
-		# One physical orientation shared by both VR eyes, no per-eye spinning billboard.
-		global_basis = viewer.global_basis.orthonormalized()
+		# One physical orientation shared by both VR eyes, no per-eye spinning billboard. It grows
+		# with a pony bigger than canon (size setting), so it still clears her ears and mane
+		# (thread 43671981); canon and smaller keep the canon size.
+		global_basis = viewer.global_basis.orthonormalized().scaled(Vector3.ONE * bubble_scale(actor))
+
+## The bubble's size for `pony`: her body scale when above canon, else 1.
+static func bubble_scale(pony: Node) -> float:
+	var value: Variant = pony.get("body_scale") if is_instance_valid(pony) else null
+	return maxf(1.0, float(value)) if value is float else 1.0

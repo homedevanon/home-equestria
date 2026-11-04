@@ -294,7 +294,46 @@ func _spawn(packed: PackedScene) -> void:
 func _spawn_current(generation: int, context: Node, epoch: int) -> bool:
 	return is_inside_tree() and not is_queued_for_deletion() and is_instance_valid(game) and generation == _visit_generation and (epoch < 0 or (is_instance_valid(context) and int(context.get("epoch")) == epoch))
 
-## Walk up to the player; greet once within 3 m.
+## How far from him a visitor of ordinary size stops; a bigger pony (Celestia) stops further out.
+const PERSONAL_GAP := 2.2
+## Per re-aim (every half second), the most her goal turns round him toward where he looks (40 degrees: the
+## straight walk between two such goals stays above 0.94 of the gap from him).
+const MAX_AIM_TURN := PI * 2.0 / 9.0
+## She greets once she is within this angle of where he is looking (or after VIEW_WAIT seconds).
+const VIEW_HALF_ANGLE := PI / 3.0
+const VIEW_WAIT := 30.0
+
+## Her stopping distance: PERSONAL_GAP for an ordinary mare, scaled by her height (profile
+## clearance, which already carries body_scale), never less.
+static func personal_gap(actor: Node) -> float:
+	var profile: Variant = actor.get("profile") if is_instance_valid(actor) else null
+	var clearance: float = float((profile as Object).get("clearance")) if profile is Object and (profile as Object).get("clearance") != null else 1.2
+	return PERSONAL_GAP * maxf(1.0, clearance / 1.2)
+
+## Where she walks to greet him (thread 43671981: Celestia walked up from behind and stopped over
+## his shoulder, filling the screen): on the side she comes from, turned at most MAX_AIM_TURN toward
+## where he is looking, halfway in from where she is to `gap` metres from him. Re-aimed every tick,
+## the goal spirals round him into his view instead of cutting past him (tools/test_visit_arrival_spot.gd:
+## never nearer than ~0.89 of the gap on the way).
+static func greeting_spot(player: Vector3, look: Vector3, from: Vector3, gap: float) -> Vector3:
+	var away := Vector3(from.x - player.x, 0.0, from.z - player.z)
+	var radius := gap + maxf(0.0, away.length() - gap) * 0.5
+	var ahead := Vector3(look.x, 0.0, look.z)
+	if ahead.length() < 0.01: ahead = away if away.length() >= 0.01 else Vector3.FORWARD
+	if away.length() < 0.01: away = ahead
+	away = away.normalized(); ahead = ahead.normalized()
+	var turn := clampf(away.signed_angle_to(ahead, Vector3.UP), -MAX_AIM_TURN, MAX_AIM_TURN)
+	return player + away.rotated(Vector3.UP, turn) * radius
+
+## True when `from` lies within VIEW_HALF_ANGLE of the flat direction `look` from `player`.
+static func in_view(player: Vector3, look: Vector3, from: Vector3) -> bool:
+	var away := Vector3(from.x - player.x, 0.0, from.z - player.z)
+	var ahead := Vector3(look.x, 0.0, look.z)
+	if away.length() < 0.01 or ahead.length() < 0.01: return true
+	return away.normalized().dot(ahead.normalized()) >= cos(VIEW_HALF_ANGLE)
+
+## Walk up to the player, round into his view, and stop outside his personal space
+## (personal_gap); greet once there.
 func _approach(actor: Node3D) -> void:
 	var camera := _camera()
 	var nav: Node = actor.get_node_or_null("Navigator")
@@ -305,9 +344,14 @@ func _approach(actor: Node3D) -> void:
 	var offset := actor.global_position - camera.global_position; offset.y = 0.0
 	# Flown in, she has landed a few metres in front of him to greet him: greet from there
 	# (the arrival lab, 2026-09-30: the last steps to 3 m could stall past the 60 s limit).
-	var reach := 7.0 if bool(visit.get("fly", false)) else 3.0
+	var gap := personal_gap(actor)
+	var reach := maxf(7.0 if bool(visit.get("fly", false)) else 3.0, gap + 1.5)
 	var same_room: bool = HOUSE.at(get_tree(), actor.global_position) == HOUSE.at(get_tree(), camera.global_position)
-	if offset.length() < reach and absf(actor.global_position.y - camera.global_position.y) < 3.0 and same_room and nav.command_target_visible(camera):
+	var look := -camera.global_basis.z
+	var player_home: Node3D = HOUSE.at(get_tree(), camera.global_position)
+	# Outdoors she greets where he can see her; indoors (small rooms, doors) as before.
+	var seen: bool = player_home != null or visit.time > VIEW_WAIT or in_view(camera.global_position, look, actor.global_position)
+	if offset.length() < reach and seen and absf(actor.global_position.y - camera.global_position.y) < 3.0 and same_room and nav.command_target_visible(camera):
 		nav.stay()
 		if offset.length() > 0.1 and actor.has_method("face_direction"): actor.face_direction(-offset.normalized())
 		# Back beside him after he walked off: she already greeted him; no second greeting (an
@@ -328,8 +372,8 @@ func _approach(actor: Node3D) -> void:
 		elif visit.time > 70.0: _set_phase("with_player")
 		return
 	if visit.time > 60.0 and not claimed and not bool(visit.get("story", false)): _set_phase("subjects"); return
-	var player_home: Node3D = HOUSE.at(get_tree(), camera.global_position)
-	var aim: Vector3 = nav.command_follow_goal(camera.global_position + offset.normalized() * 2.2, camera.global_position)
+	var spot: Vector3 = greeting_spot(camera.global_position, look, actor.global_position, gap) if player_home == null else camera.global_position + offset.normalized() * gap
+	var aim: Vector3 = nav.command_follow_goal(spot, camera.global_position)
 	# Indoor travel owns its floor/door waypoints; an outdoor grid cannot resolve a loft.
 	var goal: Vector3 = aim if player_home != null else nav.command_support(aim)
 	if player_home != null: goal.y = nav.command_target_floor(camera.global_position).y

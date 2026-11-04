@@ -12,6 +12,28 @@ var bone_skip: bool = NATIVE.enabled("bone_skip")
 ## Bones written by the last skip pass (diagnostics).
 var bones_written := 0
 var _skip_skeleton: Skeleton3D
+## Clip-to-solver hand-off (pony_clip_tier.gd leave): the solver's first poses ease in from the
+## pose the clip tier showed (the clip with its ClipHead and IdleBody layers, shown_pose) instead
+## of snapping to it (dev 2026-11-03: "about 4 m away ... her head will jitter for a frame"; the
+## pivot's half of that step is pony_clip_tier.gd blend_pivot). Rotations and translations are
+## interpolated per bone, so each in-between pose stays between two poses that are already inside
+## pony_joint_limits.
+## Timed in physics frames, not the pass delta: a frozen sleeper's manual passes run with no
+## delta, and a blend that never advanced held the shown pose (dev 2026-11-03: "he started
+## standing up but still in the sleep pose").
+const HANDOFF_SECONDS := 0.25
+var _handoff_from: Array[Transform3D] = []
+var _handoff_left := 0.0
+var _handoff_end := 0
+
+func start_handoff(shown: Array[Transform3D]) -> void:
+	_handoff_from = shown.duplicate()
+	_handoff_left = HANDOFF_SECONDS
+	_handoff_end = Engine.get_physics_frames() + maxi(1, ceili(HANDOFF_SECONDS * Engine.physics_ticks_per_second))
+
+func cancel_handoff() -> void:
+	_handoff_from.clear()
+	_handoff_left = 0.0
 
 
 func _enter_tree() -> void:
@@ -22,6 +44,17 @@ func _enter_tree() -> void:
 
 func _unprofiled_process_modification_with_delta(_delta: float) -> void:
 	var skeleton := get_skeleton()
+	if _handoff_left > 0.0:
+		_handoff_left = maxf(float(_handoff_end - Engine.get_physics_frames()) / Engine.physics_ticks_per_second, 0.0)
+		if _handoff_from.size() == skeleton.get_bone_count() and prepared.size() == _handoff_from.size():
+			var weight := smoothstep(0.0, 1.0, 1.0 - _handoff_left / HANDOFF_SECONDS)
+			for i in prepared.size():
+				skeleton.set_bone_pose(i, _handoff_from[i].interpolate_with(prepared[i], weight))
+			if native != null: native.invalidate_bone_skip()
+			if _handoff_left > 0.0: return
+		_handoff_from.clear()
+		_handoff_left = 0.0
+		if native != null: native.invalidate_bone_skip()
 	if native != null:
 		if bone_skip and influence >= 1.0 and _first_active_modifier(skeleton):
 			if _skip_skeleton != skeleton:

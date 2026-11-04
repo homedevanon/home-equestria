@@ -3,12 +3,14 @@ extends RefCounted
 ## Split out of conversation_director.gd (2026-10-13); the host keeps forwards for every name reachable
 ## from elsewhere, so callers did not change. `host` is the owning conversation_director node; shared state stays there.
 
+const ANON_DAY := preload("res://world/ai/anon_day.gd")
 const VARIETY := preload("res://world/ai/dialogue_variety.gd")
 const FACE_TAGS := preload("res://world/ai/pony_dialogue_tags.gd")
 const ACTION_SCHEMA := preload("res://world/ai/pony_action_schema.gd")
 const PLAYER_FORM := preload("res://world/life/player_form.gd")
 const ARRIVAL_CONTEXT := preload("res://world/ai/arrival_context.gd")
 const MEMORY := preload("res://world/ai/memory/story_memory.gd")
+const TOWN_TALK := preload("res://world/ai/memory/town_talk.gd")
 const IMPRESSIONS := preload("res://world/ai/impressions/pony_impressions.gd")
 const PLACES := preload("res://world/navigation/place_directory.gd")
 const HEARD_TRANSCRIPT_BYTES := 8192
@@ -48,6 +50,15 @@ func situation_block(id: String) -> String:
 		elif h >= 12.0 and h < 17.0: word = "afternoon"
 		elif h >= 17.0 and h < 20.0: word = "evening"
 		lines.append("- Time: %s (%02d:%02d)." % [word, int(h), int(fmod(h, 1.0) * 60.0)])
+	# What Anon has done today, as far as she knows (world/ai/anon_day.gd, thread report 2026-11-01).
+	var anon_day := ANON_DAY.line(host.get_tree(), id) if host.is_inside_tree() else ""
+	if not anon_day.is_empty(): lines.append(anon_day)
+	# Ponies Anon names who are not here: where they really are beats any rumour (town_talk.gd,
+	# thread report 2026-11-03: a made-up cider stand stayed "fact" for hours).
+	var story := _story()
+	if story != null and host.is_inside_tree():
+		var where: String = TOWN_TALK.where_now(host.get_tree(), str(host.get("_player_text")), _present(id), story.name_of)
+		if not where.is_empty(): lines.append(where)
 	var schedule: Node = node.get_node_or_null("Schedule")
 	if schedule != null and schedule.has_method("situation_line"):
 		var line: String = schedule.situation_line()
@@ -126,6 +137,15 @@ func _name(id: String) -> String:
 	return id.replace("_", " ").capitalize()
 
 
+## The speaker and the ponies she sees now (her last awareness sample).
+func _present(id: String) -> Array:
+	var observed: Dictionary = host.awareness._observations.get(id, {}) if host.get("awareness") != null else {}
+	var present: Array = [id]
+	for peer: Variant in observed.get("visible", []) + observed.get("present", []):
+		if peer is Dictionary and str((peer as Dictionary).get("id", "")) not in present: present.append(str((peer as Dictionary).get("id", "")))
+	return present
+
+
 func _story() -> RefCounted:
 	if not is_instance_valid(host.world_context): return null
 	var story: RefCounted = host.world_context.get("story")
@@ -173,7 +193,11 @@ func system_prompt(id: String) -> String:
 		prompt += "\n\nCompleted speech you personally heard (speaker-labelled, not private thoughts): " + heard_transcript(entry.heard.slice(maxi(0, entry.heard.size() - 8)))
 	var actions: String = host._action_prompt(id)
 	if actions != "": prompt += "\n\n" + actions
-	if story != null and host.get("_brain_due") == true: prompt += "\n\n" + MEMORY.BRAIN_INSTRUCTION
+	if story != null and host.get("_brain_due") == true:
+		prompt += "\n\n" + MEMORY.BRAIN_INSTRUCTION
+		# Real off-screen ponies for ELSEWHERE (town_talk.gd, thread report 2026-11-03); "" costs nothing.
+		var town: String = story.town_note(host.get_tree(), _present(id)) if host.is_inside_tree() else ""
+		if not town.is_empty(): prompt += "\n" + town
 	# A pet topic she keeps coming back to across days (player thread report 2026-10-29); only
 	# costs tokens on the turns it fires.
 	var fixation: String = VARIETY.fixation_note(entry.spoken, host._player_text)
@@ -207,7 +231,7 @@ func solo_head() -> String:
 const SOLO_FORMAT := "REPLY FORMAT: only what you say out loud, plain text, never JSON. Square-bracket tags may go anywhere in the line and are never spoken. Example: [face:happy] Oh, hello there! [look_at: player]"
 ## The tags nearly every pony has. They are explained once in the fixed head; the live part names the
 ## ones she cannot use right now and explains her extra ones (flight, letters, kisses, story actions).
-const SOLO_CORE := ["look_at", "approach", "follow", "go_to", "lead", "step", "stay", "cancel", "resume_routine", "go_home",
+const SOLO_CORE := ["look_at", "approach", "follow", "go_to", "lead", "step", "stay", "cancel", "resume_routine", "go_home", "go_to_bed",
 	"sit", "stand", "lie_down", "sit_on_seat", "wake_up", "call_pony", "send_pony",
 	"relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle"]
 const SOLO_ACTIONS := """ACTION TAGS: at most one movement or posture tag plus one [look_at] per reply, only tags available now, with the TARGETS, PONY_IDs and LOCATIONS (or a mapped place's exact name) listed at the end, exactly as written. Never coordinates, code or JSON.
@@ -220,6 +244,7 @@ const SOLO_ACTIONS := """ACTION TAGS: at most one movement or posture tag plus o
 - [stay: SECONDS] hold position 0.5-600 seconds ([stay] = 30); never instead of a story route
 - [cancel] stop; [resume_routine] back to your day; [go_home] go home to rest a while (say goodbye first)
 - [sit], [stand], [lie_down]; [sit_on_seat] sit on the nearest free bench or seat; [wake_up] wake, or get out of a bed or off a couch
+- [go_to_bed] walk to your own bed, climb in and lie there (asleep at night) until [wake_up]; [go_to_bed: here] the bed in the house where Anon is; if he lies in a bed, [cuddle] joins him
 - [call_pony: PONY_ID] ask a nearby pony who can hear you to come; [send_pony: PONY_ID, TARGET] ask her to go to a nearby pony or the player. No remote summons; a request is not arrival
 - [relationship_offer: KIND, ACTIVITY] propose an eligible offer to Anon; ACTIVITY walk/fishing/orchard/meal/visit, or place plus a LOCATION ([relationship_offer: KIND, place, LOCATION])
 - [relationship_answer: OFFER_ID, yes] or no: answer ONLY an existing invitation from Anon
@@ -227,7 +252,7 @@ const SOLO_ACTIONS := """ACTION TAGS: at most one movement or posture tag plus o
 - [request_space] withdraw physical permission for three minutes; say you want space
 - [buck_player] kick Anon back with your hind legs as your line ends: only real, lasting anger at unwelcome contact, never boops or petting you secretly enjoy
 - [cuddle] walk over and rest with Anon where he lies (bed, couch, supported grass, blanket), only if you want to
-Requests are not compulsions: accept, clarify or decline. Saying yes does not move you: accepting something that needs moving or a posture puts its tag in this same reply. Holding and touching pause movement. Never say you arrived or did something before it happens."""
+Requests are not compulsions: accept, clarify or decline. Saying yes does not move you: accepting something that needs moving or a posture puts its tag in this same reply; if no tag here can do it, say you can't right now instead of promising it. Holding and touching pause movement. Never say you arrived or did something before it happens."""
 ## Formerly relationship_runtime.gd ACTION_HELP plus player_bonds.gd's fixed sentences, sent with every
 ## request and again for every group participant; now once per request.
 const RELATIONSHIP_RULES := "Relationship tags need spoken words stating your offer or answer and commit only when the line finishes; never answer your own offer or invent Anon's acceptance. On an outing to a named place each agreeing companion uses [go_to] and stops on arrival; follow Anon only on a walk with no named destination (it ends when he stays beyond walking range). During a shared activity you can board his balloon with him. A cuddle is beside or shoulder company in friendship, a closer snuggle only in an established romance, within current boundaries. Friendship and romance are separate: even full attraction never makes you partners; only an explicit proposal the other accepts does. Declining is allowed; affection and marriage never grant blanket permission. Never claim a milestone the game has not confirmed, and never say scores aloud."

@@ -12,6 +12,7 @@ const CASE := preload("res://world/inventory/briefcase.gd")
 const CATALOG := preload("res://world/inventory/item_catalog.gd")
 const FOOD := preload("res://world/food/food_interaction.gd")
 const COOKING := preload("res://world/cooking/cooking_input.gd")
+const STATION_INPUT := preload("res://world/mechanics/stations/station_input.gd")
 const BANANAS := preload("res://world/food/banana_boxes.gd")
 const GRAB := preload("res://world/inventory/grab_targets.gd")
 const SHOP_ITEMS := preload("res://world/shop/shop_items.gd")
@@ -22,6 +23,13 @@ const PHOTO_CAMERA := preload("res://world/items/photo_camera.gd")
 ## Writing paper, letters and the quill (world/letters/, docs/LETTERS_PLAN_2026_10_29.md).
 const LETTER_TOOL := preload("res://world/letters/paper/letter_tool.gd")
 const QUILL_TOOL := preload("res://world/letters/paper/quill_tool.gd")
+## Anon's notebook: the favours ponies asked of him on its pages (world/mechanics/asks/).
+const NOTEBOOK_TOOL := preload("res://world/mechanics/asks/notebook_tool.gd")
+## The photo journal, and a held print looked at up close (world/items/).
+const PHOTO_JOURNAL := preload("res://world/items/photo_journal.gd")
+const PHOTO_VIEW := preload("res://world/items/photo_view.gd")
+const FURNISHING := preload("res://world/housing/home_furnishing.gd")
+const PLACEMENT_PREVIEW := preload("res://world/housing/placement_preview.gd")
 ## AnonPony (docs/ANONPONY_DESIGN_2026_10_01.md section 9): things sit at her muzzle, a unicorn
 ## floats them in her magic, and she wears no clothes.
 const PLAYER_FORM := preload("res://world/life/player_form.gd")
@@ -139,6 +147,8 @@ func setup(head: Camera3D, body: Node = null, left_hand: Node3D = null, right_ha
 		left_controller: Node = null, right_controller: Node = null, world_map: Node = null,
 		path: String = ""):
 	camera=head;player_body=body;map_menu=world_map
+	if get_node_or_null("PlacementPreview")==null:
+		var preview:=PLACEMENT_PREVIEW.new();preview.name="PlacementPreview";add_child(preview);preview.setup(self)
 	hands={"left":left_hand,"right":right_hand};controllers={"left":left_controller,"right":right_controller}
 	_desktop=left_controller==null and right_controller==null
 	add_to_group("interaction_hint_sources")
@@ -403,7 +413,7 @@ func _physics_step(delta: float):
 		elif _book_open(item):
 			# Reading: the open book held up in front of you, pages toward your eyes, head of
 			# the page up (book +Y -> view +Z, book -Z -> view up).
-			item.global_transform=camera.global_transform*Transform3D(Basis(Vector3.RIGHT,Vector3.BACK,Vector3.DOWN),Vector3(0,-.02,-.46))
+			item.global_transform=camera.global_transform*Transform3D(Basis(Vector3.RIGHT,Vector3.BACK,Vector3.DOWN),Vector3(0,-.02,-.46)*PLAYER_MOUTH.human_scale(camera))
 		else:
 			# Held low and to the right of the view, like a hand in front of you. Every AnonPony
 			# floats it in front of her eyes in her magic (dev 2026-10-02: "make items always float
@@ -627,6 +637,14 @@ func take_slot(side: String, index: int, pose := Transform3D.IDENTITY, from_case
 func _make_item(token: String, id: String, visual: Node3D) -> RigidBody3D:
 	return _drops._make_item(token, id, visual)
 
+## The open sheet of the letter, notebook or journal in this hand, or null.
+func _open_sheet(item: Node) -> Node3D:
+	var sheet: Node3D = null
+	if NOTEBOOK_TOOL.handles(item): sheet = NOTEBOOK_TOOL.on(item as Node3D).pages()
+	elif PHOTO_JOURNAL.handles(item): sheet = PHOTO_JOURNAL.on(item as Node3D).sheet()
+	elif LETTER_TOOL.handles(item): sheet = LETTER_TOOL.on(item as Node3D).letter_sheet()
+	return sheet if sheet != null and bool(sheet.get("opened")) else null
+
 ## Physical activity reward: commit ownership and its world placement together,
 ## then expose the body. A rejected transaction never spawns a free duplicate.
 func spawn_owned_drop(id:String,pose:Transform3D)->RigidBody3D:
@@ -805,6 +823,16 @@ func _input(event: InputEvent):
 		if use_click and not COOKING.offer(self,"desktop").is_empty():
 			if event.pressed:COOKING.activate(self,"desktop")
 			get_viewport().set_input_as_handled();return
+		# Mechanics stations (world/mechanics/stations/station_input.gd): the nearest station node
+		# takes the click, and the release of a click it took.
+		if use_click and STATION_INPUT.offer(self,"desktop",event.pressed):
+			get_viewport().set_input_as_handled();return
+		# Looking at a pony's face up close with anything giftable: the click offers it to her
+		# (world/relationships/hand_feeding.gd, P2a gifts). Tools are not giftable, so they keep their use.
+		var gift_to:Node=get_tree().get_first_node_in_group("hand_feeding")
+		if use_click and gift_to!=null and CATALOG.has_tag(str(held.desktop.get_meta("item_id","")),"giftable") and gift_to.desktop_target()!=null:
+			if event.pressed:gift_to.desktop_offer()
+			get_viewport().set_input_as_handled();return
 		if use_click and held.desktop.get_meta("item_id", "") == "goods:folded-blanket":
 			if event.pressed: _lay_out_blanket("desktop")
 			get_viewport().set_input_as_handled(); return
@@ -817,8 +845,36 @@ func _input(event: InputEvent):
 			if event.button_index == MOUSE_BUTTON_RIGHT: photo_camera.set_looking(event.pressed, camera)
 			elif event.pressed: photo_camera.snap(self, camera)
 			get_viewport().set_input_as_handled(); return
+		# A held print: a click looks at it, the wheel brings it closer; over a home wall the wheel
+		# picks its size (or turns floor furniture), green or red in the placement preview.
+		var wheel_step: int = 1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else -1 if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else 0
+		if PHOTO_VIEW.handles(held.desktop):
+			var photo_view: Node3D = PHOTO_VIEW.on(held.desktop)
+			if use_click:
+				if event.pressed: photo_view.toggle(self)
+				get_viewport().set_input_as_handled(); return
+			if wheel_step != 0 and event.pressed and photo_view.viewing():
+				photo_view.zoom(wheel_step)
+				get_viewport().set_input_as_handled(); return
+		if wheel_step != 0 and event.pressed and FURNISHING.wheel(self, "desktop", wheel_step):
+			get_viewport().set_input_as_handled(); return
+		# An open letter, notebook or journal page: the wheel brings it closer, right click goes back.
+		var reading: Node3D = _open_sheet(held.desktop)
+		if reading != null and event.pressed:
+			if event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+				reading.zoom(1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else -1)
+				get_viewport().set_input_as_handled(); return
+			if event.button_index == MOUSE_BUTTON_RIGHT and int(reading.get("page")) > 0:
+				reading.previous_page()
+				get_viewport().set_input_as_handled(); return
 		# Paper and letters: a click starts, opens or reads; a click held a second sends a draft
 		# with Derpy (world/letters/paper/letter_tool.gd).
+		if use_click and NOTEBOOK_TOOL.handles(held.desktop):
+			NOTEBOOK_TOOL.on(held.desktop).press(self, "desktop", event.pressed)
+			get_viewport().set_input_as_handled(); return
+		if use_click and PHOTO_JOURNAL.handles(held.desktop):
+			PHOTO_JOURNAL.on(held.desktop).press(self, "desktop", event.pressed)
+			get_viewport().set_input_as_handled(); return
 		if use_click and LETTER_TOOL.handles(held.desktop):
 			LETTER_TOOL.on(held.desktop).press(self, "desktop", event.pressed)
 			get_viewport().set_input_as_handled(); return
@@ -945,6 +1001,9 @@ func _desktop_look_pick(look: Dictionary = {})->bool:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not _desktop or case == null or not is_instance_valid(camera):return
+	# A station that took a click (hold to crank) hears its release wherever the press went.
+	if event is InputEventMouseButton and not event.pressed and event.button_index == MOUSE_BUTTON_LEFT and STATION_INPUT.engaged("desktop"):
+		STATION_INPUT.offer(self,"desktop",false);return
 	if not event is InputEventMouseButton or not event.pressed or event.button_index != MOUSE_BUTTON_LEFT:return
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED or _quick_blocked() or hand_busy("desktop"):return
 	if FLIGHT_INPUT.reserves_mouse(event,player_body):return
@@ -953,6 +1012,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if focus is LineEdit or focus is TextEdit:return
 	if not COOKING.offer(self,"desktop").is_empty():
 		COOKING.activate(self,"desktop");get_viewport().set_input_as_handled();return
+	if STATION_INPUT.offer(self,"desktop",true):get_viewport().set_input_as_handled();return
 	var offer:Dictionary=desktop_look_target()
 	if _desktop_look_pick(offer):get_viewport().set_input_as_handled()
 
@@ -1021,8 +1081,12 @@ func interaction_hint() -> Dictionary:
 			return {"target": item, "text": "Click · Take photo   Hold right click · Look through" if side == "desktop" else "Eyepiece to your eye · Look through   Trigger · Take photo", "point": item.global_position + Vector3.UP * .12}
 		if is_instance_valid(item) and item.get_meta("item_id", "") == "goods:easel":
 			return {"target": item, "text": "Click · Unfold easel on flat ground" if side == "desktop" else "Trigger · Unfold easel on flat ground", "point": item.global_position + Vector3.UP * .15}
+		if PHOTO_JOURNAL.handles(item):
+			return PHOTO_JOURNAL.on(item).hint(side)
 		if LETTER_TOOL.handles(item):
 			return LETTER_TOOL.on(item).hint(side)
+		if NOTEBOOK_TOOL.handles(item):
+			return NOTEBOOK_TOOL.on(item).hint(side)
 	# The quill writes on paper held in the other hand (VR; world/letters/paper/quill_tool.gd).
 	for side: String in held:
 		var item: Node3D = held[side]

@@ -202,7 +202,7 @@ func set_dropped(token: String, pose: Transform3D) -> bool:
 	return _commit(next, checked)
 
 ## Placing uses the existing loose unit; equipped references leave their stack once.
-func set_furnishing(token: String, pose: Transform3D, home_id: String) -> bool:
+func set_furnishing(token: String, pose: Transform3D, home_id: String, size: float = 1.0) -> bool:
 	if not loans.has(token) or not FURNISHING.has(str(loans[token].id)): return false
 	var next: Array = slots.duplicate(true)
 	var checked: Dictionary = loans.duplicate(true)
@@ -211,6 +211,8 @@ func set_furnishing(token: String, pose: Transform3D, home_id: String) -> bool:
 		checked[token].erase("equipped")
 	checked[token].world_transform = encode_pose(pose)
 	checked[token].furnishing_home = home_id
+	if size != 1.0: checked[token].furnishing_size = size
+	else: checked[token].erase("furnishing_size")
 	return _commit(next, checked)
 
 ## An equipped blanket becomes exactly one loose, deployed unit in this saved transaction.
@@ -247,6 +249,7 @@ func pick_up(token: String) -> bool:
 	checked[token].erase("easel_open")
 	checked[token].erase("picnic_heights")
 	checked[token].erase("furnishing_home")
+	checked[token].erase("furnishing_size")
 	return _commit(slots, checked)
 
 func update_drops(poses: Dictionary) -> bool:

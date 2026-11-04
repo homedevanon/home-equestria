@@ -6,6 +6,7 @@ const STORE := preload("res://world/inventory/inventory_store.gd")
 const FOOD := preload("res://world/food/food_interaction.gd")
 const SFX := preload("res://world/audio/interaction_sounds.gd")
 const KEG := preload("res://world/items/cider_keg.gd")
+const STATIONS := preload("res://world/mechanics/stations/stations.gd")
 ## A mug this close to the keg's tap fills (hands); a desktop mug floats ahead of the view.
 const POUR_REACH := 0.28
 const POUR_REACH_DESKTOP := 0.9
@@ -74,4 +75,6 @@ static func pour(inventory: Node, mug: RigidBody3D, keg: RigidBody3D) -> bool:
 		if inventory.held[side] in [mug, keg]: inventory._haptic(side)
 	SFX.play_event(mug, "prop_sip", {"pitch": 0.82, "intensity": 0.9})
 	print("[cider] poured a mug; %d left in the keg" % KEG.servings(str(checked[keg_token].id)))
+	# Stations adapter (world/mechanics/stations/stations.gd, row keg_pour): the "made" fact only.
+	STATIONS.note(inventory, "keg_pour", "player", [KEG.MUG_FULL])
 	return true

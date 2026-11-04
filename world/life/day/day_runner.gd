@@ -21,6 +21,8 @@ const ESSENCE := preload("res://world/life/essence.gd")
 const ACTION_DIR := "res://world/life/day/actions/"
 const NIGHT_REST := preload("res://world/life/night_rest.gd")
 const KIT_STATE := preload("res://world/props/ponyville_kit/kit_state.gd")
+## Job targets ("job:cider_stand") resolve through the work_job handler (mechanics P7).
+const WORK_JOB := preload("res://world/life/day/actions/work_job.gd")
 const CHECK := 0.5
 const FIDGETS := preload("res://world/life/day/pony_fidgets.gd")
 ## Idle fidget pickers by resident id (pony_fidgets.gd), ticked on the same half-second beat.
@@ -31,7 +33,7 @@ var chats: RefCounted = preload("res://world/life/day/chat_stops.gd").new()
 var population: Node
 var night_rest: Node
 var clock: Node
-var cards := {}          # id -> {"day", "steps", "index", "action", "ctx", "sidetracked", "essence", "shown_on"}
+var cards := {}          # id -> {"day", "steps", "index", "action", "ctx", "sidetracked", "essence", "shown_on", "mech"}
 ## Residents a town event holds for now, body or essence (show_audience.gd: walking to or
 ## watching Trixie's show): her day plan waits and carries on once she is let go.
 var held: Dictionary = {}
@@ -82,8 +84,9 @@ func _physics_step(delta: float) -> void:
 		var card: Dictionary = cards.get(id, {})
 		if card.is_empty() or card.get("day", -1) != day:
 			_end_card(id, card)
-			card = {"day": day, "steps": APPOINTMENT_STEPS.merge(id, day, PLANNER.roll(id, day, _info(id, actor if alive else null, day)), _appointments()), "index": 0,
-				"action": null, "ctx": {}, "sidetracked": false, "essence": {}, "shown_on": null}
+			var mech := _rolled_mech(id, day)
+			card = {"day": day, "steps": APPOINTMENT_STEPS.merge(id, day, PLANNER.roll(id, day, _info(id, actor if alive else null, day, mech)), _appointments()), "index": 0,
+				"action": null, "ctx": {}, "sidetracked": false, "essence": {}, "shown_on": null, "mech": mech}
 			card.index = mini(_resumed_index(id, day), card.steps.size())
 			cards[id] = card
 		if prof: lap = _lap("day_cards", lap)
@@ -125,7 +128,15 @@ func checkpoint() -> Dictionary:
 	if pending is Dictionary: result = (pending as Dictionary).duplicate(true)
 	for id: String in cards:
 		var card: Dictionary = cards[id]
-		if not card.is_empty(): result[id] = {"day": int(card.day), "index": int(card.index)}
+		if card.is_empty(): continue
+		# Steps a [use] put in (inject_now) are not in the rolled card a load rebuilds.
+		var index := int(card.index)
+		for i: int in mini(index, card.steps.size()):
+			if bool(card.steps[i].get("injected", false)): index -= 1
+		result[id] = {"day": int(card.day), "index": index}
+		# The mechanics answers the card rolled with (_rolled_mech), so a load rolls the same steps.
+		var mech: Variant = card.get("mech")
+		if mech is Dictionary and not (mech as Dictionary).is_empty(): result[id].mech = (mech as Dictionary).duplicate(true)
 	return result
 
 ## The step a loaded save had her on (pony_population.resumed_plans), when it is today's card.
@@ -175,7 +186,7 @@ func _set_busy(id: String, busy: bool) -> void:
 	if busy: resident["day_busy"] = true
 	else: resident.erase("day_busy")
 
-func _info(id: String, actor: Node3D, day: int) -> Dictionary:
+func _info(id: String, actor: Node3D, day: int, mech: Variant = null) -> Dictionary:
 	var times: Vector2 = NIGHT_REST.bedtime(id, day)
 	var bed := times.x + (24.0 if times.x < 12.0 else 0.0)
 	var friends: Array = []
@@ -187,7 +198,40 @@ func _info(id: String, actor: Node3D, day: int) -> Dictionary:
 			if float(weights[f]) > 0.0 and population.config.assignments.has(f): friends.append(f)
 	var others: Array = population.config.assignments.keys()
 	var traits := _traits(id, actor)
-	return {"spots": ACTION.SPOTS.available(population, id), "wings": traits.wings, "horn": traits.horn, "friends": friends, "others": others, "bed": bed, "wake": NIGHT_REST.bedtime(id, day - 1).y}
+	var info := {"spots": ACTION.SPOTS.available(population, id), "wings": traits.wings, "horn": traits.horn, "friends": friends, "others": others, "bed": bed, "wake": NIGHT_REST.bedtime(id, day - 1).y}
+	info.merge(mech if mech is Dictionary else _mechanics_info(day))
+	return info
+
+## The mechanics answers a card rolls with: the saved card's (game_saves "day_plans" mech) when a
+## load rebuilds today's card, else the live ones. Watering the row or a show starting later that
+## day changes the live answers, and a different candidate list re-rolls every later step, so the
+## saved index would point into another card.
+func _rolled_mech(id: String, day: int) -> Dictionary:
+	var plans: Variant = population.get("resumed_plans") if population != null else null
+	var row: Variant = (plans as Dictionary).get(id) if plans is Dictionary else null
+	if row is Dictionary and int((row as Dictionary).get("day", -1)) == day and (row as Dictionary).get("mech") is Dictionary:
+		return ((row as Dictionary).mech as Dictionary).duplicate(true)
+	return _mechanics_info(day)
+
+## Today's season, town events and station work for the planner's `when` (day_planner._fits;
+## docs/MECHANICS_ARCHITECTURE_2026_11_01.md 10.1). Empty without the mechanics hub, so cards roll
+## as before. Read once per card.
+func _mechanics_info(day: int) -> Dictionary:
+	var tree: SceneTree = get_tree() if is_inside_tree() else null
+	var calendar: Node = tree.get_first_node_in_group("town_calendar") if tree != null else null
+	var stations: Node = tree.get_first_node_in_group("mechanics_stations") if tree != null else null
+	var info := {}
+	if calendar != null:
+		if calendar.has_method("season_name"): info.season = str(calendar.call("season_name", day))
+		var events: Array = []
+		if calendar.has_method("today_events"):
+			for event: Variant in calendar.call("today_events"):
+				if event is Dictionary: events.append(str((event as Dictionary).get("id", "")))
+		info.events = events
+	if stations != null and stations.has_method("pending_work"):
+		var needs: Variant = stations.call("pending_work")
+		if needs is Array: info.station_needs = needs
+	return info
 
 ## Wings and horn from her identity: the live rig's, or read from her scene's identity file
 ## without loading the model (race and can_fly lines; absent = the script defaults, a pegasus
@@ -232,7 +276,7 @@ func _step(id: String, actor: Node3D, card: Dictionary, hours: float) -> void:
 			_set_busy(id, false)
 			_publish(id, actor, card)
 			return
-		if _talking(id) and not (actor.get("flight") != null and actor.flight.active()):
+		if _talking(id) and not _ai_step(card) and not (actor.get("flight") != null and actor.flight.active()):
 			if nav.get("_has_target") == true:
 				# On her way somewhere when he spoke to her: she stops, and takes the step up again
 				# after the chat while its hour lasts.
@@ -246,6 +290,7 @@ func _step(id: String, actor: Node3D, card: Dictionary, hours: float) -> void:
 		var result: String = running.tick(card.ctx, CHECK)
 		if tick_at > 0: CPU_PROFILE.record("day_tick:" + str(card.steps[card.index].get("handler", "")) if card.index < card.steps.size() else "day_tick:?", tick_at)
 		if result != "running":
+			# "made": done, and the handler wrote its own memory (use_station.gd: the station's made fact).
 			if result == "done": _remember(id, actor, card.steps[card.index])
 			running.release(card.ctx)
 			_cancel_step_state(card.ctx)
@@ -261,7 +306,7 @@ func _step(id: String, actor: Node3D, card: Dictionary, hours: float) -> void:
 		card.index += 1   # the moment passed (sidetracked, asleep, busy): let it go
 		_publish(id, actor, card)
 		return
-	if hours < float(step.start) or not _free(actor, nav) or _talking(id): return
+	if hours < float(step.start) or not _free(actor, nav) or (_talking(id) and not bool(step.get("ai", false))): return
 	# Out with friends when the next thing comes up: sometimes she stays with them.
 	var group: Dictionary = actor.get_meta("social_group", {})
 	if group.get("members", []).size() > 1 and _sidetracked(id, card, step): return
@@ -326,12 +371,17 @@ func _talking(id: String) -> bool:
 ## Free for a plan step: nopony holds her, no player/AI command, not asleep, not flying on
 ## another errand; the living world's own outings and wandering may be interrupted.
 func _free(actor: Node3D, nav: Node) -> bool:
+	if not _body_free(actor): return false
+	var owner := str(nav.command_owner)
+	return owner.is_empty() or owner.begins_with("life:") or owner.begins_with("social:")
+
+## Her body is hers to move: not held or carried, not flying, not asleep, not interrupted.
+func _body_free(actor: Node3D) -> bool:
 	if actor.get("_held") or (actor.get("hoof_hold") != null and actor.hoof_hold.active()): return false
 	if actor.get("flight") != null and actor.flight.active(): return false
 	if actor.get("sleeping"): return false
 	if actor.has_method("action_interruption_reason") and not str(actor.action_interruption_reason()).is_empty(): return false
-	var owner := str(nav.command_owner)
-	return owner.is_empty() or owner.begins_with("life:") or owner.begins_with("social:")
+	return true
 
 # --- Unloaded residents -------------------------------------------------------------------------
 
@@ -345,7 +395,9 @@ func _step_essence(id: String, card: Dictionary, hours: float) -> void:
 			card.index += 1
 			_set_busy(id, false)
 			return
-		if _essence_tick(id, resident, card.essence) != "running":
+		var outcome := _essence_tick(id, resident, card.essence)
+		if outcome != "running":
+			if outcome == "done": _offscreen(id, card)
 			card.essence = {}
 			card.index += 1
 			card.sidetracked = false
@@ -440,6 +492,14 @@ func _place(id: String, target: String) -> Vector3:
 		var record := ACTION.SPOTS.resolve(population, id, target)
 		return record.get("approach", Vector3.INF)
 	if target == "home": return ESSENCE.home(population, id)
+	if target.begins_with("station:"):
+		# A mechanics station (world/mechanics/stations/stations.gd): its work point, loaded or not.
+		var tree: SceneTree = get_tree() if is_inside_tree() else Engine.get_main_loop() as SceneTree
+		var stations: Node = tree.get_first_node_in_group("mechanics_stations") if tree != null else null
+		return stations.work_point(target.trim_prefix("station:")) if stations != null else Vector3.INF
+	if target.begins_with("job:"):
+		# A mechanics job (world/mechanics/jobs/jobs.gd): where its worker stands (work_job.gd).
+		return WORK_JOB.job_point(get_tree() if is_inside_tree() else Engine.get_main_loop() as SceneTree, target)
 	var at := ACTION.PLACES.resolve(get_tree(), target)
 	if at.is_finite():
 		ESSENCE.remember(population, target, at)
@@ -476,6 +536,68 @@ func _body_to_essence(id: String, card: Dictionary) -> void:
 		run.left = maxf(CHECK, float(run.stay) - float(action.seconds))
 	card.essence = run
 	_set_busy(id, true)
+
+## The step her essence just finished: its handler's static offscreen(ctx) completes it without a
+## body (use_station.gd: the station makes its output facts-only), when the handler has one.
+func _offscreen(id: String, card: Dictionary) -> void:
+	if card.index >= card.steps.size(): return
+	var step: Dictionary = card.steps[card.index]
+	var action: RefCounted = _handler(str(step.get("handler", "")))
+	if action != null and action.has_method("offscreen"):
+		action.call("offscreen", {"id": id, "step": step, "population": population, "tree": get_tree(), "day": int(card.day)})
+
+## The step she is on was asked for by her model ([use]): a chat does not hold it, as with
+## her model's own moves.
+func _ai_step(card: Dictionary) -> bool:
+	return card.index < card.steps.size() and bool(card.steps[card.index].get("ai", false))
+
+## Whether inject_now could put a step in her card now: a resident with today's card, no town event
+## holding her and, while loaded, her body free. `strict` (inject_now itself) also needs her
+## navigator free or on a day step; the capability check (mechanics.gd) skips that, as the
+## executor lets go of her own model moves before [use] dispatches.
+func can_inject(id: String, strict := false) -> bool:
+	if population == null or clock == null or held.has(id) or not population.config.assignments.has(id): return false
+	var card: Dictionary = cards.get(id, {})
+	if card.is_empty() or int(card.get("day", -1)) != _day_key(): return false
+	var live: Variant = population.live.get(id) if population.get("live") is Dictionary else null
+	var actor: Variant = (live as Dictionary).get("actor") if live is Dictionary else null
+	if not (is_instance_valid(actor) and actor is Node3D): return true
+	if not _body_free(actor): return false
+	var nav: Node = (actor as Node3D).get_node_or_null("Navigator")
+	return not strict or nav == null or _free(actor, nav) or str(nav.command_owner) == "day:" + id
+
+## [use: STATION] (world/mechanics/stations/stations.gd request_use): puts `step` first in her
+## day card now, as a fixed step until an hour on (step.hours). A running step ends the way a
+## foreign owner ends it. False when she has no card today, a town event holds her, or she is
+## not a resident here, or her loaded body is not free (can_inject).
+func inject_now(id: String, step: Dictionary) -> bool:
+	if not can_inject(id, true): return false
+	var card: Dictionary = cards.get(id, {})
+	var now := _card_hours()
+	var entry := step.duplicate(true)
+	for key: String in ["action", "handler", "target", "phrase", "item", "reason"]:
+		if not entry.get(key) is String: entry[key] = ""
+	entry.minutes = float(entry.get("minutes", 20.0)) if (entry.get("minutes") is float or entry.get("minutes") is int) else 20.0
+	entry.start = now
+	entry.until = now + clampf(float(entry.get("hours", 1.0)) if (entry.get("hours") is float or entry.get("hours") is int) else 1.0, 0.25, 4.0)
+	entry.fixed = true
+	entry.injected = true
+	if card.get("action") != null:
+		card.action.stop(card.ctx)
+		_cancel_step_state(card.ctx)
+		card.action = null
+		card.index += 1
+		_set_busy(id, false)
+	elif not (card.get("essence", {}) as Dictionary).is_empty():
+		card.essence = {}
+		card.index += 1
+		_set_busy(id, false)
+	card.index = mini(int(card.index), card.steps.size())
+	(card.steps as Array).insert(card.index, entry)
+	card.sidetracked = false
+	var actor: Variant = population.live.get(id, {}).get("actor")
+	if actor is Node3D and is_instance_valid(actor): _publish(id, actor, card)
+	return true
 
 func _handler(name: String) -> RefCounted:
 	if not _handlers.has(name):

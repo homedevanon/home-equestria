@@ -114,6 +114,7 @@ static func attach(existing: Node3D) -> Node3D:
 	venue._shell_scene = shell_scene; venue._leaf_scene = leaf_scene; venue._interior_scene = interior_scene
 	existing.add_child(venue)
 	existing.set_meta("spa_interior", true)
+	print("[spa] venue attached")
 	return venue
 
 
@@ -143,6 +144,7 @@ static func load_scene(path: String) -> Node3D:
 
 func _ready() -> void:
 	add_to_group("spa_venue")
+	add_to_group("interaction_hint_sources")
 	if _shell_scene == null: _shell_scene = load_scene(SHELL_PATH)
 	if _leaf_scene == null: _leaf_scene = load_scene(LEAF_PATH)
 	if _interior_scene == null: _interior_scene = load_scene(INTERIOR_PATH)
@@ -424,6 +426,18 @@ func set_open(value: bool) -> void:
 	door._close_delay = 2.0 if not value else 0.0
 	if not value: door._visitors.clear()
 	if not is_instance_valid(door.holder): door.target = door.open_limit() if value else 0.0
+
+
+## Outside opening hours the locked door says so (players arriving at night or on a new game at
+## 08:50 found a shut building with no sign and thought the spa was missing, 2026-10-31).
+func interaction_hint() -> Dictionary:
+	if business_open or door == null: return {}
+	var camera: Camera3D = preload("res://world/player_view.gd").camera(self)
+	if camera == null or is_inside(camera.global_position): return {}
+	var at: Vector3 = to_local(camera.global_position)
+	if absf(at.x - DOOR_X) > 2.5 or at.z < DOOR_PLANE_Z - 0.2 or at.z > DOOR_PLANE_Z + 3.5 or absf(at.y - FLOOR_Y) > 3.0: return {}
+	return {"target": door, "point": to_global(Vector3(DOOR_X, FLOOR_Y + 1.5, DOOR_PLANE_Z + 0.1)), "outline": null,
+		"text": "Spa closed · open %02d:00-%02d:00" % [int(OPEN_HOUR), int(CLOSE_HOUR)]}
 
 
 ## Opens the door for a pony near it (inwards only during hours; outwards always).

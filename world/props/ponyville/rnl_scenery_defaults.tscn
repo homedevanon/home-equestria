@@ -28,6 +28,11 @@ position = Vector3(134.148998, -18.794775, -31.036011000000002)
 [node name="bush1_small_01" parent="Everfree/Fluttershy"]
 position = Vector3(123.0, -19.733178, -12.0)
 
+[node name="schoolhouse_01" parent="South/School"]
+position = Vector3(28.0, -15.59692, -80.0)
+
+[editable path="South/School"]
+
 [editable path="Everfree/Fluttershy"]
 
 [editable path="West/Library"]

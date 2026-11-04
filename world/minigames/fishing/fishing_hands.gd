@@ -128,7 +128,8 @@ func _physics_process(delta: float) -> void:
 			var hold: Transform3D = Transform3D(Basis(Vector3.RIGHT,-.72-_cast_pose),Vector3(.25,-.30,-.47))
 			var form: Node = PONY_FORM.find(get_tree())
 			if form == null or not is_instance_valid(form.get("avatar")):
-				rod.global_transform = inventory.camera.global_transform*hold
+				# His hand's reach follows Anon's height (player_mouth.gd human_scale).
+				rod.global_transform = PLAYER_MOUTH.hold_transform(inventory.camera,hold)
 			elif form.is_unicorn():
 				rod.global_transform = inventory.camera.global_transform*Transform3D(hold.basis,UNICORN_ROD)
 				_glow(form)

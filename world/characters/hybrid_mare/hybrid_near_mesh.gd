@@ -768,7 +768,8 @@ static func _output_material(pony: Node, out: Dictionary) -> Material:
 		for i in sources.size():
 			snout[i] = 1.0 if bool(_param(sources[i], "native_snout_detail", false)) else 0.0
 		mat.set_shader_parameter("pal_snout", snout)
-	_fill_palette(mat, sources)
+	_fill_palette(mat, sources, true)
+	_mark_lip_tone(pony, out, mat)
 	if first.next_pass != null:
 		var hulls := []
 		for material in sources:
@@ -780,23 +781,89 @@ static func _output_material(pony: Node, out: Dictionary) -> Material:
 		var facing := PackedFloat32Array(); facing.resize(ENTRIES)
 		var eye_mask := PackedFloat32Array(); eye_mask.resize(ENTRIES)
 		for i in hulls.size():
-			width[i] = float(_param(hulls[i], "outline_width", 0.0035))
+			# A rig lip hull thinned for speech (hybrid_mare.set_lip_hull_open) keeps its full width.
+			width[i] = float(hulls[i].get_meta(&"lip_width")) if hulls[i].has_meta(&"lip_width") else float(_param(hulls[i], "outline_width", 0.0035))
 			facing[i] = 1.0 if bool(_param(hulls[i], "face_viewer", true)) else 0.0
 			eye_mask[i] = 1.0 if bool(_param(hulls[i], "native_eye_socket_mask", false)) else 0.0
 		hull.set_shader_parameter("pal_width", width)
 		hull.set_shader_parameter("pal_face_viewer", facing)
 		hull.set_shader_parameter("pal_eye_socket_mask", eye_mask)
+		# The Head's Lip entries, whose width hybrid_mare.set_lip_hull_open drops while speaking.
+		var lips := PackedInt32Array()
+		for i in out.entries.size():
+			var rig := pony.get_node_or_null(out.entries[i][0]) as MeshInstance3D
+			var source: Material = rig.mesh.surface_get_material(out.entries[i][1]) if rig != null and rig.name == "Head" else null
+			if source != null and source.resource_name.ends_with(" Lip"): lips.append(i)
+		if not lips.is_empty():
+			hull.set_meta(&"lip_entries", lips)
+			hull.set_meta(&"lip_widths", width)
 		mat.next_pass = hull
 	return mat
 
 
+## Hull width of the merged Head Lip entries: `width`, or < 0 for their built width.
+static func set_lip_width(state: Dictionary, width: float) -> void:
+	for entry in state.get("groups", []):
+		for vname in entry.built:
+			for material in entry.built[vname].materials:
+				var hull := (material as Material).next_pass as ShaderMaterial
+				if hull == null or not hull.has_meta(&"lip_entries"):
+					continue
+				var built: PackedFloat32Array = hull.get_meta(&"lip_widths")
+				var widths := built.duplicate()
+				for i: int in hull.get_meta(&"lip_entries"):
+					widths[i] = built[i] if width < 0.0 else width
+				hull.set_shader_parameter("pal_width", widths)
+
+
+## The Head's Lip entries and their same-side Snout entries, for set_lip_tone (viseme review round 3:
+## the pursed "oo" lights the lip colour toward the snout's while speaking).
+static func _mark_lip_tone(pony: Node, out: Dictionary, mat: ShaderMaterial) -> void:
+	var names := {}
+	for i in out.entries.size():
+		var rig := pony.get_node_or_null(out.entries[i][0]) as MeshInstance3D
+		var source: Material = rig.mesh.surface_get_material(out.entries[i][1]) if rig != null and rig.name == "Head" else null
+		if source != null: names[source.resource_name] = i
+	var lips := PackedInt32Array()
+	var snouts := PackedInt32Array()
+	for name: String in names:
+		if name.ends_with(" Lip") and names.has(name.trim_suffix(" Lip") + " Snout"):
+			lips.append(names[name])
+			snouts.append(names[name.trim_suffix(" Lip") + " Snout"])
+	if lips.is_empty(): return
+	mat.set_meta(&"lip_tone_entries", [lips, snouts])
+	mat.set_meta(&"lip_pal_color", mat.get_shader_parameter("pal_color"))
+	mat.set_meta(&"lip_pal_shadow", mat.get_shader_parameter("pal_shadow"))
+
+
+## Lip entries of the merged Head blended `tone` of the way to their snout's colour and shade.
+static func set_lip_tone(state: Dictionary, tone: float) -> void:
+	for entry in state.get("groups", []):
+		for vname in entry.built:
+			for material in entry.built[vname].materials:
+				var mat := material as ShaderMaterial
+				if mat == null or not mat.has_meta(&"lip_tone_entries"):
+					continue
+				var pairs: Array = mat.get_meta(&"lip_tone_entries")
+				for param: String in ["pal_color", "pal_shadow"]:
+					var built: PackedVector4Array = mat.get_meta(StringName("lip_" + param))
+					var values := built.duplicate()
+					for k in (pairs[0] as PackedInt32Array).size():
+						var lip: int = pairs[0][k]
+						values[lip] = built[lip].lerp(built[pairs[1][k]], tone)
+					mat.set_shader_parameter(param, values)
+
+
 ## Colour, shade, specular and fresnel of each source, linear as the engine uploads source_color.
-static func _fill_palette(target: ShaderMaterial, sources: Array) -> void:
+## `lip_base`: a rig lip material toned for speech (hybrid_mare.set_lip_tone) gives its built colour.
+static func _fill_palette(target: ShaderMaterial, sources: Array, lip_base := false) -> void:
 	for pair in [["pal_color", "color", Color(0.7, 0.12, 0.86, 1.0)], ["pal_shadow", "shadow_color", Color(0, 0, 0, 0)],
 			["pal_specular", "specular", Color(0.3, 0.3, 0.3, 0.5)], ["pal_fresnel", "fresnel", Color(0.2, 0.2, 0.2, 0.3)]]:
 		var values := PackedVector4Array(); values.resize(ENTRIES)
 		for i in sources.size():
 			var value: Variant = _param(sources[i], pair[1], pair[2])
+			var base_key := StringName("lip_base_" + String(pair[1]))
+			if lip_base and (sources[i] as Material).has_meta(base_key): value = (sources[i] as Material).get_meta(base_key)
 			var c: Color = value if value is Color else Color((value as Vector4).x, value.y, value.z, value.w)
 			var linear := c.srgb_to_linear()
 			values[i] = Vector4(linear.r, linear.g, linear.b, linear.a)

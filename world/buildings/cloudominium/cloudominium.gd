@@ -6,6 +6,8 @@ const SHELL := preload("res://world/buildings/cloudominium/shell.gd")
 const ARCHITECTURE := preload("res://world/buildings/cloudominium/architecture.gd")
 const FURNITURE := preload("res://world/buildings/cloudominium/furniture.gd")
 const HOME := preload("res://world/buildings/cloudominium/home.gd")
+const DRIFT := preload("res://world/buildings/cloudominium/cloud_drift.gd")
+const MATERIALS := preload("res://world/buildings/cloudominium/materials.gd")
 var home: Node3D
 var architecture: Node3D
 var furniture: Node3D
@@ -32,4 +34,10 @@ static func attach(existing: Node3D) -> Node3D:
 	runtime.add_child(runtime.home)
 	runtime.home.configure(prepared.layout, runtime.architecture, runtime.furniture, prepared.door)
 	existing.set_meta("cloudominium_interior", true)
+	existing.set_meta("floating", true)
+	var drift: Node = DRIFT.new()
+	drift.name = "CloudDrift"
+	runtime.add_child(drift)
+	drift.on_moved = MATERIALS.move_room
+	drift.bind(existing, runtime)
 	return runtime

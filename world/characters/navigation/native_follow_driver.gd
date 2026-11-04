@@ -147,8 +147,12 @@ func _physics_process(delta: float) -> void:
 		var pony: Node3D = navigator.pony as Node3D
 		if not is_instance_valid(pony) or not pony.is_inside_tree(): continue
 		observers.append(pony)
+		# Slot -1: commanded nothing. The second key names her across ticks (a committed pass round
+		# her in navigation_steering.cpp): her native handle, the same id her follower row has on
+		# the ticks she walks, else her instance id.
 		_keys.append(-1)
-		_keys.append(0)
+		var handle: PackedInt64Array = navigator._native_handle
+		_keys.append((handle[0] << 32) | handle[1] if handle.size() == 2 else (1 << 62) | (navigator.get_instance_id() & 0xffffffffffff))
 		_positions.append(pony.global_position)
 		var velocity: Variant = pony.get(&"_ground_velocity")
 		_velocities.append(velocity if velocity is Vector3 else Vector3.ZERO)

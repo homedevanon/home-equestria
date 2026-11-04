@@ -9,6 +9,7 @@ extends RefCounted
 ## Every token sent is paid in full (dev 2026-10-14): sections have hard character budgets.
 
 const STORE := preload("res://world/ai/memory/story_store.gd")
+const TOWN_TALK := preload("res://world/ai/memory/town_talk.gd")
 ## Running summary (AI tokens 2026-10-22: a 31-minute capture sent 53 identical failing calls,
 ## 1.33M input tokens, because every reply hit its cap and the failure was resent every 20 s).
 ## Story text after noise filtering (story_line) may reach this size before a summary call.
@@ -16,22 +17,27 @@ const SUMMARY_TRIGGER_CHARS := 6000
 ## One call covers at most this many ponies and this much new story text, oldest first.
 const SUMMARY_BATCH_PONIES := 8
 const SUMMARY_BATCH_CHARS := 9000
-## Visible reply per pony block (90 words of plain text plus header) and fixed slack.
-const SUMMARY_TOKENS_PER_PONY := 170
-const SUMMARY_TOKENS_BASE := 80
+## Visible reply per pony block (90 words of plain text plus header) and fixed slack. A cap is
+## a ceiling, not a charge: only written tokens are billed. 170 per pony cut off wordy models
+## (player report 2026-10-31: summaries failed on a hidden length limit, then stopped).
+const SUMMARY_TOKENS_PER_PONY := 320
+const SUMMARY_TOKENS_BASE := 200
 ## Extra max_tokens for endpoints that count hidden reasoning inside it (OpenAI-compatible
-## proxies in front of thinking models did: 1600 tokens billed, 0-111 characters returned).
-const SUMMARY_REASONING_ROOM := 2048
-## Seconds between calls after progress, and after each consecutive failure (then held).
+## proxies in front of thinking models did: 1600 tokens billed, 0-111 characters returned;
+## 2048 still ran out on thinking models, so the reply came back empty and cut off).
+const SUMMARY_REASONING_ROOM := 6144
+## Seconds between calls after progress, and after each consecutive failure (then held; a
+## 30-minute hold looked like summaries had stopped for good).
 const SUMMARY_MIN_INTERVAL := 45.0
-const SUMMARY_BACKOFF := [120.0, 300.0, 600.0, 1200.0, 1800.0]
+const SUMMARY_BACKOFF := [120.0, 300.0, 600.0]
 ## A call that never reported back stops blocking new ones after this long.
 const SUMMARY_STALE_SECONDS := 300.0
 ## Stored text per pony summary (the prompt section has its own budget too).
 const SUMMARY_TEXT_CHARS := 900
 ## Command bookkeeping worth remembering once finished; movement and gaze never are.
 const MEMORABLE_ACTIONS := ["relationship_offer", "relationship_answer", "request_space", "buck_player", "cuddle",
-	"kiss_player", "give_house", "send_letter", "air_show", "sonic_rainboom", "wake_up", "magic_show", "take_off", "put_on"]
+	"kiss_player", "give_house", "send_letter", "air_show", "sonic_rainboom", "wake_up", "magic_show", "take_off", "put_on",
+	"give", "ask", "offer_job", "sell", "buy", "invite"]
 ## Journal kinds the summary skips: routine bookkeeping (today's routine still reaches prompts
 ## through day_events), command intentions and private director notes.
 const SUMMARY_SKIP_KINDS := ["intention", "brain", "day", "shared_outing", "conversation"]
@@ -459,10 +465,11 @@ static func _block_finished(body: Array) -> bool:
 ## Planning notes ahead of the spoken reply. Providers may refuse this now and then (Opus did on
 ## 2026-10-15); the client simply retries. Never soften the prompt for one provider (dev 2026-10-15).
 ## NEXT once said "make it happen in this reply or the next" and weak models invented off-screen
-## events; DONE closes threads (player thread report 2026-10-29).
+## events; DONE closes threads (player thread report 2026-10-29). ELSEWHERE picks from the TOWN NOW
+## line (town_note(), town_talk.gd) instead of inventing town events (thread report 2026-11-03).
 const BRAIN_INSTRUCTION := """DIRECTOR NOTES (required this turn): start your reply with a private <brain>...</brain> block, plain text, at most 60 words, nobody hears it:
 WANT pony_id: what this pony wants right now, apart from Anon, never something Anon turned down (one line per pony present)
-ELSEWHERE: one thing happening off-screen in town that ponies might hear about later
+ELSEWHERE: one true thing a pony under TOWN NOW is doing, as town talk in your own words; skip it when none is listed
 NEXT: one likely thing that could happen soon, grounded in who and what is here now; never an event about a pony or thing not present
 DONE: what is settled, dropped, turned down by Anon or no longer matters (optional)
 Setbacks must be fair: foreshadowed or the result of earlier facts. After </brain>, write the normal reply."""
@@ -489,11 +496,31 @@ func take_notes(text: String, speaker: String, present: Array) -> String:
 	var brain := RegEx.create_from_string(BRAIN_RE)
 	var found := brain.search(text)
 	if found != null:
-		_store_brain(found.get_string(1), speaker, present)
 		text = brain.sub(text, "", true).strip_edges()
+		_store_brain(found.get_string(1), speaker, present, text)
 	return RegEx.create_from_string(BRAIN_OPEN_RE).sub(text, "", false).strip_edges()
 
-func _store_brain(note: String, speaker: String, present: Array) -> void:
+## The TOWN NOW line for a notes turn (town_talk.gd), or "": real off-screen ponies and finished day
+## steps, leaving out ponies the last rumours already named.
+func town_note(tree: SceneTree, present: Array) -> String:
+	if not is_open() or tree == null: return ""
+	var rumours: Array = store.lines_of_kinds(["rumour"], TOWN_TALK.RECENT_RUMOURS).map(func(row): return str(row.text))
+	var now := _now()
+	var events: Array = store.lines_of_kinds(["day"], 8).filter(func(row): return int(row.day) * 1440 + int(row.minute) >= int(now.day) * 1440 + int(now.minute) - TOWN_TALK.SAME_PONY_MINUTES)
+	return TOWN_TALK.town_now(tree, present, rumours, events, name_of, int(now.day) * 1440 + int(now.minute))
+
+## A rumour from a notes turn, or why not (town_talk.gd reject): stored as hearsay for the speaker.
+func _store_rumour(text: String, speaker: String, reply: String) -> void:
+	var now := _now()
+	var said: Array = store.witnessed(speaker, 12, 0, ["say"]).map(func(row): return str(row.text))
+	if not reply.is_empty(): said.append(reply)
+	var why := TOWN_TALK.reject(text, store.lines_of_kinds(["rumour"], TOWN_TALK.RECENT_RUMOURS), said, now)
+	if not why.is_empty():
+		print("[story] rumour skipped (%s): %s" % [why, text.left(120)])
+		return
+	store.add_line(now.day, now.minute, "", "rumour", "", "", TOWN_TALK.PREFIX + text, [speaker])
+
+func _store_brain(note: String, speaker: String, present: Array, reply := "") -> void:
 	if not is_open(): return
 	var now := _now()
 	store.add_line(now.day, now.minute, "", "brain", speaker, "", note.strip_edges(), [speaker])
@@ -519,7 +546,7 @@ func _store_brain(note: String, speaker: String, present: Array) -> void:
 		elif line.begins_with("NEXT:"):
 			store.add_thread(speaker, "Soon: " + line.trim_prefix("NEXT:").strip_edges(), store.last_line_id())
 		elif line.begins_with("ELSEWHERE:"):
-			store.add_line(now.day, now.minute, "", "rumour", "", "", "Talk around town: " + line.trim_prefix("ELSEWHERE:").strip_edges(), [speaker])
+			_store_rumour(line.trim_prefix("ELSEWHERE:").strip_edges(), speaker, reply)
 
 ## Applies and removes [feel: pony_id +1] tags (speaker's feeling toward another pony).
 func take_feelings(text: String, speaker: String) -> String:

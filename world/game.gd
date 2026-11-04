@@ -95,6 +95,7 @@ var desktop_presentation: Node3D
 var desktop_interactions: Node
 var harvest_pickup: Node
 var flight_audio: Node3D
+var mechanics: Node
 
 func _ready() -> void:
 	SHUTDOWN.reset()
@@ -203,6 +204,9 @@ func _ready() -> void:
 	wardrobe.name="PonyWardrobe";add_child(wardrobe);wardrobe.setup(self)
 	var feeding:Node=preload("res://world/relationships/hand_feeding.gd").new()
 	feeding.name="HandFeeding";add_child(feeding);feeding.setup(self)
+	# The shared mechanics hub (docs/MECHANICS_ARCHITECTURE_2026_11_01.md): facts, ledger, market.
+	mechanics=preload("res://world/mechanics/mechanics.gd").new()
+	mechanics.name="Mechanics";add_child(mechanics);mechanics.setup(self)
 	shop_world=preload("res://world/shop/shop_world.gd").new()
 	shop_world.name="ShopWorld";add_child(shop_world)
 	apple_bucking=preload("res://world/minigames/apple_bucking/apple_bucking.gd").new()
@@ -313,6 +317,7 @@ func _ready() -> void:
 	harvest_pickup.name = "HarvestPickup"; add_child(harvest_pickup)
 	harvest_pickup.setup(apple_bucking, inventory)
 	apple_bucking.harvest_completed.connect(func(_tree_id:String,receipt:String)->void:
+		# The "harvested" fact is written with the payment (game_saves.gd commit_harvest).
 		if is_instance_valid(relationship_runtime):relationship_runtime.shared_activity("orchard",apple_bucking.player_position(),receipt,["applejack"]))
 	if is_instance_valid(inventory):
 		var interaction_hints := preload("res://world/ui/interaction_hints.gd").new()

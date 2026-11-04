@@ -58,6 +58,7 @@ static func valid_state(value: Variant) -> bool:
 		var label: Variant = row.get("label", "")
 		if not label is String or (label as String).length() > MAX_LABEL: return false
 		if row.has("kind") and row.get("kind") != KIND_PHOTO: return false
+		if row.has("printed") and not row.get("printed") is bool: return false
 	return true
 
 ## A slot's own pointers and labels replace the current ones; the images are shared files.
@@ -119,11 +120,31 @@ static func add_art(id: String, orient: String, label: String, kind: String = ""
 	if not valid_art_id(id) or not orient in ["P", "L"]: return
 	if not _state.art.has(id) and _state.art.size() >= MAX_ENTRIES: return
 	_state.art[id] = {"orient": orient, "label": label.left(MAX_LABEL)}
-	if kind == KIND_PHOTO: _state.art[id].kind = KIND_PHOTO
+	if kind == KIND_PHOTO:
+		_state.art[id].kind = KIND_PHOTO
+		_state.art[id].printed = false
 	_write()
 
 static func is_photo(id: String) -> bool:
 	return str((_state.art.get(id, {}) as Dictionary).get("kind", "")) == KIND_PHOTO
+
+## Every photo of this world, newest first (ids start with their hex time).
+static func photos() -> Array[String]:
+	var found: Array[String] = []
+	for id: String in _state.art:
+		if is_photo(id): found.append(id)
+	found.sort()
+	found.reverse()
+	return found
+
+## A photo prints once from the journal. Photos from before the journal came with their print.
+static func can_print(id: String) -> bool:
+	return is_photo(id) and not bool((_state.art[id] as Dictionary).get("printed", true))
+
+static func mark_printed(id: String) -> void:
+	if not is_photo(id): return
+	_state.art[id].printed = true
+	_write()
 
 static func art(id: String) -> Dictionary:
 	return (_state.art.get(id, {}) as Dictionary).duplicate()
@@ -266,6 +287,7 @@ static func _clean(value: Dictionary) -> Dictionary:
 	for id: String in arts:
 		next.art[id] = {"orient": str(arts[id].orient), "label": str(arts[id].get("label", ""))}
 		if str(arts[id].get("kind", "")) == KIND_PHOTO: next.art[id].kind = KIND_PHOTO
+		if arts[id].has("printed"): next.art[id].printed = bool(arts[id].printed)
 	return next
 
 static func _write() -> void:

@@ -5,9 +5,9 @@ const PHYSICS=preload("res://world/characters/hybrid_mare/hybrid_tail_physics.gd
 
 func _apply_show_shading(model: Node) -> void:
 	super._apply_show_shading(model)
-	if identity != null and identity.id == "strawberry_sunrise":
+	if identity != null and identity.character() == "strawberry_sunrise":
 		_solid_strawberry_hair(model)
-	if identity == null or identity.id != "braeburn": return
+	if identity == null or identity.character() != "braeburn": return
 	var meshes: Array = [model] if model is MeshInstance3D else model.find_children("*", "MeshInstance3D", true, false)
 	for mi: MeshInstance3D in meshes:
 		if not String(mi.name).begins_with("BraeburnDevkit"): continue
@@ -70,8 +70,8 @@ func _ready()->void:
 			if suffix=="" and anchored.get_meta("contact_version",-1)==PHYSICS.CONTACT_VERSION:
 				PHYSICS._contact_cache[anchored.get_instance_id()]=anchored.get_meta("contacts")
 	super._ready()
-	if identity != null and identity.id == "vinyl_scratch": _attach_vinyl_glasses()
-	if identity != null and identity.id == "braeburn": _attach_braeburn_hat()
+	if identity != null and identity.character() == "vinyl_scratch": _attach_vinyl_glasses()
+	if identity != null and identity.character() == "braeburn": _attach_braeburn_hat()
 	if tail_motion != null and tail_motion.springs != null:
 		var previous_springs = tail_motion.springs
 		var springs = preload("res://world/characters/background/background_tail_physics.gd").new()
@@ -79,7 +79,7 @@ func _ready()->void:
 			springs.set(property, previous_springs.get(property))
 		springs.bind(self, hair_skeleton)
 		tail_motion.springs = springs
-	if identity != null and identity.id == "derpy_hooves" and eye_motion != null:
+	if identity != null and identity.character() == "derpy_hooves" and eye_motion != null:
 		var previous := eye_motion
 		var sk: Skeleton3D = head.skeleton
 		var index := previous.get_index()

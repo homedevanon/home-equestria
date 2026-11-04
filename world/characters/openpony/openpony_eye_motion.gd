@@ -40,6 +40,9 @@ var _last_inputs: Array = []
 ## The head's AnimationPlayer (bind): a playing clip moves brow/ear source poses, so no reuse.
 var _player: AnimationPlayer
 var blink_enabled := true
+## Closed smiling expressions already have lid contact; their blink clock keeps
+## running without briefly pulling that pose back toward an open native eye.
+var blink_strength := 1.0
 var _rests: Array[Transform3D] = []
 var _parents: Array[int] = []
 var _rest_globals: Array[Transform3D] = []
@@ -59,6 +62,71 @@ var _elapsed := 1.0
 var _duration := 0.08
 var _blink_wait := 3.0
 var _blink_time := -1.0
+var _blink_close := .13
+var _blink_hold := .025
+var _blink_open := .23
+var _paired_blink := false
+
+## Eye life on a target (dev 2026-11-03: "her pupils are just dead solid facing me"). While she
+## fixates (target_weight), a second clock darts both eyes together between the viewer's face points
+## (each eye, between them, now and then the mouth), lets them drift a little between darts and
+## sometimes glances away and straight back. target_world itself never moves, so she keeps tracking
+## it; eye_pose()/show_gaze_uv() clamp the result to the usual gaze limits. The mood
+## (set_gaze_mood, from the expression face) sets how often, how far and how slowly:
+## [mean seconds between darts, dart size, chance a dart is a glance away, glance radians,
+##  glance dwell seconds, speed, drift, downward glance bias].
+const GAZE_MOODS := {
+	"neutral": [0.85, 1.0, 0.09, 0.15, 0.45, 1.0, 1.0, 0.3],
+	"focused": [1.7, 0.55, 0.02, 0.10, 0.18, 1.3, 0.45, 0.2],
+	"happy": [0.95, 0.95, 0.07, 0.14, 0.45, 1.0, 0.9, 0.3],
+	"relaxed": [1.25, 0.85, 0.06, 0.12, 0.6, 0.85, 0.8, 0.4],
+	"shy": [0.5, 1.15, 0.2, 0.16, 0.45, 1.0, 1.3, 0.85],
+	"fearful": [0.5, 1.3, 0.18, 0.18, 0.3, 1.2, 1.5, 0.2],
+	"surprised": [1.3, 0.8, 0.04, 0.12, 0.3, 1.2, 0.6, 0.2],
+	"confused": [0.7, 1.05, 0.11, 0.15, 0.45, 1.0, 1.0, 0.0],
+	"sad": [1.7, 0.8, 0.14, 0.14, 0.9, 0.6, 0.7, 0.9],
+	"sleepy": [2.0, 0.75, 0.10, 0.10, 0.9, 0.55, 0.6, 0.7],
+}
+## Expression face (face_poses.gd LINE_FACES) -> gaze mood; anything unlisted reads as neutral.
+const FACE_GAZE_MOODS := {"angry": "focused", "ponyrage": "focused", "annoyed": "focused",
+	"suspicious": "focused", "anticipation": "focused", "angersmug": "focused",
+	"happy": "happy", "delighted": "happy", "silly": "happy", "amused": "happy", "crookedsmile": "happy",
+	"relaxed": "relaxed", "affectionate": "relaxed", "shy": "shy", "disgusted": "shy",
+	"fearful": "fearful", "surprised": "surprised", "ooo": "surprised", "confused": "confused",
+	"sad": "sad", "pain": "sad"}
+## The viewer's face in half-eye-spacings: left eye, right eye, between them, mouth; and how often
+## each is the next dart's landing point.
+const FACE_POINTS: Array[Vector2] = [Vector2(-1, 0), Vector2(1, 0), Vector2(0, 0), Vector2(0, -2.2)]
+const FACE_POINT_ODDS: Array[float] = [.37, .37, .16, .10]
+## Half the distance between a viewer's eyes (metres), drawn 1.5x larger so the darts read on a
+## cartoon eye; the angle is clamped so a far viewer still gets visible darts and a near one no jumps.
+const FACE_HALF_EYES := .032
+const FACE_POINT_GAIN := 1.5
+var gaze_mood := "neutral"
+var _mood := PackedFloat32Array(GAZE_MOODS.neutral)
+var _mood_goal := PackedFloat32Array(GAZE_MOODS.neutral)
+var _focus_from := Vector2.ZERO
+var _focus_to := Vector2.ZERO
+var _focus_offset := Vector2.ZERO
+var _focus_elapsed := 1.0
+var _focus_duration := .05
+var _focus_wait := .3
+var _focus_point := -1
+var _glance_left := -1.0
+var _drift := Vector2.ZERO
+var _drift_goal := Vector2.ZERO
+## Darts and glances made on a target since bind (labs read them).
+var focus_saccades := 0
+var focus_glances := 0
+
+
+## `face`: an expression face or a GAZE_MOODS name; "" or unknown -> neutral. Eased in advance().
+func set_gaze_mood(face: String) -> void:
+	var mood: String = FACE_GAZE_MOODS.get(face, face if GAZE_MOODS.has(face) else "neutral")
+	if mood == gaze_mood: return
+	gaze_mood = mood
+	var values: Array = GAZE_MOODS[mood]
+	for i in values.size(): _mood_goal[i] = float(values[i])
 
 
 ## Every clip bind() samples. With the rig's bones they are all its poses depend on.
@@ -75,6 +143,8 @@ func bind(player: AnimationPlayer) -> void:
 	_last_inputs = []
 	# From the global generator: random in game, repeatable in a test that calls seed().
 	_rng.seed = randi()
+	_blink_wait = _rng.randf_range(1.2, 6.0)
+	_wait = _rng.randf_range(.4, 3.5)
 	var names := PackedStringArray()
 	for i in sk.get_bone_count():
 		_rests.append(sk.get_bone_rest(i))
@@ -189,17 +259,108 @@ func advance(delta: float) -> void:
 	var t := clampf(_elapsed / _duration, 0.0, 1.0)
 	var eased := t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 	_scan_offset = _from.lerp(_to, eased) if saccades_enabled else Vector2.ZERO
-	_offset = _scan_offset * lerpf(1.0, .22, smoothstep(0.0, 1.0, _fixation))
+	if saccades_enabled and _fixation > .02:
+		_advance_focus(delta)
+	elif _focus_point != -1 or _glance_left >= 0.0 or _focus_offset != Vector2.ZERO:
+		_focus_offset = Vector2.ZERO
+		_drift = Vector2.ZERO
+		_focus_point = -1
+		_glance_left = -1.0
+		_focus_wait = _rng.randf_range(.1, .4)
+	# On a target the face darts replace the idle exploration.
+	var fixed := smoothstep(0.0, 1.0, _fixation)
+	_offset = _scan_offset.lerp(_focus_offset + _drift, fixed) if saccades_enabled else Vector2.ZERO
 	if not blink_enabled: return
 	_blink_wait -= delta
 	if _blink_wait <= 0.0 and _blink_time < 0.0:
 		_blink_time = 0.0
-		_blink_wait = _rng.randf_range(3.0, 7.0)
+		# Fast close, brief contact, softer reopening. Each blink has its own
+		# timing; occasional pairs never turn into an endless chain.
+		_blink_close = _rng.randf_range(.105, .155)
+		_blink_hold = _rng.randf_range(.012, .045)
+		_blink_open = _rng.randf_range(.19, .29)
+		if _paired_blink:
+			_paired_blink = false
+			_blink_wait = _rng.randf_range(3.0, 7.5)
+		else:
+			_paired_blink = _rng.randf() < .09
+			_blink_wait = _blink_close + _blink_hold + _blink_open + _rng.randf_range(.10, .22) \
+				if _paired_blink else _rng.randf_range(3.0, 7.5)
 	closure = 0.0
 	if _blink_time >= 0.0:
 		_blink_time += delta
-		closure = smoothstep(0.0, 0.10, _blink_time) if _blink_time < 0.10 else 1.0 - smoothstep(0.10, 0.26, _blink_time)
-		if _blink_time >= 0.26: _blink_time = -1.0
+		var opening := _blink_close + _blink_hold
+		var finished := opening + _blink_open
+		closure = smoothstep(0.0, _blink_close, _blink_time) if _blink_time < _blink_close \
+			else 1.0 - smoothstep(opening, finished, _blink_time)
+		if _blink_time >= finished: _blink_time = -1.0
+	closure *= clampf(blink_strength, 0.0, 1.0)
+
+
+## The on-target clock: per-pony floats only, no allocation.
+func _advance_focus(delta: float) -> void:
+	var ease := 1.0 - exp(-delta * 3.0)
+	for i in _mood.size(): _mood[i] = lerpf(_mood[i], _mood_goal[i], ease)
+	_focus_wait -= delta
+	if _glance_left >= 0.0:
+		_glance_left -= delta
+		if _glance_left < 0.0: _focus_wait = 0.0 # straight back to her face
+	if _focus_wait <= 0.0: _focus_start()
+	_focus_elapsed += delta
+	var t := clampf(_focus_elapsed / _focus_duration, 0.0, 1.0)
+	_focus_offset = _focus_from.lerp(_focus_to, t * t * t * (t * (t * 6.0 - 15.0) + 10.0))
+	# Slow drift while fixating, corrected by the next dart. Close (full-rate) ponies only: it
+	# changes the offset every tick, which would end the clip tiers' unchanged-input reuse.
+	if rate_divisor == 1 and t >= 1.0 and _glance_left < 0.0:
+		_drift = _drift.lerp(_drift_goal, 1.0 - exp(-delta * 1.2))
+
+
+func _focus_start() -> void:
+	var spacing := _face_spacing()
+	var to: Vector2
+	if _glance_left < 0.0 and _focus_point >= 0 and _rng.randf() < _mood[2]:
+		# A brief look away; the return is the next dart, after the mood's dwell.
+		var angle := _rng.randf_range(-PI, PI)
+		var direction := Vector2(cos(angle), sin(angle) * .8)
+		if _rng.randf() < _mood[7]: direction = Vector2(direction.x, -absf(direction.y) - .35).normalized()
+		to = direction * _mood[3] * _rng.randf_range(.7, 1.25)
+		_glance_left = _mood[4] * _rng.randf_range(.6, 1.5)
+		_focus_point = -1
+		_focus_wait = INF
+		focus_glances += 1
+	else:
+		_glance_left = -1.0
+		var point := _focus_point
+		for _attempt in 3:
+			if point != _focus_point: break
+			var roll := _rng.randf()
+			point = FACE_POINTS.size() - 1
+			for i in FACE_POINT_ODDS.size():
+				roll -= FACE_POINT_ODDS[i]
+				if roll < 0.0:
+					point = i
+					break
+		_focus_point = point
+		var size := spacing * _mood[1]
+		to = FACE_POINTS[point] * size + Vector2(_rng.randf_range(-.18, .18), _rng.randf_range(-.18, .18)) * size
+		_focus_wait = _mood[0] * _rng.randf_range(.45, 1.6)
+	var drift_angle := _rng.randf_range(-PI, PI)
+	_drift_goal = Vector2(cos(drift_angle), sin(drift_angle)) * spacing * .3 * _mood[6] * _rng.randf()
+	_focus_from = _focus_offset + _drift
+	_drift = Vector2.ZERO
+	_focus_to = to
+	_focus_duration = (_rng.randf_range(.03, .05) + _focus_from.distance_to(to) * .35) / maxf(_mood[5], .1)
+	_focus_elapsed = 0.0
+	focus_saccades += 1
+
+
+## Half the viewer's eye spacing as an angle from her head (radians).
+func _face_spacing() -> float:
+	var distance := 1.2
+	var sk: Skeleton3D = get_skeleton() if is_inside_tree() else null
+	if sk != null and _head_bone >= 0:
+		distance = (sk.global_transform * sk.get_bone_global_pose(_head_bone).origin).distance_to(target_world)
+	return clampf(FACE_POINT_GAIN * FACE_HALF_EYES / maxf(distance, .1), .02, .06)
 
 
 func _unprofiled_process_modification() -> void:

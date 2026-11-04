@@ -1,0 +1,37 @@
+{
+	"version": 1,
+	"tags": {
+		"food:cupcake": ["party"],
+		"food:strawberry-cinnamon-cilantro-cupcake": ["party"],
+		"food:rainbow-pie": ["party"],
+		"food:strawberry-cake-slice": ["party"],
+		"food:sprinkle-donut": ["party"],
+		"food:oats": ["animal_feed"],
+		"food:hay-bundle": ["animal_feed"],
+		"carrot": ["animal_feed"],
+		"apple": ["animal_feed"],
+		"goods:pillow": ["fabric"],
+		"goods:folded-blanket": ["fabric"],
+		"goods:floor-cushion": ["fabric"],
+		"goods:rug-round": ["fabric"],
+		"goods:curtains": ["fabric"],
+		"goods:doormat": ["fabric"],
+		"goods:cottage-tea-set": ["tea"],
+		"goods:potted-plant": ["plant"],
+		"goods:apple-sapling": ["plant", "plantable"],
+		"notebook": ["tool"],
+		"spray-bottle": ["tool"],
+		"hoof-file": ["tool"],
+		"goods:camera": ["tool"],
+		"goods:easel": ["tool"],
+		"goods:quill": ["tool"],
+		"river-fish": ["fish"]
+	},
+	"values": {
+		"notebook": 5,
+		"river-fish": 6,
+		"spray-bottle": 8,
+		"hoof-file": 0,
+		"food:banana": 1
+	}
+}

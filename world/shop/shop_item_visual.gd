@@ -22,6 +22,8 @@ func _ready() -> void:
 func _goods() -> void:
 	if ITEMS.CIDER.is_keg(item_id):
 		bounds = ITEMS.CIDER.build_visual(self); return
+	if ITEMS.SAPLING.is_sapling(item_id):
+		bounds = ITEMS.SAPLING.build_visual(self); return
 	var model := item_id.substr(6)
 	var path: String = ITEMS.GOODS_MODELS.get(model, ITEMS.HOUSEHOLD % model)
 	if not ResourceLoader.exists(path): return

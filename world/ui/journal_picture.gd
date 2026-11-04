@@ -590,7 +590,10 @@ func _portrait(id: String, side: float) -> Control:
 	disc.add_theme_stylebox_override("panel", STYLE.rounded(STYLE.box(look.coat, ring, 2, 99, 0, 0)))
 	PONY_DATA.load_icons()
 	var icon: Dictionary = PONY_DATA.icons.get(id, {})
-	if icon.is_empty() or PONY_DATA.atlas == null or bool(icon.get("blank", false)): return disc
+	# The princesses' marks are blank in the atlas: their sun / moon instead of an empty disc.
+	if icon.is_empty() or PONY_DATA.atlas == null or bool(icon.get("blank", false)):
+		preload("res://world/ui/pony_symbol.gd").add_to(disc, id, side)
+		return disc
 	var mark := TextureRect.new(); mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var region := AtlasTexture.new(); region.atlas = PONY_DATA.atlas
 	var rect: Array = icon.rect

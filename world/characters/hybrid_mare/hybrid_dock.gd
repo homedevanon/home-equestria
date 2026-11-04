@@ -6,8 +6,27 @@ const FIT_PATH := "user://character_fits/openpony_dock.json"
 const APPROVED_FIT_PATH := "res://world/characters/hybrid_mare/dock_fit.json"
 const TAIL_MOUNT:=preload("res://world/characters/hybrid_mare/dock_tail_mount.gd")
 const VISIBILITY_FITS := "res://world/characters/hybrid_mare/dock_visibility_fits.json"
+## A pony with no hand fit in VISIBILITY_FITS takes the median of the 46 hand fits, so her dock
+## clears the body instead of sitting buried in it (dev 2026-11-04: Cheerilee and Shoeshine).
+const VISIBILITY_FALLBACK:=Vector3(0.0,0.0,0.04)
+## Rear midline in rest pose, sampled at X=0 every RUMP_STEP_Y from RUMP_FIRST_Y
+## (tools/characters/measure_rump.gd). Run it again when a body changes. The rump curves forward as
+## it rises, so a high tail mount can leave the dock's base ring clear of the body. The last value is
+## an estimate: at that height the ray passes over the top of the rump. Stallions have their own
+## body, up to 2.2 cm further back near the top; fillies have no dock stretch.
+const RUMP_FIRST_Y:=0.44
+const RUMP_STEP_Y:=0.02
+const RUMP_Z:={
+	"mare":[0.2684,0.2777,0.2835,0.2867,0.2881,0.2885,0.2880,0.2857,0.2789,0.2604,0.2188,0.1],
+	"stallion":[0.2833,0.2915,0.2951,0.2956,0.2948,0.2931,0.2908,0.2875,0.2819,0.2681,0.2409,0.1],
+}
+const RUMP_MIN_GAP:=0.012
+const RUMP_EMBED:=0.004
+const RUMP_MAX_REACH:=0.08
 static var _visibility_fits:Dictionary={}
 static var _meshes:Dictionary={}
+## Stretched docks, by fitted mesh and body: an identity's dock is built once.
+static var _reached:Dictionary={}
 static func defaults()->Dictionary:
 	return {"version":1,"position":[0.0,0.0,0.0],"rotation_degrees":[0.0,0.0,0.0],"scale":1.0,"scale_xyz":[1.0,1.0,1.0]}
 static func valid(data:Variant)->bool:
@@ -70,7 +89,46 @@ static func fitted_mesh(data:Dictionary,cache:bool=true)->ArrayMesh:
 	return mesh
 static func preview(pony:Node,data:Dictionary)->void:
 	var dock:MeshInstance3D=pony.find_child("OpenPonyDock",true,false)
-	if dock!=null:dock.mesh=fitted_mesh(effective_fit(pony,data),false)
+	if dock!=null:dock.mesh=reach_rump(fitted_mesh(effective_fit(pony,data),false),pony,false)
+static func rump_z(body:String,y:float)->float:
+	var table:Array=RUMP_Z[body]
+	var at:=clampf((y-RUMP_FIRST_Y)/RUMP_STEP_Y,0.0,table.size()-1.0)
+	var low:=mini(floori(at),table.size()-2)
+	return lerpf(float(table[low]),float(table[low+1]),at-low)
+## The dock with its base ring pushed forward into the rump and its tail end where it was: a longer
+## dock, same height. Bodies with no table, and a dock already touching, keep the mesh as it is.
+static func reach_rump(fitted:ArrayMesh,pony:Node,cache:bool=true)->ArrayMesh:
+	if pony.identity.filly:return fitted
+	var body:="stallion" if pony.identity.stallion else "mare"
+	var key:="%d:%s"%[fitted.get_instance_id(),body]
+	if cache and _reached.has(key):return _reached[key]
+	var result:=_stretched(fitted,body)
+	if cache:_reached[key]=result
+	return result
+static func _stretched(fitted:ArrayMesh,body:String)->ArrayMesh:
+	var arrays:=fitted.surface_get_arrays(0)
+	var vertices:PackedVector3Array=arrays[Mesh.ARRAY_VERTEX]
+	var ring:PackedInt32Array=fitted.get_meta("base_indices")
+	var base:=Vector3.ZERO;var front:=Vector3.INF
+	for i in ring:
+		base+=vertices[i]
+		if vertices[i].z<front.z:front=vertices[i]
+	base/=maxi(1,ring.size())
+	var tip:=base
+	for vertex in vertices:
+		if vertex.distance_squared_to(base)>tip.distance_squared_to(base):tip=vertex
+	var length:=base.distance_to(tip)
+	var gap:=front.z-rump_z(body,front.y)
+	if length<.001 or gap<RUMP_MIN_GAP:return fitted
+	var axis:=(tip-base)/length
+	var reach:=minf(gap+RUMP_EMBED,RUMP_MAX_REACH)
+	for i in vertices.size():
+		vertices[i].z-=reach*(1.0-clampf((vertices[i]-base).dot(axis)/length,0.0,1.0))
+	arrays[Mesh.ARRAY_VERTEX]=vertices
+	var mesh:=ArrayMesh.new();mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+	for meta in fitted.get_meta_list():mesh.set_meta(meta,fitted.get_meta(meta))
+	mesh.set_meta("rump_reach",reach)
+	return mesh
 static func same_fit(a:Dictionary,b:Dictionary)->bool:
 	if not valid(a) or not valid(b):return false
 	# JSON writers round the accepted doubles differently. Compare physical values,
@@ -89,8 +147,9 @@ static func effective_fit(pony:Node,data:Dictionary)->Dictionary:
 	# Only adapt the accepted reference shape. A new user gizmo edit retains
 	# direct control and is not silently altered by offsets fitted to older art.
 	if same_fit(data,_visibility_fits.get("reference_fit",{})) and pony.identity.id!="rainbow_dash":
-		var correction:Array=_visibility_fits.get("offsets",{}).get(pony.identity.id,[0,0,0])
-		offset+=vector(correction)
+		var offsets:Dictionary=_visibility_fits.get("offsets",{})
+		if offsets.has(pony.identity.id):offset+=vector(offsets[pony.identity.id])
+		elif not pony.identity.filly:offset+=VISIBILITY_FALLBACK
 	if offset.length_squared()<1e-12:return data
 	var adapted:=data.duplicate(true)
 	var position:=vector(data.position)+offset
@@ -109,6 +168,6 @@ static func apply(pony: Node,path:String=FIT_PATH) -> void:
 	var dock:MeshInstance3D=pony.find_child("OpenPonyDock",true,false)
 	if dock==null:
 		dock=MeshInstance3D.new();dock.name="OpenPonyDock";pony.skeleton.add_child(dock);dock.skeleton=dock.get_path_to(pony.skeleton)
-	dock.mesh=fitted_mesh(effective_fit(pony,read_fit(path)));dock.skin=body.skin
+	dock.mesh=reach_rump(fitted_mesh(effective_fit(pony,read_fit(path))),pony);dock.skin=body.skin
 	dock.set_surface_override_material(0,body.get_active_material(0))
 	if body.has_meta("source_material_0"):dock.set_meta("source_material_0",body.get_meta("source_material_0"))

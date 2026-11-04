@@ -28,6 +28,11 @@ var _basket_navigation: Dictionary = {}
 var _stored_drops: Dictionary = {}
 var _cells: Dictionary = {}
 var _bounds: AABB
+## The authored grid's bounds only: the farm sign stays where it always stood when Anon's row
+## (planted trees, ids "saa:pNN") widens the orchard.
+var _grid_bounds: AABB
+var _grid_count: int = 0
+var _bound: bool = false
 var _clock: Node
 var _settings: Node
 var _slow: float = 0.0
@@ -62,26 +67,51 @@ func attach_orchard(farm: Node3D) -> void:
 	orchard = farm
 	if farm.has_signal("orchard_ready") and not farm.is_connected("orchard_ready", _bind_trees):
 		farm.connect("orchard_ready", _bind_trees)
+	# Trees planted in Anon's row (farm_dressing.add_tree, P5) join the harvest as they grow.
+	if farm.has_signal("tree_added") and not farm.is_connected("tree_added", _add_row):
+		farm.connect("tree_added", _add_row)
+	if farm.has_signal("tree_removed") and not farm.is_connected("tree_removed", _remove_row):
+		farm.connect("tree_removed", _remove_row)
 	_bind_trees()
 
 func _bind_trees() -> void:
-	if not trees.is_empty() or not is_instance_valid(orchard): return
+	if _bound or not is_instance_valid(orchard): return
 	var rows: Array = orchard.get("orchard_trees")
-	for source: Dictionary in rows:
-		var row: Dictionary = source.duplicate()
-		row.position = orchard.to_global(source.position)
-		var fruit: Array[Transform3D] = []
-		for transform: Transform3D in source.apples: fruit.append(orchard.global_transform * transform)
-		row.apples = fruit
-		trees[row.id] = row
-		var cell: Vector2i = _cell(row.position)
-		if not _cells.has(cell): _cells[cell] = []
-		_cells[cell].append(row.id)
-		if trees.size() == 1: _bounds = AABB(row.position, Vector3.ZERO)
-		else: _bounds = _bounds.expand(row.position)
+	for source: Dictionary in rows: _add_row(source, false)
 	if trees.is_empty(): return
+	_bound = true
 	_make_sign()
 	refresh()
+
+## One orchard row into the harvest: trees, the lookup cells and the bounds. Idempotent per id.
+## A planted tree arriving after the bind refreshes at once (its fruit state, the ripe count).
+func _add_row(source: Dictionary, live: bool = true) -> void:
+	if source.is_empty() or not is_instance_valid(orchard) or trees.has(str(source.get("id", ""))): return
+	var row: Dictionary = source.duplicate()
+	row.position = orchard.to_global(source.position)
+	var fruit: Array[Transform3D] = []
+	for transform: Transform3D in source.apples: fruit.append(orchard.global_transform * transform)
+	row.apples = fruit
+	trees[row.id] = row
+	var cell: Vector2i = _cell(row.position)
+	if not _cells.has(cell): _cells[cell] = []
+	_cells[cell].append(row.id)
+	if trees.size() == 1: _bounds = AABB(row.position, Vector3.ZERO)
+	else: _bounds = _bounds.expand(row.position)
+	if not str(row.id).begins_with("saa:p"):
+		_grid_count += 1
+		if _grid_count == 1: _grid_bounds = AABB(row.position, Vector3.ZERO)
+		else: _grid_bounds = _grid_bounds.expand(row.position)
+	if live and _bound: refresh()
+
+## A planted tree left the orchard (farm_dressing.remove_tree, a loaded save without it). The
+## harvest ledger row goes with the save restore that follows; the bounds only ever grow.
+func _remove_row(tree_id: String) -> void:
+	if not trees.has(tree_id): return
+	var cell: Vector2i = _cell(trees[tree_id].position)
+	if _cells.has(cell): (_cells[cell] as Array).erase(tree_id)
+	trees.erase(tree_id)
+	if _bound: refresh()
 
 static func _cell(point: Vector3) -> Vector2i:
 	return Vector2i(floori(point.x / CELL), floori(point.z / CELL))
@@ -127,14 +157,47 @@ func season_days() -> int:
 
 func _physics_process(delta: float) -> void:
 	if not _configured: return
+	_settle_drops(delta)
 	_slow -= delta
 	if _slow > 0.0: return
 	_slow = 1.0
 	_find_orchard()
 	refresh()
 
+## Bucked apples settle near where they land instead of rolling down orchard slopes (thread
+## report 2026-10-31). Jolt has no rolling resistance and damping alone only slows a roll, so on
+## the ground a drop gets strong rolling damping, and once slow or after SETTLE_ROLL_S of ground
+## contact its rotation locks and ground friction holds it where it is. Only these harvest drops
+## (apple.tscn and every other apple are untouched); a carried apple tumbles freely when thrown.
+const GROUND_LINEAR_DAMP: float = 1.2
+const GROUND_ANGULAR_DAMP: float = 4.0
+const SETTLE_SPEED: float = .6
+const SETTLE_ROLL_S: float = 1.0
+const SPAWN_DAMP: float = .7
+
+func _settle_drops(delta: float) -> void:
+	for value: Variant in loose.values():
+		if not is_instance_valid(value): continue
+		var body: RigidBody3D = value
+		if body.freeze:
+			# Held: thrown, it flies and tumbles as it did when it first fell.
+			if body.lock_rotation: body.lock_rotation = false
+			body.linear_damp = SPAWN_DAMP; body.angular_damp = SPAWN_DAMP
+			body.set_meta("ground_s", 0.0)
+			continue
+		if body.lock_rotation or body.get_contact_count() == 0: continue
+		body.linear_damp = GROUND_LINEAR_DAMP; body.angular_damp = GROUND_ANGULAR_DAMP
+		var rolled: float = float(body.get_meta("ground_s", 0.0)) + delta
+		body.set_meta("ground_s", rolled)
+		if body.linear_velocity.length() < SETTLE_SPEED or rolled >= SETTLE_ROLL_S: body.lock_rotation = true
+
 func refresh() -> void:
 	if not is_instance_valid(orchard): return
+	# Town events (world/mechanics/calendar/town_calendar.gd): Applebuck Season takes more baskets
+	# a day and pays more per basket; without a calendar (fixtures) the defaults stand.
+	var calendar: Node = get_tree().get_first_node_in_group("town_calendar") if is_inside_tree() else null
+	ledger.daily_baskets = int(calendar.call("effect", "daily_baskets", STATE.DAILY_BASKETS)) if calendar != null else STATE.DAILY_BASKETS
+	ledger.reward = int(calendar.call("effect", "basket_pay", STATE.REWARD)) if calendar != null else STATE.REWARD
 	var when: float = day()
 	var length: int = season_days()
 	var count: int = 0
@@ -153,8 +216,9 @@ func refresh() -> void:
 			"text":"The apples are ripe. Buck a trunk and I'll gather them into the baskets.", "markers":activity_markers()})
 	if _notice != null:
 		# A farm sign, not an instruction board (dev 2026-09-30); the trunk prompt shows how.
-		var done_today: bool = count == 0 and bool(now.ripe) and ledger.baskets_on(when) >= STATE.DAILY_BASKETS
-		_notice.text = "Sweet Apple Acres" + ("\nHarvest time" if count > 0 else ("\nBaskets full today" if done_today else ""))
+		var done_today: bool = count == 0 and bool(now.ripe) and ledger.baskets_on(when) >= ledger.daily_baskets
+		var harvest_line: String = "\nApplebuck Season" if calendar != null and bool(calendar.call("active", "applebuck_season")) else "\nHarvest time"
+		_notice.text = "Sweet Apple Acres" + (harvest_line if count > 0 else ("\nBaskets full today" if done_today else ""))
 	# No remote physics bodies: suspended apples resume at saved positions when
 	# the player returns. Only the bounded loose set is inspected once a second.
 	if not player_near_orchard(55.0):
@@ -185,6 +249,15 @@ func can_strike(id: String, strength: float = 1.0) -> bool:
 	if not ledger.available(id, day(), season_days()): return false
 	var portion: int = _strike_portion(id, strength)
 	return portion > 0 and loose.size() + portion <= MAX_LOOSE
+
+## Why a trunk in reach cannot be bucked now, for the hint; "" when no reason worth showing.
+func strike_block_reason(id: String) -> String:
+	if not trees.has(id) or ledger._committing: return ""
+	if not ledger.available(id, day(), season_days()):
+		return "No ripe apples on this tree yet" if bool(STATE.calendar(day(), season_days()).ripe) else "Apples are out of season"
+	var portion: int = _strike_portion(id, 1.0)
+	if portion > 0 and loose.size() + portion > MAX_LOOSE: return "Pick up the fallen apples first"
+	return ""
 
 func _strike_portion(id: String, strength: float) -> int:
 	var tree: Dictionary = trees[id]
@@ -228,7 +301,7 @@ func _spawn_drop(id: String, index: int) -> void:
 	var body: RigidBody3D = RigidBody3D.new()
 	body.name = "HarvestApple_%s_%d" % [id.replace(":", "_"), index]
 	body.mass = .16; body.collision_layer = 8; body.collision_mask = 1
-	body.continuous_cd = true; body.linear_damp = .7; body.angular_damp = .7
+	body.continuous_cd = true; body.linear_damp = SPAWN_DAMP; body.angular_damp = SPAWN_DAMP
 	body.contact_monitor = true; body.max_contacts_reported = 1
 	body.set_meta("tree_id", id); body.set_meta("apple_index", index); body.set_meta("harvest_apple", true)
 	var shape: CollisionShape3D = CollisionShape3D.new()
@@ -514,7 +587,8 @@ static func _vector(value: Array) -> Vector3:
 func _make_sign() -> void:
 	if is_instance_valid(_sign): return
 	_sign = Node3D.new(); _sign.name = "OrchardNotice"; add_child(_sign)
-	var at: Vector3 = Vector3(_bounds.get_center().x, _bounds.position.y, _bounds.end.z + 2.0)
+	var area: AABB = _grid_bounds if _grid_count > 0 else _bounds
+	var at: Vector3 = Vector3(area.get_center().x, area.position.y, area.end.z + 2.0)
 	# Orchard bounds span a hillside: their lowest Y is not the ground here.
 	var height: float = NAN
 	if is_instance_valid(WorldTerrain.instance):

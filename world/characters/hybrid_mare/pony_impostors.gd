@@ -15,6 +15,7 @@ const CELL := 96
 const PITCH := deg_to_rad(-8.0)
 const SHADER := preload("res://world/characters/hybrid_mare/pony_impostor.gdshader")
 const FAR_MESH := preload("res://world/characters/hybrid_mare/hybrid_far_mesh.gd")
+const SHUTDOWN := preload("res://world/shutdown_waits.gd")
 const NAME := "PonyImpostors"
 
 static var atlases: Dictionary = {}   # identity id -> {"material": ShaderMaterial, "size": Vector2, "foot": float}
@@ -83,6 +84,7 @@ func _bake(pony: Node3D) -> Dictionary:
 	if mesh == null or source == null or model == null or library == null: return {}
 	var body: MeshInstance3D = model.find_child("MareBody", true, false)
 	if body == null or not library.has_animation("stand"): return {}
+	var hitch_label := "impostor bake " + FAR_MESH._id(pony)
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(CELL, CELL)
 	viewport.own_world_3d = true
@@ -132,6 +134,13 @@ func _bake(pony: Node3D) -> Dictionary:
 	camera.size = side
 	var centre := bounds.get_center()
 	var image := Image.create(CELL * FRAMES, CELL * 2, false, Image.FORMAT_RGBA8)
+	# Shots read back asynchronously (thread 43671981 D1): a synchronous get_image() waits for the
+	# GPU to finish every frame in flight, and 16 of them per identity were the ~10 s of 70-200 ms
+	# frames after loading (tools/profile/play_bench.gd --post-load). Each shot's pixels arrive a
+	# few frames later into `shots`; get_image() remains the fallback where async readback is not
+	# available (no RenderingDevice, unexpected format).
+	var shots: Array = []        # per shot: [cell, Image or null]; Image null until it arrives
+	var outstanding: Array = [0] # async readbacks still in flight (shared with the callbacks)
 	for row in poses.size():
 		_pose(skeleton, library.get_animation(poses[row][0]), float(poses[row][1]))
 		for k in FRAMES:
@@ -141,14 +150,29 @@ func _bake(pony: Node3D) -> Dictionary:
 			camera.look_at_from_position(eye, centre, Vector3.UP)
 			light.global_transform = camera.global_transform
 			viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+			preload("res://world/debug/hitch_monitor.gd").mark(hitch_label)
 			# Read back a frame later: the shot from this frame's update is not always ready.
-			await RenderingServer.frame_post_draw
-			await RenderingServer.frame_post_draw
-			if not is_inside_tree() or not is_instance_valid(viewport): return {}
-			var shot := viewport.get_texture().get_image()
-			if shot == null: continue
-			shot.convert(Image.FORMAT_RGBA8)
-			image.blit_rect(shot, Rect2i(Vector2i.ZERO, Vector2i(CELL, CELL)), Vector2i(k * CELL, row * CELL))
+			if not await SHUTDOWN.rendered_frame(self) or not await SHUTDOWN.rendered_frame(self) \
+					or not is_instance_valid(viewport):
+				if is_instance_valid(viewport): viewport.queue_free()
+				return {}
+			var entry := [Vector2i(k * CELL, row * CELL), null]
+			shots.append(entry)
+			if not _read_async(viewport, entry, outstanding):
+				entry[1] = viewport.get_texture().get_image()
+	# The copy for each request runs before the next shot renders over the target; the data comes
+	# back once that frame has finished on the GPU (frame queue size frames later).
+	var waited := 0
+	while outstanding[0] > 0 and waited < 30:
+		if not await SHUTDOWN.rendered_frame(self):
+			viewport.queue_free()
+			return {}
+		waited += 1
+	for entry: Array in shots:
+		var shot: Image = entry[1]
+		if shot == null or shot.is_empty(): continue
+		shot.convert(Image.FORMAT_RGBA8)
+		image.blit_rect(shot, Rect2i(Vector2i.ZERO, Vector2i(CELL, CELL)), entry[0])
 	viewport.queue_free()
 	image.fix_alpha_edges()
 	image.generate_mipmaps()
@@ -161,6 +185,26 @@ func _bake(pony: Node3D) -> Dictionary:
 	material.set_shader_parameter("size", Vector2(side, side))
 	material.set_shader_parameter("foot", foot)
 	return {"material": material, "size": Vector2(side, side), "foot": foot}
+
+## Starts an asynchronous readback of the viewport into entry[1]; false when the renderer cannot
+## (the caller reads synchronously instead). Callbacks run on the main thread (the game renders
+## there, quality.gd).
+static func _read_async(viewport: SubViewport, entry: Array, outstanding: Array) -> bool:
+	var device := RenderingServer.get_rendering_device()
+	if device == null or not device.has_method("texture_get_data_async"): return false
+	var texture := RenderingServer.texture_get_rd_texture(viewport.get_texture().get_rid())
+	if not texture.is_valid() or not device.texture_is_valid(texture): return false
+	var format: RDTextureFormat = device.texture_get_format(texture)
+	if format == null or format.format not in [RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM, RenderingDevice.DATA_FORMAT_R8G8B8A8_SRGB]: return false
+	var width := int(format.width)
+	var height := int(format.height)
+	var error: Error = device.texture_get_data_async(texture, 0, func(data: PackedByteArray) -> void:
+		if data.size() == width * height * 4:
+			entry[1] = Image.create_from_data(width, height, false, Image.FORMAT_RGBA8, data)
+		outstanding[0] = int(outstanding[0]) - 1)
+	if error != OK: return false
+	outstanding[0] = int(outstanding[0]) + 1
+	return true
 
 ## Bone poses from one baked clip at `fraction` of its length (rotation/position/scale tracks
 ## addressed "<path>:<bone>").

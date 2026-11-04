@@ -65,6 +65,13 @@ var _native_progress := 0.0
 var _native_wait := ""
 ## Blocked discs (x, z, radius triples) from obstruction evidence, for the next route search.
 var _native_blocked := PackedFloat32Array()
+## Discs round ponies standing in her way (peer_passage.gd reroutes, native stall replans), kept
+## apart from the obstruction evidence above: only fresh ones (PEER_DISC_SECONDS) reach a search,
+## and a search they leave without a route is redone without them (navigator_routes.gd).
+var _peer_discs := PackedFloat32Array()
+var _peer_discs_msec := -1
+var _planned_with_peers := false
+const PEER_DISC_SECONDS := 10.0
 ## Avoidance answers tagged by the frame they arrived in and the intent they were asked for.
 var _avoid_frame := -1
 var _avoid_submit_intent := -1
@@ -320,6 +327,7 @@ func go_to(destination: Vector3, route_gait: int = -1, flight_shortcuts := true)
 	_native_intent += 1
 	arrival_alternative = false
 	_native_blocked = PackedFloat32Array()
+	_peer_discs = PackedFloat32Array()
 	_route_gait = gait if route_gait < 0 else route_gait
 	_pick_pace()
 	_moving_goal = false
@@ -623,6 +631,7 @@ func _navigator_tick(delta: float) -> void:
 	# Nobody holds one exact speed. Drift inside the gait's band: a new
 	# target every few seconds, eased so the footfalls never see a step.
 	_pace_timer -= delta
+	_dawdle_seconds -= delta
 	if _pace_timer <= 0.0:
 		_pick_pace(false)
 	# Noise on top of the band target: nobody holds a speed, and the drift
@@ -681,9 +690,14 @@ func _plan(map: RID) -> bool:
 	if _request < 0:
 		if house_travel.active():target=house_travel.goal
 		var extra := {}
+		_planned_with_peers = false
 		if native_follow:
 			extra["escape_reach"] = NATIVE_ESCAPE_REACH
-			if not _native_blocked.is_empty(): extra["blocked"] = _native_blocked
+			var blocked := _native_blocked
+			if not _peer_discs.is_empty() and Time.get_ticks_msec() - _peer_discs_msec <= int(PEER_DISC_SECONDS * 1000.0):
+				blocked = _native_blocked + _peer_discs
+				_planned_with_peers = true
+			if not blocked.is_empty(): extra["blocked"] = blocked
 		_request = _service.request_path(pony.global_position,target,pony.profile,_path_ready,_spot_goal,_wandering or autonomous_command(),extra)
 	# Moving-target refreshes retain the previously certified route while the new
 	# query builds. The normal per-step clearance guard still validates each step.
@@ -910,17 +924,32 @@ func _update_glance(delta: float) -> void:
 	WANDER.glance(self)
 
 
-## Everyday outdoor strolling pace (m/s at a 2.2 m/s trot floor, scaled per body), around the
-## baked slow trot.
+## Everyday outdoor strolling pace (m/s at a 2.2 m/s trot floor, scaled per body): the baked
+## 1.6 m/s trot clip, what dev calls the walk.
 const STROLL_TROT := Vector2(1.2, 1.8)
+## A dawdle: now and then a pony alone slows to the solver's slow trot (the baked trot_slow clip)
+## for a stretch, then picks her usual pace up again (dev 2026-10-31: "they shouldn't usually walk
+## that slowly ... but they should do it sometimes"). Company dawdles more (pony_social_groups.gd).
+const DAWDLE_TROT := Vector2(0.72, 1.05)
+const DAWDLE_SECONDS := Vector2(8.0, 22.0)
+## Chance per pace pick (every 3-7 s) of starting a dawdle, from a lazy hour to a busy one.
+const DAWDLE_CHANCE := Vector2(0.09, 0.03)
+var _dawdle_seconds := 0.0
 func _pick_pace(restart: bool = true) -> void:
 	_pace_band = pony.profile.walk_speed if _route_gait == Gait.WALK else pony.profile.trot_speed
 	if _route_gait == Gait.WALK and (_wandering or autonomous_command()):
-		# Everyday strolling outdoors is the slow trot (the baked 1.6 m/s trot clip), not the
-		# 0.3 m/s four-beat walk (dev 2026-10-14). The walk stays for indoors and for slowing
-		# to a stop; speed alone picks walk, slow trot, fast trot and gallop as before.
+		# Everyday strolling outdoors is the trot clip, not the 0.3 m/s four-beat walk (dev
+		# 2026-10-14). The walk stays for indoors and for slowing to a stop; speed alone picks
+		# walk, slow trot, trot, fast trot and gallop.
 		var indoors: bool = house_travel.here(pony) != null
-		_pace_band = DAILY.walk_band(pony.profile.walk_speed if indoors else STROLL_TROT * pony.profile.trot_speed.x / 2.2, daytime_activity())
+		var body: float = pony.profile.trot_speed.x / 2.2
+		var activity: float = daytime_activity()
+		if not indoors and _dawdle_seconds <= 0.0 and randf() < lerpf(DAWDLE_CHANCE.x, DAWDLE_CHANCE.y, activity):
+			_dawdle_seconds = randf_range(DAWDLE_SECONDS.x, DAWDLE_SECONDS.y)
+		# Each pony keeps her own natural pace, a few percent brisker or easier than the next.
+		var temper := 1.0 + (float(absi(hash(String(pony.name))) % 1000) / 1000.0 - 0.5) * 0.12
+		_pace_band = pony.profile.walk_speed if indoors else (DAWDLE_TROT * body * temper if _dawdle_seconds > 0.0 \
+			else DAILY.walk_band(STROLL_TROT * body * temper, activity))
 	var band := _pace_band
 	pace_target = randf_range(band.x, band.y)
 	_pace_timer = randf_range(3.0, 7.0)

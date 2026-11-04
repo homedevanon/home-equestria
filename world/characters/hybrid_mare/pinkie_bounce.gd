@@ -107,7 +107,7 @@ func physically_interrupted() -> bool:
 		or (pony.activity_mouth_pose != null and pony.activity_mouth_pose.active())
 
 func eligible() -> bool:
-	if pony.identity == null or pony.identity.id != "pinkie_pie" or physically_interrupted(): return false
+	if pony.identity == null or pony.identity.character() != "pinkie_pie" or physically_interrupted(): return false
 	if not pony.grounded() or pony.backing or pony.has_meta("affection_active"): return false
 	if is_instance_valid(pony.conversation_target) or is_instance_valid(pony.action_gaze_target): return false
 	if pony.head != null and pony.head.is_speaking(): return false

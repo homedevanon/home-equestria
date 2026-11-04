@@ -90,8 +90,13 @@ do not.
 ```
 
 `id` must equal the folder name. `entry` and `extends` are optional. `game_version` records
-which game version you made it for. A mod whose `mod.json` is broken is listed in
-Settings → Mods with the reason and does not run.
+which game version you made it for (without it, the version the build tool stamps into the pack
+counts). A pack that replaces game files and was made for an older game version starts switched
+off after a game update, because an old copy of a game file hides what the update changed; the
+player can switch it on again in Settings → Mods, which lists the game files each pack replaces.
+Raise `game_version` once your mod is checked against the new game. Mods that replace no game
+file are never held back. A mod whose `mod.json` is broken is listed in Settings → Mods with the
+reason and does not run.
 
 ## Ways to change the game
 

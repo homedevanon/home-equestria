@@ -8,6 +8,9 @@ static var _prepared := {}
 
 static func prepare(mi: MeshInstance3D) -> void:
 	if mi.has_meta("snout_detail"): return
+	if mi.mesh.has_meta("snout_detail"):
+		mi.set_meta("snout_detail", true)
+		return
 	var source := mi.mesh as ArrayMesh
 	var cached: ArrayMesh = _prepared.get(source)
 	if cached != null:
@@ -15,6 +18,8 @@ static func prepare(mi: MeshInstance3D) -> void:
 		mi.set_meta("snout_detail", true)
 		return
 	var result := ArrayMesh.new()
+	result.blend_shape_mode = source.blend_shape_mode
+	for i in source.get_blend_shape_count(): result.add_blend_shape(source.get_blend_shape_name(i))
 	for i in source.get_surface_count():
 		var arrays := source.surface_get_arrays(i)
 		var flags := source.surface_get_format(i) & Mesh.ARRAY_FLAG_USE_8_BONE_WEIGHTS
@@ -33,7 +38,8 @@ static func prepare(mi: MeshInstance3D) -> void:
 			flags |= Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT
 		# Preserve the head's facial surface too: simplifying it independently
 		# from the retained sclera/iris/lids can cover those close layers again.
-		result.add_surface_from_arrays(source.surface_get_primitive_type(i), arrays, [], {}, flags)
+		result.add_surface_from_arrays(source.surface_get_primitive_type(i), arrays,
+			source.surface_get_blend_shape_arrays(i), {}, flags)
 		result.surface_set_material(i, material)
 	_prepared[source] = result
 	mi.mesh = result

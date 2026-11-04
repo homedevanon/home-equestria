@@ -21,7 +21,9 @@ const SCENE_GAP := 25
 const MOMENTS := {
 	"sonic_rainboom": "{a} pulled off a Sonic Rainboom!", "air_show": "{a} put on an air show.",
 	"kiss_player": "{a} kissed {p}.", "cuddle": "{a} cuddled up to {p}.", "buck_player": "{a} bucked {p}!",
-	"give_house": "{a} gave {p} a house.", "send_letter": "{a} sent a letter to Princess Celestia.", "wake_up": "{a} woke up.",
+	"give_house": "{a} gave {p} a house.", "send_letter": "{a} sent a letter to Princess Celestia.", "wake_up": "{a} woke up.", "pay_player": "{a} paid {p} some bits.",
+	"give": "{a} gave {p} something.", "ask": "{a} asked {p} for a favour.", "offer_job": "{a} offered {p} work.",
+	"invite": "{a} invited {p} to a town event.", "sell": "{a} offered {p} a deal.", "buy": "{a} bought something from {p}.",
 }
 const OUTCOME := "^([a-z_]+): completed \\([^)]*\\)\\.\\s*(.*)$"
 const PLAYER := "player"

@@ -22,7 +22,17 @@ var reference_eyes := false
 @export var show_eyes_enabled := true
 const SHOW_EYE_SURFACE := preload("res://world/characters/openpony/show_eyes/eye_surface.res")
 const SHOW_IRIS := preload("res://world/characters/openpony/show_eyes/iris.gdshader")
+const FACE_SCULPT := preload("res://world/characters/openpony/face_sculpt.gd")
+const AUDIO_MIX := preload("res://world/audio/audio_mix.gd")
+var face_sculpt: RefCounted
+var _sculpt_iris_shape := Vector2.ONE
+var _sculpt_amount := 0.0
+var _sculpt_closure := 0.0
 var _show_eye_mesh: MeshInstance3D
+var _eye_head_bone := -1
+var _eye_bind_pose := Transform3D.IDENTITY
+var _eye_rest_from_pose := Transform3D.IDENTITY
+var _eye_details := Vector3(1.0, 0.0, 0.0)
 const CLIPS := "res://world/characters/openpony/openpony_anims.glb"
 const CUTIE_MARK := "res://world/characters/rainbow_dash/rainbow_dash_RD_CutieMark.png"
 ## Painted by tools/paint_openpony_lashes.py from the devkit UV guide (local-only).
@@ -72,7 +82,18 @@ func _ready() -> void:
 	var library := _clip_library()
 	if library != null:
 		player.add_animation_library("", library)
+	# This authored basis is the mare's exact imported mesh; alternate model families
+	# need their own authored basis rather than transplanting a different sculpt.
+	if show_eyes_enabled and model_path == MODEL:
+		face_sculpt = FACE_SCULPT.new()
+		face_sculpt.bind(model)
 	_dress()
+	if face_sculpt != null:
+		_eye_head_bone = skeleton.find_bone("HEAD")
+		for index in _show_eye_mesh.skin.get_bind_count():
+			if _show_eye_mesh.skin.get_bind_name(index) == &"HEAD":
+				_eye_bind_pose = _show_eye_mesh.skin.get_bind_pose(index)
+		skeleton.skeleton_updated.connect(_update_eye_projection)
 	_attach_mouth()
 	# Capture/lab aids from the command line: hide=Prefix,Prefix hides meshes,
 	# shape=name[:weight] holds one mouth shape, viseme=D holds a Rhubarb
@@ -143,6 +164,23 @@ func _attach_mouth() -> void:
 	head.add_child(voice)
 
 
+## Ponese (tts_client.gd writes chatter_*.wav) gets its EQ bus, a clearer distance filter and a
+## capped close-up level: inside 6 m it no longer climbs (it was +12 dB at chat distance), while
+## the 6-80 m falloff stays as it was, so ponies are still heard from afar (dev 2026-11-03).
+## Synthesised TTS keeps the Voice bus and Godot's defaults.
+const PONESE_MAX_DB := 0.0
+const PONESE_FILTER_HZ := 11000.0
+
+func _route_voice(ponese: bool) -> void:
+	var bus := "Voice" if AudioServer.get_bus_index("Voice") >= 0 else "Master"
+	if ponese:
+		AUDIO_MIX.ensure_ponese_bus()
+		bus = AUDIO_MIX.PONESE_BUS
+	voice.bus = bus
+	voice.max_db = PONESE_MAX_DB if ponese else 3.0
+	voice.attenuation_filter_cutoff_hz = PONESE_FILTER_HZ if ponese else 5000.0
+
+
 ## Say a wav (res://, user:// or absolute). `text` is the spoken line; with it
 ## Rhubarb uses its English recogniser for better shapes.
 var _pending_path := ""
@@ -168,6 +206,7 @@ func _on_cues(cues: Array, generation := -1) -> void:
 	if _pending_stream == null or voice == null:
 		return
 	_cues = cues
+	_route_voice(_pending_path.get_file().begins_with("chatter_"))
 	voice.stream = _pending_stream
 	_pending_stream = null
 	voice.play()
@@ -226,6 +265,11 @@ func _unprofiled_process(delta: float) -> void:
 		return
 	if mouth:
 		var letter := LipSync.viseme_at(_cues, _speech_time)
+		# Lips round before the "oo" sounds (viseme review 2026-11-03): look one cue ahead, but
+		# never over a consonant that has to show (A press, B teeth, G f/v, H tongue).
+		var ahead := LipSync.viseme_at(_cues, _speech_time + 0.06)
+		if (ahead == "E" or ahead == "F") and letter in ["X", "C", "D"]:
+			letter = ahead
 		if _debug_mouth and letter != mouth.current_viseme:
 			print("viseme %s at %.2f s" % [letter, _speech_time])
 		mouth.set_viseme(letter)
@@ -241,7 +285,7 @@ func _dress() -> void:
 				mesh.hide()
 				continue
 			if mesh.name == "Eye":
-				mesh.mesh = SHOW_EYE_SURFACE
+				mesh.mesh = FACE_SCULPT.MESHES["Eye"] if face_sculpt != null else SHOW_EYE_SURFACE
 				_show_eye_mesh = mesh
 		for surface in mesh.mesh.get_surface_count():
 			var source := mesh.get_active_material(surface)
@@ -304,8 +348,15 @@ func _material_for(mesh_name: String, material_name: String) -> Material:
 			var eye := ShaderMaterial.new()
 			eye.shader = SHOW_IRIS
 			eye.set_shader_parameter("tint_mask",load("res://world/characters/openpony/show_eyes/tint_%s.res" % side))
-			eye.set_shader_parameter("ink",load("res://world/characters/openpony/show_eyes/ink_%s.res" % side))
+			eye.set_shader_parameter("shine_ink",load("res://world/characters/openpony/show_eyes/ink_L.res"))
 			eye.set_shader_parameter("iris_color",iris_color)
+			# Original pupil path bounds, including the area covered by the shines.
+			# Both eyes use the L drawing's extent, centred on the iris; R was 11% narrower,
+			# 12% shorter and lower. These source transforms preserve the original art.
+			eye.set_shader_parameter("pupil_metric", Vector3(8.846705,.007479,8.110767) if side == "L" else Vector3(8.910513,.722167,8.168281))
+			eye.set_shader_parameter("tint_source", Vector4(.509766,.5,1,1) if side == "L" else Vector4(.496094,.499349,1.012821,.971074))
+			# Drawn show lids (show_lid.gd): the export's Left Eye sits on -x, its nose side toward -UV.x.
+			eye.set_shader_parameter("nose_sign",-1.0 if material_name.begins_with("left") else 1.0)
 			eye.set_meta("show_iris",true)
 			eye.set_meta("left_eye",material_name.begins_with("left"))
 			_eye_layers.append(eye)
@@ -344,16 +395,124 @@ static func show_gaze_uv(angles: Vector2) -> Vector2:
 const SKIP_SAME_EYES := true
 var _shown_eyes := Vector3(INF, INF, INF)
 var _shown_right := Vector2(INF, INF)
+var _shown_drop := INF
+## Iris lowered on the eye, in eye UV (a line face sets it, hybrid_expressions.gd "iris_drop"): with
+## the lids squeezing from both sides the iris sits in the middle of what stays open (dev 2026-11-02).
+var iris_drop := 0.0
+## Drawn show lids (dev 2026-11-02, show_lid.gd): amount, upper and lower lid, iris squash, as the
+## line face last set them; the same values again set nothing.
+var _show_lid := []
+var _lash_materials: Array[ShaderMaterial] = []
+var _lid_coat_ready := false
+const SHOW_LID := preload("res://world/characters/openpony/show_lid.gd")
+
+## The expression's lids drawn on the eye: amount 0 leaves the eye as modelled. upper / lower are
+## show_lid.gd lids [base, slant, saddle, line]; shape squashes the iris (x wider, y taller); ends are
+## the opening's outer and nose ends in nose-x and its roundness.
+func set_show_lid(amount: float, upper: Vector4, lower: Vector4, shape: Vector2,
+		ends := Vector3(-9.0, 9.0, 2.0)) -> void:
+	if not show_eyes_enabled: return
+	var values := [amount, upper, lower, shape, ends]
+	if values == _show_lid: return
+	_show_lid = values
+	if not _lid_coat_ready: _ready_show_lid()
+	for material in _eye_layers:
+		if not material.has_meta("show_iris"): continue
+		material.set_shader_parameter("lid_amount", amount)
+		material.set_shader_parameter("lid_upper", upper)
+		material.set_shader_parameter("lid_lower", lower)
+		material.set_shader_parameter("lid_ends", Vector4(ends.x, ends.y, ends.z, 0.0))
+		material.set_shader_parameter("iris_shape", shape.lerp(Vector2.ONE, 1.0 - clampf(amount, 0.0, 1.0)))
+	for material in _lash_materials:
+		material.set_shader_parameter("lid_amount", amount)
+		material.set_shader_parameter("lid_upper", upper)
+		material.set_shader_parameter("lid_lower", lower)
+		material.set_shader_parameter("lid_ends", Vector4(ends.x, ends.y, ends.z, 0.0))
+
+## The drawn lid wears the head's own coat (its cel fill and shade); the lash rings hide under it.
+func _ready_show_lid() -> void:
+	_lid_coat_ready = true
+	var fill := coat_color
+	var shade := Color(0, 0, 0, 0)
+	for node in model.find_children("*", "MeshInstance3D", true, false):
+		var mesh := node as MeshInstance3D
+		if mesh.name == "Eyelashes":
+			# The ring carries its rest lid frame (show_lid.gd baked_ring); its overrides stay.
+			var overrides: Array[Material] = []
+			for si in mesh.mesh.get_surface_count(): overrides.append(mesh.get_surface_override_material(si))
+			mesh.mesh = SHOW_LID.baked_ring(mesh.mesh)
+			for si in overrides.size(): mesh.set_surface_override_material(si, overrides[si])
+			for si in mesh.mesh.get_surface_count():
+				var lash := mesh.get_active_material(si) as ShaderMaterial
+				if lash != null and lash not in _lash_materials: _lash_materials.append(lash)
+		elif mesh.name == "Head":
+			var coat := mesh.get_active_material(0) as ShaderMaterial
+			if coat != null and coat.get_shader_parameter("color") is Color:
+				fill = coat.get_shader_parameter("color")
+				var shadow: Variant = coat.get_shader_parameter("shadow_color")
+				if shadow is Color: shade = shadow
+	for material in _eye_layers:
+		if not material.has_meta("show_iris"): continue
+		material.set_shader_parameter("lid_coat", fill)
+		material.set_shader_parameter("lid_coat_shade", shade)
+
+func set_face_sculpt(weights: Dictionary, shape := Vector2.ONE) -> void:
+	if face_sculpt == null: return
+	face_sculpt.set_weights(weights)
+	if not _lid_coat_ready: _ready_show_lid()
+	var amount := 0.0
+	for weight: float in weights.values(): amount = maxf(amount, weight)
+	if shape == _sculpt_iris_shape and is_equal_approx(amount, _sculpt_amount): return
+	_sculpt_iris_shape = shape
+	_sculpt_amount = amount
+	_apply_sculpt_appearance()
+
+
+func _apply_sculpt_appearance() -> void:
+	var visible := 1.0 - smoothstep(0.0, .85, _sculpt_closure)
+	for material in _eye_layers:
+		if material.has_meta("show_iris"):
+			material.set_shader_parameter("iris_shape", Vector2.ONE.lerp(_sculpt_iris_shape, visible))
+			material.set_shader_parameter("iris_projection", visible if _sculpt_amount > .00001 else 0.0)
+	for material in _lash_materials: material.set_shader_parameter("sculpt_amount", _sculpt_amount * visible)
+
+
+func _update_eye_projection() -> void:
+	if _eye_head_bone < 0: return
+	var unpose := (skeleton.get_bone_global_pose(_eye_head_bone) * _eye_bind_pose).affine_inverse()
+	if unpose.is_equal_approx(_eye_rest_from_pose): return
+	_eye_rest_from_pose = unpose
+	if face_sculpt != null: face_sculpt.set_lid_projection(unpose)
+	for material in _eye_layers:
+		if material.has_meta("show_iris"): material.set_shader_parameter("eye_rest_from_pose", unpose)
+
+
+## Pupil size, white heart highlights and their position are independent of lid geometry.
+func set_eye_details(pupil: float, hearts: float, shine_offset: float) -> void:
+	var details := Vector3(clampf(pupil, .15, 1.35), clampf(hearts, 0.0, 1.0), clampf(shine_offset, -.1, .4))
+	if details.is_equal_approx(_eye_details): return
+	_eye_details = details
+	for material in _eye_layers:
+		if not material.has_meta("show_iris"): continue
+		material.set_shader_parameter("pupil_dilation", details.x)
+		material.set_shader_parameter("heart_shines", details.y)
+		material.set_shader_parameter("shine_drop", details.z)
+
 
 func update_show_eyes(left_angles: Vector2, right_angles: Vector2, lid_closure: float) -> void:
 	if not show_eyes_enabled: return
+	if face_sculpt != null: face_sculpt.set_closure(lid_closure)
+	if face_sculpt != null and not is_equal_approx(_sculpt_closure, lid_closure):
+		_sculpt_closure = lid_closure
+		_apply_sculpt_appearance()
 	var shown := Vector3(left_angles.x, left_angles.y, lid_closure)
-	if SKIP_SAME_EYES and shown == _shown_eyes and right_angles == _shown_right: return
+	if SKIP_SAME_EYES and shown == _shown_eyes and right_angles == _shown_right and iris_drop == _shown_drop: return
 	_shown_eyes = shown
 	_shown_right = right_angles
+	_shown_drop = iris_drop
 	for material in _eye_layers:
 		if material.has_meta("show_iris"):
-			material.set_shader_parameter("gaze_uv",show_gaze_uv(left_angles if material.get_meta("left_eye") else right_angles))
+			material.set_shader_parameter("gaze_uv",show_gaze_uv(left_angles if material.get_meta("left_eye") else right_angles) + Vector2(0.0, iris_drop))
 	if _show_eye_mesh != null:
 		_show_eye_mesh.set_blend_shape_value(0,smoothstep(0.0,.45,lid_closure))
 

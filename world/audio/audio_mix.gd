@@ -20,6 +20,29 @@ static func ensure_buses() -> void:
 			AudioServer.add_bus()
 			AudioServer.set_bus_name(AudioServer.get_bus_count() - 1, bus)
 		AudioServer.set_bus_send(AudioServer.get_bus_index(bus), ROUTES[bus])
+	ensure_ponese_bus()
+
+## Ponese lines play through their own bus into Voice (so the Voice slider still sets them).
+## dev 2026-11-03: in game ponese "sounds muffled and shitty". The native voice chain is dark on
+## purpose (pony_ponese_voice.cpp soften(): -5 dB at 3 kHz, -8 dB shelf from 5 kHz, 9.5 kHz
+## low-pass); this EQ takes the mud out and gives the presence and air back.
+const PONESE_BUS := "Ponese"
+const PONESE_EQ_DB := {"32 Hz": -8.0, "100 Hz": -2.5, "320 Hz": -3.0, "1000 Hz": 0.0, "3200 Hz": 3.5, "10000 Hz": 5.0}
+
+static func ensure_ponese_bus() -> void:
+	var voice := "Voice" if AudioServer.get_bus_index("Voice") >= 0 else "Master"
+	var index := AudioServer.get_bus_index(PONESE_BUS)
+	if index < 0:
+		AudioServer.add_bus()
+		index = AudioServer.get_bus_count() - 1
+		AudioServer.set_bus_name(index, PONESE_BUS)
+	AudioServer.set_bus_send(index, voice)
+	for i in AudioServer.get_bus_effect_count(index):
+		if AudioServer.get_bus_effect(index, i) is AudioEffectEQ6: return
+	var eq := AudioEffectEQ6.new()
+	for band in eq.get_band_count():
+		eq.set_band_gain_db(band, float(PONESE_EQ_DB.values()[band]))
+	AudioServer.add_bus_effect(index, eq)
 
 func setup() -> void:
 	ensure_buses()

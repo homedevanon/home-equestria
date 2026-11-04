@@ -61,7 +61,7 @@
     },
     "buy": {
       "weight": 2.0,
-      "handler": "go_to",
+      "handler": "shop",
       "hours": [
         9,
         18
@@ -286,6 +286,117 @@
       ],
       "phrase": "sit on a bench",
       "reasons": "bench"
+    },
+    "press_cider": {
+      "weight": 3.0,
+      "handler": "use_station",
+      "hours": [
+        8,
+        12
+      ],
+      "target": "cider_press",
+      "when": {
+        "only_id": [
+          "applejack",
+          "big_mcintosh"
+        ],
+        "event": "cider_season"
+      },
+      "minutes": [
+        30,
+        45
+      ],
+      "phrase": "press cider at the {target}",
+      "reasons": "press"
+    },
+    "water_saplings": {
+      "weight": 3.0,
+      "handler": "use_station",
+      "hours": [
+        7,
+        10
+      ],
+      "target": "saa_plot",
+      "when": {
+        "only_id": [
+          "applejack",
+          "big_mcintosh",
+          "apple_bloom"
+        ],
+        "station_needs": "saa_plot"
+      },
+      "minutes": [
+        15,
+        25
+      ],
+      "phrase": "water the saplings in {target}",
+      "reasons": "saplings"
+    },
+    "work_stand": {
+      "weight": 3.0,
+      "handler": "work_job",
+      "hours": [
+        10,
+        16
+      ],
+      "target": "cider_stand",
+      "when": {
+        "only_id": [
+          "applejack",
+          "big_mcintosh"
+        ],
+        "event": "cider_season"
+      },
+      "minutes": [
+        60,
+        120
+      ],
+      "phrase": "work the {target}",
+      "reasons": "stand"
+    },
+    "buck_apples": {
+      "weight": 3.0,
+      "handler": "use_station",
+      "hours": [
+        7,
+        11
+      ],
+      "target": "orchard",
+      "when": {
+        "only_id": [
+          "applejack",
+          "big_mcintosh"
+        ],
+        "event": "applebuck_season"
+      },
+      "minutes": [
+        30,
+        60
+      ],
+      "phrase": "buck apples in the orchard",
+      "reasons": "bucking"
+    },
+    "buy_cider": {
+      "weight": 1.0,
+      "handler": "shop",
+      "hours": [
+        11,
+        17
+      ],
+      "target": "cider_stand",
+      "when": {
+        "event": "cider_season",
+        "not_id": [
+          "applejack",
+          "big_mcintosh"
+        ]
+      },
+      "minutes": [
+        10,
+        20
+      ],
+      "phrase": "buy a mug of cider at the {target}",
+      "reasons": "cider"
     }
   },
   "targets": {
@@ -410,6 +521,26 @@
           "none"
         ]
       }
+    },
+    "cider_press": {
+      "places": [
+        "station:cider_press"
+      ]
+    },
+    "saa_plot": {
+      "places": [
+        "station:saa_plot"
+      ]
+    },
+    "orchard": {
+      "places": [
+        "station:orchard_tree"
+      ]
+    },
+    "cider_stand": {
+      "places": [
+        "job:cider_stand"
+      ]
     }
   },
   "reasons": {
@@ -522,6 +653,38 @@
           19.5
         ]
       }
+    ],
+    "press": [
+      "it's Cider Season",
+      "the stand will need kegs",
+      "the apples won't press themselves"
+    ],
+    "saplings": [
+      "the new trees need water",
+      "Anon's row is coming along",
+      {
+        "text": "before the sun gets hot",
+        "hours": [
+          7,
+          10
+        ]
+      }
+    ],
+    "stand": [
+      "it's Cider Season",
+      "folks are thirsty",
+      "somepony has to mind the stand"
+    ],
+    "bucking": [
+      "it's Applebuck Season",
+      "the trees are heavy with apples",
+      "every hoof counts this time of year"
+    ],
+    "cider": [
+      "it's Cider Season",
+      "to treat herself",
+      "with a friend",
+      "because everypony's talking about it"
     ]
   },
   "overrides": {

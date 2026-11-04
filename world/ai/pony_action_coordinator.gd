@@ -4,9 +4,11 @@ const EXECUTOR := preload("res://world/ai/pony_action_executor.gd")
 const SCHEMA := preload("res://world/ai/pony_action_schema.gd")
 const AWARENESS := preload("res://world/ai/pony_awareness.gd")
 const PLACES := preload("res://world/navigation/place_directory.gd")
+const BITS := preload("res://world/ai/bit_payments.gd")
+const MECHANICS := preload("res://world/mechanics/mechanics.gd")
 ## Model-requested trips whose failure she tells Anon about (dev 2026-10-15: Dash's balloon walk
 ## failed silently while she kept saying "come on").
-const TOLD_MOVES := ["go_to", "lead", "follow", "go_home", "approach"]
+const TOLD_MOVES := ["go_to", "lead", "follow", "go_home", "go_to_bed", "approach"]
 const FAILURE_NOTICE_S := 60.0
 const CALL_RANGE := 24.0
 const CALL_TIMEOUT := 90.0
@@ -42,7 +44,16 @@ func context(id: String, targets: Dictionary) -> Dictionary:
 	var story := _arrival_story()
 	if story != null and story.can_teleport_to_ponyville(id, executor.actor): capabilities.append("teleport_to_ponyville")
 	if story != null and id in HOUSE_GRANTERS and story.has_method("can_grant_home") and story.can_grant_home(): capabilities.append("give_house")
-	var result := {"capabilities": capabilities, "targets": targets, "locations": places, "place_labels": _place_labels()}
+	# Her own purse ([pay_player], bit_payments.gd): offered only while she holds bits.
+	var game := _game()
+	var purse: int = BITS.balance(game.get("world_context"), id) if game != null and is_instance_valid(game.get("world_context")) else 0
+	if purse > 0: capabilities.append("pay_player")
+	var result := {"capabilities": capabilities, "targets": targets, "locations": places, "place_labels": _place_labels(), "purse": purse}
+	# Shared mechanics (world/mechanics/mechanics.gd): [give] and later verbs, only while possible.
+	var mech: Node = MECHANICS.of(get_tree()) if is_inside_tree() else null
+	if mech != null: mech.ai_context(id, executor.actor, result)
+	# Her own model trip in progress: the place her "walk with me" means (pony_action_schema.gd _follow_to_lead).
+	result.heading_to = executor.ai_destination()
 	var callable_ponies: Array[String] = []
 	for other: String in targets:
 		if other == id or not executors.has(other) or not is_instance_valid(executors[other]): continue
@@ -100,6 +111,29 @@ func _place_labels() -> Dictionary:
 	for place: Dictionary in PLACES.entries(get_tree()):
 		labels[place.id] = str(place.label) + (" " + str(place.alt) if place.has("alt") else "")
 	return labels
+
+## The game root (pony populations' host), or null.
+func _game() -> Node:
+	var population := get_tree().get_first_node_in_group("pony_populations") if is_inside_tree() else null
+	if population == null or not ("host" in population) or not is_instance_valid(population.host): return null
+	return population.host
+
+func dispatch_pay(id: String, action: Dictionary) -> void:
+	var executor: Node = executors.get(id)
+	if not is_instance_valid(executor): return
+	var game := _game()
+	var amount := int(action.get("amount", 0))
+	var why: String = BITS.pay_player(game, executor.actor, id, amount) if game != null else "Bits cannot change hooves right now."
+	if not why.is_empty(): executor._report(action, "failed", why); return
+	executor._report(action, "completed", "Anon received %d bits from your purse; you have %d left" % [amount, BITS.balance(game.world_context, id)])
+
+## A mechanic verb ([give] and the later ones): the hub runs it and reports her outcome.
+func dispatch_mechanic(id: String, action: Dictionary) -> void:
+	var executor: Node = executors.get(id)
+	if not is_instance_valid(executor): return
+	var mech: Node = MECHANICS.of(get_tree()) if is_inside_tree() else null
+	var result: Dictionary = mech.dispatch(id, executor.actor, action) if mech != null else {"status": "failed", "reason": "Not possible right now"}
+	executor._report(action, str(result.get("status", "failed")), str(result.get("reason", "")))
 
 func _arrival_story() -> Node:
 	return get_tree().get_first_node_in_group("arrival_story") if is_inside_tree() else null

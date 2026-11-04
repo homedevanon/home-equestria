@@ -473,6 +473,8 @@ func _merge_kinds(mi: MeshInstance3D) -> Array:
 	var at: Node = mi.get_parent()
 	while at != null and at != town:
 		if at is CharacterBody3D or str(at.name).contains("Door") or str(at.name) == "TownTrees": return []
+		# Merged shadows stand still: the floating Cloudominium keeps its own (cloud_drift.gd).
+		if at.has_meta("floating"): return []
 		var script: Script = at.get_script()
 		if script != null and script.resource_path.contains("door"): return []
 		at = at.get_parent()

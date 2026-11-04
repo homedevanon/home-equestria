@@ -2,18 +2,21 @@ extends RefCounted
 ## Solver-baked gait clips for the crowd's clip tiers (docs/CLIP_TIER_2026_09_25.md).
 ##
 ## tools/bake_pony_gaits.gd runs the full procedural solver headless on flat ground and records
-## one loop-clean cycle per gait (walk, trot, trot_fast, gallop) plus a standing pose, and the
+## one loop-clean cycle per gait (walk, trot_slow, trot, trot_fast, gallop) plus a standing pose, and the
 ## posture system's own output for sit, lie_down, their rises, holds and the sleep poses. The clips
 ## are shared by every pony with the same body skeleton (bone names, parents and rest poses):
 ## one AnimationLibrary per layout at DIRECTORY/<layout key>.res. The old native trot and the
 ## synthetic crowd_stand clip are never played any more (dev 2026-09-25: "we cant use the native
 ## animation because atp its noticeable"); a layout without a bake keeps its ponies on the solver.
+## trot_slow (2026-10-31) is the solver's own trot at a slow pace (short strides, the cadence floor),
+## so a slow pony slow-trots instead of playing the everyday trot clip in slow motion (dev: "it
+## should be trot -> walk -> gallop"; their "walk" is the everyday trot clip).
 
 const DIRECTORY := "res://world/characters/baked_gaits/"
 const LIBRARY := &"baked"
 ## Bumped whenever the bake's recording or clip layout changes; older files are ignored.
-const VERSION := 2
-const GAITS: Array[String] = ["walk", "trot", "trot_fast", "gallop"]
+const VERSION := 3
+const GAITS: Array[String] = ["walk", "trot_slow", "trot", "trot_fast", "gallop"]
 const STAND := "stand"
 
 static var _keys := {}  # model scene path -> layout key

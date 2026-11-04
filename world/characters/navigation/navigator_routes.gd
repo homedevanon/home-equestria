@@ -4,6 +4,7 @@ extends RefCounted
 ## hops) and where a flight lands. State stays on the navigator; calls back go through `nav.`.
 
 const HOUSE := preload("res://world/buildings/house_interior.gd")
+const NATIVE_ADAPTER := preload("res://world/characters/navigation/navigator_native_adapter.gd")
 
 
 static func _flat(a: Vector3, b: Vector3) -> float:
@@ -19,13 +20,36 @@ static func path_ready(nav: Node, result: Dictionary, request_id: int, completed
 		return
 	nav._needs_path = false
 	var candidate: PackedVector3Array = result.get("path", PackedVector3Array())
-	if candidate.is_empty():
+	# A one-point route goes nowhere: the goal region was shut (discs, ponies) and the nearest
+	# reachable cell was her own. The follower needs two points, so before 2026-10-31 she stood on
+	# "Sampling terrain / planning route" with nothing left to replan it, 20 s to two minutes in
+	# front of the Hayburger door (tools/hayburger/test_doorway_traffic.gd).
+	# A moving goal keeps refreshing its route by itself and is left as before.
+	var nowhere: bool = candidate.size() == 1 and not nav._moving_goal
+	if (candidate.is_empty() or nowhere) and nav._planned_with_peers:
+		# Discs round ponies in the way shut every route (a lane they fill): search again without
+		# them and let the follower's neighbour steering and peer passage sort it out, as before.
+		nav._peer_discs = PackedFloat32Array()
+		nav._planned_with_peers = false
+		nav._needs_path = true
+		return
+	if candidate.is_empty() or nowhere:
 		var journey: Vector3 = nav._journey_goal
 		if journey.is_finite() and nav._journey_attempt < 6:
 			nav._journey_attempt += 1
 			nav._next_leg()
 			return
+	if candidate.is_empty():
 		nav._fail(result.get("reason", "No safe route")); return
+	if nowhere:
+		# She already stands on the nearest reachable spot: an arrival there, told apart as an
+		# alternative when the goal itself is farther than her arrival distance (never silent).
+		var goal: Vector3 = nav._live_goal if nav._live_goal.is_finite() else nav.target
+		var short: bool = _flat(nav.pony.global_position, goal) > float(nav.arrival_distance)
+		nav.path = PackedVector3Array()
+		if nav._native_active: nav._native_clear()
+		NATIVE_ADAPTER.on_event(nav, {"intent": nav._native_intent, "kind": 1, "alternative": short})
+		return
 	nav._unknown_pursuit = false
 	nav._direct_snapshot = {}
 	nav._direct_serial = -1

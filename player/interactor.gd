@@ -520,12 +520,14 @@ func _update_facing(delta: float) -> void:
 		_facing = move_toward(_facing, 1.0 if facing_player else 0.0, delta / FACING_TURN_SECONDS)
 	var carry: Variant = _cradle_carry()
 	if carry != null: carry.cradle_goal = cradled
-	_hold.position = HOLD_OFFSET + Vector3(0.0, 0.0, -FACING_EXTRA_REACH * smoothstep(0.0, 1.0, _facing))
+	# His arms' reach follows Anon's chosen height (6 ft = these numbers; player_mouth.gd human_scale).
+	var arm_scale := preload("res://player/player_mouth.gd").human_scale(get_parent() as Node3D)
+	_hold.position = (HOLD_OFFSET + Vector3(0.0, 0.0, -FACING_EXTRA_REACH * smoothstep(0.0, 1.0, _facing))) * arm_scale
 	# Cradled, she rests in his arms, not in his gaze: only his turning moves her, never his
 	# looking up or down (that is his neck).
 	var cradled_amount := smoothstep(0.0, 1.0, cradle_amount())
 	if cradled_amount > 0.0:
-		var arms := global_position + Basis(Vector3.UP, global_basis.get_euler().y) * CRADLE_OFFSET
+		var arms := global_position + Basis(Vector3.UP, global_basis.get_euler().y) * CRADLE_OFFSET * arm_scale
 		arms.y += _stride_bob(delta)
 		_hold.global_position = _hold.global_position.lerp(arms, cradled_amount)
 	else:

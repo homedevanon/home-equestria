@@ -25,6 +25,26 @@ constexpr double AVOIDANCE_FRESH = 0.25;
 // Neighbour prediction samples (seconds).
 constexpr double NEIGHBOUR_HORIZON = 0.8;
 constexpr double NEIGHBOUR_STEP = 0.1;
+// A committed pass round a pony in the way (2026-10-31; tools/navigation/probe_heading_flips.gd).
+// The old step round turned her to the tangent beside the pony and let the next tick decide
+// afresh: for a pony dead ahead that tangent lies about 105 degrees off her way, past
+// REVERSE_ENTER, so a reversal turned her straight back into it and the step round fired again,
+// sometimes to the other side (left 225 / right 225 degrees, for ever). Now she walks round it on
+// the chosen side, along the circle about it and a little outward, until it is a little behind her.
+constexpr double PASS_SECONDS = 8.0;
+constexpr double PASS_DISTANCE = 3.5;
+// A pony walking away from her faster than this needs no going round.
+constexpr double PASS_RECEDING = 0.3;
+constexpr double PASS_OUTWARD = 12.0 * PI_D / 180.0;
+// Outward turn while she is inside the hard separation (spawned or pushed close).
+constexpr double PASS_TIGHT = 30.0 * PI_D / 180.0;
+// Stopped and further off the pass heading than this: a stepping turn before any arc.
+constexpr double PASS_ALIGN = 35.0 * PI_D / 180.0;
+// The pass ends once the pony is this far behind her along the corridor's direction where she is
+// (not along the lookahead target: that lies on the corridor through the pony, beside it). Ended
+// just abeam, the pursuit arc back to the corridor ran into the pony and she stood beside it; past
+// abeam the circle itself bends her back toward the route behind it.
+constexpr double PASS_BEHIND = 0.4;
 
 inline double clampd(double value, double low, double high) {
 	return std::max(low, std::min(high, value));
@@ -227,12 +247,28 @@ double score(Context &c, const Candidate &candidate) {
 		const double u = std::hypot(c.u_x, c.u_z);
 		cost += 2.5 * std::hypot(hx * v - c.u_x, hz * v - c.u_z) / std::max(u, 0.5);
 	}
+	double fx = 0.0, fz = 0.0;
+	forward_of(pose.yaw, fx, fz);
+	double end_lx = 0.0, end_lz = 0.0;
+	left_of(end.yaw, end_lx, end_lz);
 	for (const Neighbour &other : c.neighbours) {
 		double now = 0.0, smallest = 0.0;
 		neighbour_separation(c, candidate, other, now, smallest);
 		const double soft = 2.0 * hard_separation(c, other) + 0.3;
 		if (smallest < soft) {
 			cost += 0.8 * (soft - smallest) / soft;
+		}
+		// Keep right of an oncoming pony, whatever the avoidance proposal says: RVO has no
+		// handedness, and two ponies picking mirrored sides stood nose to nose (2 m lanes).
+		const double ahead = (other.x - pose.x) * fx + (other.z - pose.z) * fz;
+		const double closing = -(other.vx * fx + other.vz * fz);
+		if (ahead > 0.0 && closing > 0.2 && now < soft + 1.5) {
+			const double ox = other.x + other.vx * horizon - end.x;
+			const double oz = other.z + other.vz * horizon - end.z;
+			const double side = ox * end_lx + oz * end_lz;
+			if (side < 0.0 && std::fabs(side) < soft) {
+				cost += 0.5;
+			}
 		}
 	}
 	return cost;
@@ -318,6 +354,189 @@ void finish_travel(SteeringOutput &out, const Candidate &chosen, const SteeringL
 	out.w = clampd(out.k * out.v, -lim.yaw_rate_max, lim.yaw_rate_max);
 	out.mode = chosen.mode;
 	out.chosen = chosen.id;
+}
+
+const Neighbour *find_neighbour(const std::vector<Neighbour> &neighbours, uint64_t id) {
+	for (const Neighbour &other : neighbours) {
+		if (other.id == id) {
+			return &other;
+		}
+	}
+	return nullptr;
+}
+
+// Heading round `other` on `side` (+1: the tangent (-rz, rx) of the unit line r from it to her,
+// -1: the opposite tangent), turned `outward` (plus `extra`) away from it so the gap only opens.
+double pass_heading(const Context &c, const Neighbour &other, int32_t side, double extra) {
+	const Pose2 &pose = c.in.pose;
+	const double dx = pose.x - other.x;
+	const double dz = pose.z - other.z;
+	const double d = std::max(std::hypot(dx, dz), 1e-6);
+	const double rx = dx / d;
+	const double rz = dz / d;
+	const double tx = side > 0 ? -rz : rz;
+	const double tz = side > 0 ? rx : -rx;
+	const double outward = (d < hard_separation(c, other) + 0.05 ? PASS_TIGHT : PASS_OUTWARD) + extra;
+	return yaw_of(tx * std::cos(outward) + rx * std::sin(outward), tz * std::cos(outward) + rz * std::sin(outward));
+}
+
+// Room to get past the pony on `side`: certified ground on the straight line from her to the
+// spot at hard separation beside it (square to her line to it). A pony standing in a gap or a
+// narrow lane leaves none: going round her only meets the wall, so the older step round, the
+// peer passage asks and reroutes deal with her instead (2026-10-31).
+bool beside_open(Context &c, const Neighbour &other, int32_t side) {
+	if (c.validator == nullptr) {
+		return true;
+	}
+	const Pose2 &pose = c.in.pose;
+	const double dx = pose.x - other.x;
+	const double dz = pose.z - other.z;
+	const double d = std::max(std::hypot(dx, dz), 1e-6);
+	const double tx = side > 0 ? -dz / d : dz / d;
+	const double tz = side > 0 ? dx / d : -dx / d;
+	const double reach = hard_separation(c, other);
+	const double px = other.x + tx * reach;
+	const double pz = other.z + tz * reach;
+	const double length = std::hypot(px - pose.x, pz - pose.z);
+	const size_t count = std::max<size_t>(1, size_t(std::ceil(length / sample_spacing(0.0))));
+	c.buffer.resize(count);
+	for (size_t i = 0; i < count; ++i) {
+		const double f = double(i + 1) / double(count);
+		c.buffer[i].x = pose.x + (px - pose.x) * f;
+		c.buffer[i].z = pose.z + (pz - pose.z) * f;
+		c.buffer[i].yaw = pose.yaw;
+	}
+	++c.validated;
+	return c.validator->walk(c.start, c.buffer.data(), c.buffer.size(), c.s < c.in.escape_until);
+}
+
+// The side whose pass heading lies nearer her way; her right on a near tie (keep right).
+int32_t pass_side_for(const Context &c, const Neighbour &other, double way) {
+	const double plus = wrap_angle(pass_heading(c, other, 1, 0.0) - way);
+	const double minus = wrap_angle(pass_heading(c, other, -1, 0.0) - way);
+	if (std::fabs(std::fabs(plus) - std::fabs(minus)) < 0.1) {
+		return plus < minus ? 1 : -1;
+	}
+	return std::fabs(plus) < std::fabs(minus) ? 1 : -1;
+}
+
+// One tick of the committed pass round neighbour `id` on `side`. False when it is over (the pony
+// is behind her or gone) or cannot go on along this side (recorded in out.failed_pass_*):
+// the ordinary decision runs then. Every arc is validated like any other (ground, discs,
+// neighbours).
+bool pass_step(Context &c, SteeringOutput &out, uint64_t id, int32_t side, double target_speed, double v_lo,
+		double v_hi) {
+	const SteeringInput &in = c.in;
+	const SteeringLimits &lim = c.lim;
+	const Neighbour *other = find_neighbour(c.neighbours, id);
+	if (other == nullptr || side == 0) {
+		return false;
+	}
+	const Pose2 &pose = in.pose;
+	double wx = 0.0, wz = -1.0;
+	c.corridor.tangent_at(c.s, wx, wz);
+	if ((other->x - pose.x) * wx + (other->z - pose.z) * wz <= -PASS_BEHIND) {
+		return false;
+	}
+	const double gap = std::max(std::hypot(other->x - pose.x, other->z - pose.z), 1e-6);
+	if ((other->vx * (other->x - pose.x) + other->vz * (other->z - pose.z)) / gap > PASS_RECEDING) {
+		return false;
+	}
+	const double heading = pass_heading(c, *other, side, 0.0);
+	const double error = wrap_angle(heading - pose.yaw);
+	out.pass_id = id;
+	out.pass_side = side;
+	if (in.speed < 0.08 && std::fabs(error) > PASS_ALIGN) {
+		out.v = 0.0;
+		out.k = 0.0;
+		out.w = signd(error) * lim.step_turn_rate;
+		out.mode = MODE_STEP_TURN;
+		out.reason = REASON_NEIGHBOUR;
+		return true;
+	}
+	// Round a pony at an easy pace: never faster than her trip, never slower than a walk.
+	const double pass_speed = clampd(target_speed, lim.walk_speed, std::max(lim.walk_speed, 1.0));
+	const double reach = std::max(c.lookahead, 0.8);
+	const int32_t shut_before = c.refused_ground + c.refused_blocked + c.refused_escape + c.refused_wall;
+	// Headings from the corridor's own direction round to the pass heading and beyond it: the
+	// first that validates keeps her as close to her way as the separation allows (hugging the
+	// circle about the pony, which also fits a lane), never closer to it than she is.
+	const double route = yaw_of(wx, wz);
+	const double toward_route = wrap_angle(route - heading);
+	double headings[7];
+	int32_t count = 0;
+	for (double f : { 1.0, 0.75, 0.5, 0.25, 0.0 }) {
+		headings[count++] = heading + toward_route * f;
+	}
+	headings[count++] = pass_heading(c, *other, side, 0.3);
+	headings[count++] = pass_heading(c, *other, side, 0.6);
+	// Pace first, then the heading nearest her way: hugging tighter at a crawl is never preferred
+	// to going round at the pass pace (that crawl read as a stall).
+	double ks[7];
+	for (int32_t e = 0; e < count; ++e) {
+		double hx = 0.0, hz = 0.0;
+		forward_of(headings[e], hx, hz);
+		double f = 0.0, l = 0.0;
+		ks[e] = clampd(pursuit_curvature(pose, pose.x + hx * reach, pose.z + hz * reach, f, l), -lim.max_curvature,
+				lim.max_curvature);
+	}
+	// Each arc is validated at the pace it is meant to reach (never below v_lo), then commanded
+	// at the acceleration window's speed: a shorter piece of the same validated arc. Validated at
+	// the window's crawl from a stop, the most inward heading always passed and she crept along
+	// the separation's edge without ever speeding up.
+	const double first_k = ks[4];
+	const double speeds[2] = { pass_speed, 0.5 * pass_speed };
+	for (double wanted : speeds) {
+		for (int32_t e = 0; e < count; ++e) {
+			const double cap = curve_speed_limit(ks[e], lim.yaw_rate_max, lim.lateral_accel);
+			Candidate candidate;
+			candidate.v = std::max(std::min(wanted, cap), v_lo);
+			candidate.k = ks[e];
+			candidate.id = 2000 + e;
+			if (candidate.v < 0.01) {
+				continue;
+			}
+			if (validate(c, candidate)) {
+				candidate.v = clampd(candidate.v, v_lo, v_hi);
+				finish_travel(out, candidate, lim);
+				out.reason = REASON_NONE;
+				return true;
+			}
+		}
+	}
+	if (in.speed < 0.08) {
+		if (std::fabs(error) > STEP_TARGET_DONE) {
+			// Not yet turned far enough for an arc that opens the gap.
+			out.v = 0.0;
+			out.k = 0.0;
+			out.w = signd(error) * lim.step_turn_rate;
+			out.mode = MODE_STEP_TURN;
+			out.reason = REASON_NEIGHBOUR;
+			return true;
+		}
+		if (c.refused_ground + c.refused_blocked + c.refused_escape + c.refused_wall == shut_before) {
+			// Only ponies refused it (the other one is still turning or stepping round her too):
+			// wait a moment on this side; the pass's time limit bounds the wait.
+			out.v = 0.0;
+			out.k = 0.0;
+			out.w = 0.0;
+			out.mode = MODE_HOLD;
+			out.reason = REASON_NEIGHBOUR;
+			return true;
+		}
+		// Facing along the pass and the ground (a wall, a disc, the escape corridor) refuses it:
+		// this side is shut. The caller tries the other side.
+		out.pass_id = 0;
+		out.pass_side = 0;
+		out.failed_pass_id = id;
+		out.failed_pass_side = side;
+		return false;
+	}
+	// Moving: brake along the pass, still committed to it.
+	const Candidate brake = emergency_brake(c, v_lo, first_k, first_k >= 0.0 ? 1 : -1);
+	finish_travel(out, brake, lim);
+	out.reason = REASON_NEIGHBOUR;
+	return true;
 }
 
 } // namespace
@@ -726,6 +945,14 @@ SteeringOutput steer_decision(Context &c, const Corridor &corridor, double s, co
 	if (!fresh) {
 		c.neighbour_margin += 0.1;
 	}
+	// A committed pass round a pony goes on before anything else may turn her back into it.
+	if (in.pass_side != 0 && c.validator != nullptr && in.pass_time <= PASS_SECONDS &&
+			in.pass_distance <= PASS_DISTANCE) {
+		if (pass_step(c, out, in.pass_id, in.pass_side, target_speed, v_lo, v_hi)) {
+			out.candidates_validated = c.validated;
+			return out;
+		}
+	}
 	const double previous_preferred = std::hypot(in.prev_pref_vx, in.prev_pref_vz);
 	const double answer = fresh ? std::hypot(in.avoid_vx, in.avoid_vz) : 0.0;
 	out.zero_answer = fresh && answer < 0.05 && previous_preferred > 0.2 && target_speed > 0.2;
@@ -750,6 +977,9 @@ SteeringOutput steer_decision(Context &c, const Corridor &corridor, double s, co
 	const double bearing = std::fabs(out.bearing);
 	const bool reversing = (in.reversing ? bearing > REVERSE_EXIT : bearing > REVERSE_ENTER) &&
 			std::hypot(tx - pose.x, tz - pose.z) > 0.05;
+	// A turn of more than 90 degrees keeps the way a turn went a moment ago (no left/right flips
+	// across the point straight behind her).
+	const int32_t held_turn = bearing > 0.5 * PI_D ? in.turn_hold : 0;
 	// Inside a cramped escape prefix there is no body room: an arc shorter than her body sweeps it
 	// like a pivot, so she realigns with a deliberate supported stepping turn, then walks the
 	// centre line.
@@ -775,7 +1005,9 @@ SteeringOutput steer_decision(Context &c, const Corridor &corridor, double s, co
 	// checks hoof support for this existing step turn, including every continuation tick.
 	const bool support_alignment = in.support_refused && in.speed < 0.08 && bearing > STEP_TURN_BEARING;
 	if (continuing || support_alignment || (cramped && in.speed <= lim.walk_speed + 0.1 && (reversing || (bearing > STEP_TURN_BEARING && in.speed < 0.08)))) {
-		const int32_t side = in.reversing && in.reversal_side != 0 ? in.reversal_side : (left >= 0.0 ? 1 : -1);
+		const int32_t side = in.reversing && in.reversal_side != 0 ? in.reversal_side
+				: held_turn != 0									? held_turn
+																	: (left >= 0.0 ? 1 : -1);
 		out.v = 0.0;
 		out.k = 0.0;
 		out.w = double(side) * lim.step_turn_rate;
@@ -788,7 +1020,9 @@ SteeringOutput steer_decision(Context &c, const Corridor &corridor, double s, co
 	if (reversing) {
 		// The target is behind her: turn round on a validated arc toward its side, braking to a
 		// turning speed; with no safe arc and at a walk, a deliberate supported stepping turn.
-		int32_t side = in.reversing && in.reversal_side != 0 ? in.reversal_side : (left >= 0.0 ? 1 : -1);
+		int32_t side = in.reversing && in.reversal_side != 0 ? in.reversal_side
+				: held_turn != 0							  ? held_turn
+															  : (left >= 0.0 ? 1 : -1);
 		const double turning_speed = std::min(clampd(lim.reversal_radius * lim.yaw_rate_max, lim.walk_speed,
 														lim.lateral_accel / lim.yaw_rate_max),
 				target_speed);
@@ -979,8 +1213,11 @@ SteeringOutput steer_decision(Context &c, const Corridor &corridor, double s, co
 	}
 	out.candidates_scored = int32_t(candidates.size());
 	std::stable_sort(candidates.begin(), candidates.end(), cheaper);
+	// Already walking off along a local repair heading (below) at a creep.
+	const bool repairing = in.prev_reason == REASON_REPAIR && in.speed < 0.3;
 	for (const Candidate &candidate : candidates) {
-		if (candidate.mode == MODE_BRAKE && candidate.v < 0.01 && in.speed < 0.08) {
+		if (candidate.mode == MODE_BRAKE && ((candidate.v < 0.01 && in.speed < 0.08) || (repairing && c.refused_ground > 0))) {
+			// (Creeping off along a local repair heading: the brake would stop her each other tick.)
 			// Already stopped: holding still is the fallback below (a stepping turn toward the
 			// corridor or a recorded hold), never chosen ahead of a travel candidate that validates.
 			continue;
@@ -999,9 +1236,10 @@ SteeringOutput steer_decision(Context &c, const Corridor &corridor, double s, co
 		}
 	}
 	out.candidates_validated = c.validated;
-	// Blocked by other ponies only (the ground would let her go): step round to the tangent of the
-	// nearest one, on the side nearer her way (her right on a near tie), then walk past it, which
-	// never brings them closer. Both ponies of a nose-to-nose meeting do the same and part.
+	// Blocked by other ponies only (the ground would let her go): go round the nearest one on the
+	// side nearer her way (her right on a near tie), which never brings them closer. Both ponies of
+	// a nose-to-nose meeting do the same and part. Without the ground validator (authored indoor
+	// corridors) the older one-tick step round to its tangent and walk past remains.
 	if (in.speed < 0.08 && c.refused_neighbour > 0 && c.refused_ground == 0 && c.refused_escape == 0 &&
 			!neighbours.empty()) {
 		const Neighbour *nearest = nullptr;
@@ -1013,7 +1251,67 @@ SteeringOutput steer_decision(Context &c, const Corridor &corridor, double s, co
 				nearest = &other;
 			}
 		}
-		if (nearest != nullptr && distance > 1e-6) {
+		if (nearest != nullptr && distance > 1e-6 && in.goal_occupied) {
+			// A pony standing on her destination: wait beside it (the batch reports arrival at the
+			// nearest reachable spot), never circle it.
+			out.v = 0.0;
+			out.k = 0.0;
+			out.w = 0.0;
+			out.mode = MODE_HOLD;
+			out.reason = REASON_NEIGHBOUR;
+			return out;
+		}
+		// Open floor along a side's pass heading (0.6 m): in a lane too narrow to go round (2 m) the
+		// pass would only meet the wall, so the older step round below squeezes past instead.
+		int32_t side = 0;
+		if (nearest != nullptr && distance > 1e-6 && c.validator != nullptr) {
+			const double way = pose.yaw + out.bearing;
+			// A walker gets the same side every time (she chooses hers the same way); a standing
+			// pony the side remembered for her, flipped once found shut.
+			side = !nearest->walker && in.side_memory_id == nearest->id && in.side_memory != 0
+					? in.side_memory
+					: pass_side_for(c, *nearest, way);
+			if (!nearest->walker && out.failed_pass_id == nearest->id && out.failed_pass_side == side) {
+				side = -side;
+			}
+			if (!straight_valid(c, pass_heading(c, *nearest, side, 0.0), 0.6) || !beside_open(c, *nearest, side)) {
+				// A walker keeps right as well: going round her on the other side mirrors her.
+				side = !nearest->walker && straight_valid(c, pass_heading(c, *nearest, -side, 0.0), 0.6)
+								&& beside_open(c, *nearest, -side)
+						? -side
+						: 0;
+			}
+		}
+		if (side != 0) {
+			// Open sampled ground: commit to a pass round it, on the side remembered for this pony,
+			// else the side nearer her way (her right on a near tie); a side found shut tries the
+			// other one.
+			for (int32_t attempt = 0; attempt < 2; ++attempt) {
+				if (pass_step(c, out, nearest->id, side, target_speed, v_lo, v_hi)) {
+					out.candidates_validated = c.validated;
+					return out;
+				}
+				if (out.failed_pass_id != nearest->id || out.failed_pass_side != side || nearest->walker) {
+					break; // already past it (nothing to go round), or a walker who keeps right too
+				}
+				side = -side;
+			}
+			out.pass_id = 0;
+			out.pass_side = 0;
+			// Past it (or both sides shut) and every arc refused: walk on straight, which never
+			// brings them closer.
+			Candidate past;
+			past.v = std::max(v_hi, 0.05);
+			past.k = 0.0;
+			past.id = 1000;
+			if (validate(c, past)) {
+				finish_travel(out, past, lim);
+				out.reason = REASON_NEIGHBOUR;
+				out.candidates_validated = c.validated;
+				return out;
+			}
+		}
+		if (nearest != nullptr && distance > 1e-6 && side == 0) {
 			const double rx = (pose.x - nearest->x) / distance;
 			const double rz = (pose.z - nearest->z) / distance;
 			// The two tangents of the line between them, each turned STEP_AWAY further from her.
@@ -1050,14 +1348,22 @@ SteeringOutput steer_decision(Context &c, const Corridor &corridor, double s, co
 	}
 	// Stopped where the ground refuses every short arc toward her way (the edge of the room beside
 	// a wall): local repair. The nearest heading within 90 degrees of her way whose first 0.3 m keeps
-	// to certified ground: step round to it, then walk off along it.
-	if (in.speed < 0.08 && c.refused_ground > 0 && c.refused_neighbour == 0) {
-		const double way = pose.yaw + out.bearing;
+	// to certified ground: step round to it, then walk off along it. Her way here is the corridor
+	// close by, not the lookahead target: beside the mouth of a gap or doorway the lookahead cuts
+	// its corner through ground the validator refuses, and headings picked round it swing left and
+	// right as she shuffles (2026-10-31, a walker who had stepped aside froze at a 1.4 m gap).
+	if ((in.speed < 0.08 || repairing) && c.refused_ground > 0 && c.refused_neighbour == 0) {
+		double way = pose.yaw + out.bearing;
+		if (!c.corridor.empty()) {
+			const Vec3f near = c.corridor.point_at(std::min(c.s + 0.4, c.corridor.length()));
+			const double nx = double(near.x) - pose.x;
+			const double nz = double(near.z) - pose.z;
+			if (nx * nx + nz * nz > 0.15 * 0.15 && std::fabs(wrap_angle(yaw_of(nx, nz) - way)) < 0.5 * PI_D) {
+				way = yaw_of(nx, nz);
+			}
+		}
 		for (int step = 0; step <= 18; ++step) {
 			const double offset = double((step + 1) / 2) * (10.0 * PI_D / 180.0) * (step % 2 == 1 ? 1.0 : -1.0);
-			if (step == 0) {
-				continue;
-			}
 			const double heading = wrap_angle(way + offset);
 			if (!straight_valid(c, heading, 0.3)) {
 				continue;
@@ -1073,7 +1379,7 @@ SteeringOutput steer_decision(Context &c, const Corridor &corridor, double s, co
 				out.candidates_validated = c.validated;
 				return out;
 			}
-			out.v = std::max(v_hi, 0.05);
+			out.v = std::max(std::min(v_hi, 0.25), 0.05);
 			out.k = 0.0;
 			out.w = 0.0;
 			out.mode = MODE_TRAVEL;

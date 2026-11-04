@@ -130,5 +130,5 @@ static func _make_crunch()->AudioStreamWAV:
 func held_usable(item: Node) -> bool:
 	if not is_instance_valid(item): return false
 	var id:=str(item.get_meta("item_id",""))
-	if id.begins_with("goods:paper-") or id == "goods:quill" or id.begins_with("letter:"): return true
+	if id.begins_with("goods:paper-") or id == "goods:quill" or id.begins_with("letter:") or id == "notebook" or id == "photo-journal": return true
 	return id == "goods:folded-blanket" or id == "goods:easel" or id in host.EDIBLE or FOOD.CATALOG.can_consume(id) or wearable(item)

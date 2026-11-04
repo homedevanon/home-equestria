@@ -1,0 +1,18 @@
+{"version": 1, "events": [
+ {"id": "applebuck_season", "name": "Applebuck Season", "season": "autumn", "from": 0.0, "to": 0.35,
+  "place": "landmark:appleacres_barned_01", "place_name": "Sweet Apple Acres", "radius": 60.0, "hosts": ["applejack", "big_mcintosh", "apple_bloom"],
+  "effects": {"daily_baskets": 10, "basket_pay": 25}, "jobs_open": ["orchard_bucking"],
+  "asks": [{"from": "applejack", "want": "job:orchard_bucking:3", "reward": "bits:15", "why": "Applebuck Season needs every hoof", "hours": 24}],
+  "copper": {"takes": [], "makes": [], "facts": ["event_started", "attended", "worked"], "verbs": ["invite", "offer_job", "ask"],
+   "plans": ["buck_apples"], "consumers": ["orchard_bucking", "ask", "invite"]}},
+ {"id": "cider_season", "name": "Cider Season", "season": "autumn", "from": 0.5, "to": 1.0,
+  "place": "landmark:appleacres_barned_01", "place_name": "Sweet Apple Acres", "radius": 60.0, "hours": [10, 18], "hosts": ["applejack", "big_mcintosh"],
+  "effects": {"stand_open": true}, "jobs_open": ["cider_stand"],
+  "asks": [{"from": "big_mcintosh", "want": "item:apple:8", "reward": "bits:20", "why": "apples for the cider press", "hours": 24}],
+  "copper": {"takes": ["tag:apple"], "makes": [], "facts": ["event_started", "attended", "sold"], "verbs": ["invite", "offer_job", "use", "ask"],
+   "plans": ["press_cider", "work_stand", "buy_cider"], "consumers": ["cider_stand", "cider_press", "invite"]}},
+ {"id": "trixie_show", "name": "Trixie's stage show", "driver": "trixie_show",
+  "roll": {"chance": 0.03, "cooldown_days": 7}, "hours": [16.5, 19.0], "place": "activity:trixie_show", "place_name": "the schoolhouse stage", "radius": 45.0, "hosts": ["trixie"],
+  "copper": {"takes": [], "makes": [], "facts": ["event_started", "attended"], "verbs": ["invite", "pay_player"],
+   "plans": [], "consumers": ["invite", "gossip", "pay_panel"]}}
+]}

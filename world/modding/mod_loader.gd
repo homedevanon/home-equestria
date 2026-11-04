@@ -22,7 +22,10 @@ const ID_PATTERN := "^[a-z0-9_]{1,40}$"
 ## Marker the build tool adds to a mod's folder inside its pack.
 const BUILT := "mod.built.json"
 
-## Every pack seen this launch: {file, path, enabled, loose, ids, mounted, error}.
+## Every pack seen this launch: {file, path, enabled, loose, ids, mounted, error, overrides, game_version,
+## title, held}. overrides: the game files the pack replaces (read from its directory before it
+## mounts); game_version: the oldest game version its mods were made for; held: switched off this
+## launch because it is an old mod that replaces game files (see is_old()).
 static var packs: Array = []
 ## Every mod found: {id, name, version, author, description, game_version, entry, extends, file,
 ## enabled, errors: Array[String]}. Only mods with no errors run.
@@ -45,14 +48,22 @@ static func boot(dirs: Array = [], loose_dirs: Array = [], disabled_override: Va
 		for name: String in names:
 			if name.get_extension().to_lower() != "pck" or seen.has(name) or (loose and PACKS.is_game_pack(name)): continue
 			seen[name] = true
-			var row := {"file": name, "path": dir.path_join(name), "enabled": name not in disabled, "loose": loose, "ids": [], "mounted": false, "error": ""}
+			var row := {"file": name, "path": dir.path_join(name), "enabled": name not in disabled, "loose": loose, "ids": [], "mounted": false, "error": "",
+				"overrides": PackedStringArray(), "game_version": "", "title": "", "held": false}
+			_inspect(row)
+			if row.enabled and is_old(row) and not _allowed(name):
+				row.enabled = false; row.held = true
+				push_warning("[mods] %s is off: made for game %s (this is %s) and replaces %d game file(s): %s. Switch it on in Settings → Mods to use it anyway." % [name, row.game_version, game_version(), row.overrides.size(), ", ".join(row.overrides.slice(0, 8))])
+			elif row.enabled and not row.overrides.is_empty():
+				print("[mods] %s replaces %d game file(s): %s" % [name, row.overrides.size(), ", ".join(row.overrides.slice(0, 8))])
 			packs.append(row)
 			if row.enabled: _mount(row)
 	# Source runs (development, mod authors): `-- --mod-src <id>` runs res://mods/<id> unpacked.
 	var args := OS.get_cmdline_user_args()
 	for i in args.size():
 		if args[i] == "--mod-src" and i + 1 < args.size() and DirAccess.dir_exists_absolute(MODS_ROOT.path_join(args[i + 1])):
-			var row := {"file": "(source) " + args[i + 1], "path": "", "enabled": true, "loose": false, "ids": [args[i + 1]], "mounted": true, "error": ""}
+			var row := {"file": "(source) " + args[i + 1], "path": "", "enabled": true, "loose": false, "ids": [args[i + 1]], "mounted": true, "error": "",
+				"overrides": PackedStringArray(), "game_version": "", "title": "", "held": false}
 			packs.append(row)
 	for row: Dictionary in packs:
 		for id: String in row.ids: mods.append(read_manifest(id, row))
@@ -113,7 +124,8 @@ static func switch(file: String, enabled: bool) -> bool:
 static func _entry_only(mod: Dictionary) -> bool:
 	return (mod.extends as Array).is_empty() and not DirAccess.dir_exists_absolute(MODS_ROOT.path_join(mod.id).path_join("merge"))
 
-## Saves a Settings → Mods switch for the next launch.
+## Saves a Settings → Mods switch for the next launch. Switching on an old mod that replaces game
+## files (is_old()) also lets it load for this game version; the next game update asks again.
 static func set_enabled(file: String, enabled: bool) -> void:
 	var disabled := disabled_files()
 	if enabled:
@@ -122,6 +134,10 @@ static func set_enabled(file: String, enabled: bool) -> void:
 	var config := ConfigFile.new()
 	config.load(SETTINGS)
 	config.set_value("mods", "disabled", disabled)
+	var allowed := _allowed_old(config)
+	if enabled and packs.any(func(row: Dictionary) -> bool: return row.file == file and is_old(row)): allowed[file] = game_version()
+	else: allowed.erase(file)
+	config.set_value("mods", "allowed_old", allowed)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(USER_DIR))
 	config.save(SETTINGS)
 
@@ -136,6 +152,135 @@ static func _mount(row: Dictionary) -> void:
 	row.mounted = true
 	for id: String in _mod_folders():
 		if id not in folders or (id not in built and FileAccess.file_exists(MODS_ROOT.path_join(id).path_join(BUILT))): row.ids.append(id)
+
+## Settings → Mods: whether the pack is switched on for the next launch (not switched off, and
+## not an old game-file replacer the player has not allowed for this game version).
+static func switched_on(file: String) -> bool:
+	if file in disabled_files(): return false
+	var found := packs.filter(func(row: Dictionary) -> bool: return row.file == file)
+	return found.is_empty() or not is_old(found[0]) or _allowed(file)
+
+## Old mods that replace game files (/mlp/ thread 43671981, 2026-11-03: an old menu and subtitle
+## overhaul still mounted after updates hid the spa and the pause menu's Journal button, and
+## reinstalling did not help because the mods folder survived). Like an update pack made for
+## another version (tools/build/packs.gd patch_fits()), such a pack stays off until the player
+## switches it on in Settings → Mods; that choice holds until the next game version. A mod that
+## replaces no game file, declares no version, or declares this one is never held back.
+static func is_old(row: Dictionary) -> bool:
+	return not (row.get("overrides", PackedStringArray()) as PackedStringArray).is_empty() \
+		and version_older(str(row.get("game_version", "")), game_version())
+
+static func game_version() -> String:
+	return str(ProjectSettings.get_setting("application/config/version", ""))
+
+## True when `a` names an older game version than `b` by their leading numbers ("0.1.0-maredev"
+## is older than "0.1.1.1", and equal to "0.1.0"). False when either has no version number.
+static func version_older(a: String, b: String) -> bool:
+	var x := _version_numbers(a); var y := _version_numbers(b)
+	if x.is_empty() or y.is_empty(): return false
+	for i in maxi(x.size(), y.size()):
+		var p: int = x[i] if i < x.size() else 0
+		var q: int = y[i] if i < y.size() else 0
+		if p != q: return p < q
+	return false
+
+static func _version_numbers(text: String) -> Array:
+	var found := RegEx.create_from_string("^\\s*v?(\\d+(?:\\.\\d+)*)").search(text)
+	if found == null: return []
+	return Array(found.get_string(1).split(".")).map(func(part: String) -> int: return int(part))
+
+## A mod whose author field names the game itself ("Home: Equestria"); the Mods screen says it is
+## a third-party mod (thread 43671981: the "Anonfilly (NPC)" mod did this).
+static func claims_game_author(author: String) -> bool:
+	var plain := RegEx.create_from_string("[^a-z]").sub(author.to_lower(), "", true)
+	var game := RegEx.create_from_string("[^a-z]").sub(str(ProjectSettings.get_setting("application/config/name", "Home: Equestria")).to_lower(), "", true)
+	return not plain.is_empty() and (plain == game or plain == "homeequestria")
+
+static func _allowed(file: String) -> bool:
+	var config := ConfigFile.new()
+	if config.load(SETTINGS) != OK: return false
+	return str(_allowed_old(config).get(file, "")) == game_version()
+
+static func _allowed_old(config: ConfigFile) -> Dictionary:
+	var value: Variant = config.get_value("mods", "allowed_old", {})
+	return (value as Dictionary).duplicate() if value is Dictionary else {}
+
+## Reads a pack's directory without mounting it: the game files it replaces, the game version its
+## mod.json files declare (or, failing that, the version tools/modding/build_mod.gd stamped into
+## its BUILT marker), and the first mod's name.
+static func _inspect(row: Dictionary) -> void:
+	var index := pack_index(str(row.path))
+	var manifests := {}   # id -> {json, built}
+	var overrides: PackedStringArray = row.overrides
+	for path: String in index:
+		if path.begins_with(MODS_ROOT + "/"):
+			if path.get_base_dir().get_base_dir() == MODS_ROOT and path.get_file() in ["mod.json", BUILT]:
+				var id := path.get_base_dir().get_file()
+				if not manifests.has(id): manifests[id] = {}
+				manifests[id][path.get_file()] = parse(pack_text(str(row.path), index[path]))
+			continue
+		if path.begins_with("res://.godot/"): continue
+		var shown := _game_file(path)
+		if not shown.is_empty() and shown not in overrides: overrides.append(shown)
+	overrides.sort()
+	var ids := manifests.keys(); ids.sort()
+	for id: String in ids:
+		var doc: Variant = manifests[id].get("mod.json")
+		var built: Variant = manifests[id].get(BUILT)
+		var version := ""
+		if doc is Dictionary and doc.get("game_version") is String: version = str(doc.game_version).strip_edges()
+		if version.is_empty() and built is Dictionary: version = str(built.get("game_version", "")).strip_edges()
+		if not version.is_empty() and (str(row.game_version).is_empty() or version_older(version, str(row.game_version))): row.game_version = version
+		if str(row.title).is_empty() and doc is Dictionary and doc.get("name") is String: row.title = str(doc.name).strip_edges()
+
+## The game file a pack path replaces, or "" when the game has none there. Exported games keep
+## scripts as .gdc behind a .remap and assets behind a .import, so either form counts.
+static func _game_file(path: String) -> String:
+	var base := path.trim_suffix(".remap").trim_suffix(".import")
+	if base.get_extension() == "gdc": base = base.get_basename() + ".gd"
+	for candidate: String in [base, base + ".remap", base + ".import"]:
+		if FileAccess.file_exists(candidate): return base
+	if base.get_extension() == "gd" and FileAccess.file_exists(base.get_basename() + ".gdc"): return base
+	return ""
+
+## A pack's directory, {res:// path: [offset, size, flags]}, read from its header (Godot's
+## PackedSourcePCK format 2 and 3); empty when the file is not a plain pack or its directory is
+## encrypted.
+static func pack_index(path: String) -> Dictionary:
+	var out := {}
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null or file.get_length() < 40 or file.get_32() != 0x43504447: return out   # "GDPC"
+	var format := file.get_32()
+	file.get_32(); file.get_32(); file.get_32()   # Godot version
+	var flags := file.get_32()
+	if format < 2 or format > 3 or (flags & 1) != 0: return out
+	var base := file.get_64()   # the pack starts at 0, so a relative file base needs no shift
+	if format == 3: file.seek(file.get_64())
+	else:
+		for i in 16: file.get_32()
+	var count := file.get_32()
+	if count > 1000000: return out
+	for i in count:
+		var length := file.get_32()
+		if length > 4096 or file.eof_reached(): break
+		var bytes := file.get_buffer(length)
+		var end := bytes.find(0)
+		var name := (bytes.slice(0, end) if end >= 0 else bytes).get_string_from_utf8()
+		var offset := file.get_64(); var size := file.get_64()
+		file.get_buffer(16)   # md5
+		var file_flags := file.get_32()
+		if not name.begins_with("res://"): name = "res://" + name
+		out[name] = [base + offset, size, file_flags]
+	return out
+
+## The text of one file in a pack's directory (pack_index()), or "" when it is encrypted or a
+## removal entry.
+static func pack_text(path: String, entry: Array) -> String:
+	if (int(entry[2]) & 3) != 0 or int(entry[1]) > 1 << 20: return ""
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null: return ""
+	file.seek(int(entry[0]))
+	return file.get_buffer(int(entry[1])).get_string_from_utf8()
 
 static func _built_ids() -> PackedStringArray:
 	var out := PackedStringArray()

@@ -7,6 +7,7 @@ const STATE := preload("res://world/cooking/cooking_state.gd")
 const RECIPES := preload("res://world/cooking/cooking_recipes.gd")
 const CATALOG := preload("res://world/inventory/item_catalog.gd")
 const FOOD := preload("res://world/food/food_interaction.gd")
+const STATIONS := preload("res://world/mechanics/stations/stations.gd")
 var station_id := ""
 var inventory_ui: Node
 var pan: StaticBody3D
@@ -167,6 +168,8 @@ func _finish(recipe: Dictionary) -> void:
 	inventory_ui._refresh_holding()
 	_stop_heat_audio()
 	SFX.play_at(self, "prop_cook_finish", pan.global_position)
+	# Stations adapter (world/mechanics/stations/stations.gd, row home_cooker): the "made" fact only.
+	STATIONS.note(self, "home_cooker", "player", [str(recipe.output)])
 
 func _stop_failed() -> void:
 	heat = false; _failed = true; set_process(false)

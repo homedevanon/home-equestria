@@ -1,0 +1,76 @@
+{
+  "_why": "Copy to user://ai_config.json (the Dialogue & microphone page writes it) or, in source runs, res://ai_config.json (gitignored). Missing keys fall back to world/ai/ai_config.gd DEFAULTS. See docs/ALPHA_AI_AND_PORTABILITY.md.",
+  "llm": {
+    "provider": "openai",
+    "_provider": "openai = any OpenAI-compatible /chat/completions (OpenAI, OpenRouter, Ollama http://127.0.0.1:11434/v1, llama.cpp http://127.0.0.1:8080/v1); anthropic = Anthropic Messages API (https://api.anthropic.com/v1)",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "model": "gpt-4o-mini",
+    "temperature": 0.8,
+    "max_tokens": 220,
+    "timeout": 90.0
+  },
+  "stt": {
+    "provider": "off",
+    "_provider": "off = no microphone (type to talk); local = Whisper server at url (tools/ai/stt_server.sh, raw WAV POST, JSON {text}); openai = OpenAI-compatible {base_url}/audio/transcriptions",
+    "url": "http://127.0.0.1:8790/transcribe",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "model": "whisper-1",
+    "mode": "ptt",
+    "_mode": "vad = open mic with voice activity detection; ptt = hold T (desktop) / left B (VR); off",
+    "input_device": "",
+    "push_to_talk_action": "voice_talk",
+    "vr_push_to_talk_button": "by_button",
+    "mic_source": null,
+    "_mic_source": "Linux PipeWire source name for the mic (pactl list sources short); null = wivrn.source in the headset, system default on desktop",
+    "vad_threshold": 0.012,
+    "vad_hangover": 0.75,
+    "vad_min_speech": 0.35,
+    "vad_max_speech": 18.0
+  },
+  "tts": {
+    "provider": "none",
+    "_provider": "none = local Ponese only; openai = {base_url}/audio/speech (response_format wav, voice = per-pony openai_voice or this voice); gradio = a MOSS-TTS-PNY Gradio host at remote_url called directly; moss = local moss-tts at url; remote = Gradio via tools/ai/tts_proxy.sh at proxy_url (developer)",
+    "url": "http://127.0.0.1:8000/tts",
+    "proxy_url": "http://127.0.0.1:8791/tts",
+    "remote_url": "",
+    "gradio_api": "synthesize",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "model": "gpt-4o-mini-tts",
+    "voice": "alloy",
+    "timeout": 60.0,
+    "style_strength": 1.0,
+    "voice_mode": "ponese",
+    "chatter_fallback": true,
+    "_voice_mode": "ponese = all local; auto = character TTS, local Ponese for unvoiced ponies; tts = force TTS. Failed TTS falls back to Ponese unless chatter_fallback is false."
+  },
+  "player_approaches": {
+    "enabled": true,
+    "radius_m": 24.0,
+    "chance": 0.2,
+    "cooldown_seconds": 120.0,
+    "pony_cooldown_seconds": 900.0,
+    "_note": "One random nearby pony may approach on a 30-second opportunity. Roughly 3-6 minutes with available company; busy, unreachable and cooling-down ponies wait. No LLM planning; greeting shares the automatic-dialogue budget."
+  },
+  "earshot_m": 10.0,
+  "history_turns": 16,
+  "player_name": "Anon",
+  "debug": false,
+  "group_conversations": {
+    "enabled": true,
+    "ambient": true,
+    "initial_delay_seconds": 12.0,
+    "cooldown_seconds": 30.0,
+    "ambient_radius_m": 80.0,
+    "ambient_chance_per_pony_second": 0.012,
+    "ambient_reply_chance": 0.8,
+    "ambient_cooldown_seconds": 12.0,
+    "ambient_pony_cooldown_seconds": 75.0
+  },
+  "lip_sync": {
+    "rhubarb_path": "",
+    "_rhubarb_path": "optional absolute path to the Rhubarb Lip Sync executable; see bin/rhubarb/README.md"
+  }
+}

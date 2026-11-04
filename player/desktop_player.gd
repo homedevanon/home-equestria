@@ -18,8 +18,8 @@ var companion_pace := preload("res://player/companion_pace.gd").new()
 const CROUCH_RATIO := 0.55
 const CROUCH_LERP := 12.0
 
-@export var walk_speed := 4.0
-@export var sprint_speed := 6.0
+@export var walk_speed := 5.5
+@export var sprint_speed := 8.0
 @export var crouch_speed := 1.3
 ## Walk (Settings binding "move_walk", Alt by default; a human's Ctrl already crouches): tap it to
 ## toggle walking, or hold it to walk only while held. Sprint (Shift) still overrides a toggled walk. AnonPony walks on Ctrl as well.
@@ -120,6 +120,7 @@ func _exit_tree() -> void:
 
 func _on_setting_changed(key: String) -> void:
 	if key.begins_with("controls/") or key == "access/reduced_motion": _apply_settings()
+	elif key == "player/height_cm": apply_height(false)
 
 
 ## Mouse sensitivity, invert Y, field of view and reduced motion from the Settings autoload.
@@ -136,11 +137,10 @@ func _apply_settings() -> void:
 ## Resizes the rig. Ponyville was authored around pony-height cameras, so an
 ## adult-human player reads as a giant in it; game.gd drives this from a single
 ## constant shared with the VR rig. Speeds scale too -- a smaller body covering
-## ground at full adult pace feels like skating.
+## ground at full adult pace feels like skating. Anon's own height (Settings
+## player/height_cm) sizes eye and capsule on top of this: apply_height().
 func apply_scale(s: float) -> void:
-	_stand_eye = (float(Settings.get_value("player/height_cm")) / 100.0 - .12) * s
-	_eye_height = _stand_eye
-	_set_eye_y(_stand_eye)
+	_rig_scale = s
 	walk_speed *= s
 	sprint_speed *= s
 	crouch_speed *= s
@@ -152,11 +152,38 @@ func apply_scale(s: float) -> void:
 	var col := $Collision as CollisionShape3D
 	# Duplicated so the .tscn's shared sub-resource is not mutated in place.
 	var capsule := (col.shape as CapsuleShape3D).duplicate() as CapsuleShape3D
-	capsule.height = maxf(capsule.radius * 2.0, float(Settings.get_value("player/height_cm")) / 100.0 * s)
 	capsule.radius *= s
 	col.shape = capsule
+	apply_height(true)
+
+
+## The 6 ft Anon's standing eye and capsule height before the rig scale (the former 182 cm
+## default: eye 12 cm below the crown), so 6 ft 0 in keeps exactly the rig every check was tuned on.
+const REFERENCE_EYE := 1.70
+const REFERENCE_CAPSULE := 1.82
+var _rig_scale := 1.0
+
+## Anon's chosen real height over 6 ft (Settings.anon_height_scale), 1.0 without Settings.
+func height_scale() -> float:
+	var settings := get_node_or_null("/root/Settings")
+	return float(settings.call("anon_height_scale")) if settings != null and settings.has_method("anon_height_scale") else 1.0
+
+## Standing eye and capsule from Anon's height (dev 2026-11-03). At spawn they are placed at once;
+## a live change sets the targets the crouch ease moves the eye and capsule to. Radius and walking
+## speeds keep the rig scale alone, so doors and paths fit as before. AnonPony's form owns both.
+func apply_height(snap: bool) -> void:
+	if is_instance_valid(form_driver): return
+	var k := height_scale()
+	_stand_eye = REFERENCE_EYE * _rig_scale * k
+	var col := $Collision as CollisionShape3D
+	var capsule := col.shape as CapsuleShape3D
+	_stand_capsule_height = maxf(capsule.radius * 2.0, REFERENCE_CAPSULE * _rig_scale * k)
+	if is_instance_valid(seat) and _seated_eye > 0.0: _seated_eye = SEATED_EYE * k
+	if not snap: return
+	_eye_height = _stand_eye
+	_set_eye_y(_stand_eye)
+	capsule.height = _stand_capsule_height
 	col.position.y = capsule.height * 0.5
-	_stand_capsule_height = capsule.height
 
 
 ## The rig's own eye height above its feet. Desktop: the camera. Seated: the tracked origin
@@ -310,7 +337,7 @@ func sit_on(target: Node3D) -> bool:
 	global_position = target.global_position
 	velocity = Vector3.ZERO
 	($Collision as CollisionShape3D).disabled = true
-	_seated_eye = SEATED_EYE
+	_seated_eye = SEATED_EYE * height_scale()
 	_rest_held = Input.is_key_pressed(KEY_CTRL)
 	preload("res://world/audio/interaction_sounds.gd").play_at(self, "prop_rest")
 	return true
@@ -329,8 +356,8 @@ func toggle_couch_sleep() -> bool:
 	var couch: Variant = (seat.get_meta("couch") if seat.has_meta("couch") else null)
 	if not is_instance_valid(couch): return false
 	# Settle first to the ordinary seated eye height, so the rest has a stable start.
-	_set_eye_y(SEATED_EYE)
-	_eye_height = SEATED_EYE
+	_set_eye_y(SEATED_EYE * height_scale())
+	_eye_height = SEATED_EYE * height_scale()
 	_couch_rest = couch.begin_player(self, seat, camera)
 	return _couch_rest != null
 

@@ -8,6 +8,7 @@ const FONT_SIZE := 16
 ## Existing physical destinations, sampled only with their live town. No aerial rebuild.
 const SHOPS := [
 	{"id": "shop:hayburger", "name": "Hayburger", "path": "Hayburger/RestaurantInterior", "at": Vector3.ZERO},
+	{"id": "shop:spa", "name": "Day Spa", "path": "RNLScenery/East/Shops/spa_01", "at": Vector3.ZERO},
 	{"id": "ponyville:market:produce", "name": "Produce market", "path": "RNLScenery/Town/Market/kiosk_01_02", "at": Vector3(0, 0, -1.8)},
 	{"id": "ponyville:market:goods", "name": "General goods", "path": "RNLScenery/Town/Market/tent_friagram_lightbrown_01", "at": Vector3(0, 0, 8.2)},
 ]

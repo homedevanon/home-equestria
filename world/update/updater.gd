@@ -48,6 +48,8 @@ var _page := RELEASES
 var _manifest: Dictionary = {}
 var _assets: Dictionary = {}     # release file name -> download address
 var _http: HTTPRequest
+var _own_roots := false          # this system's roots refused GitHub; the game's own are in use
+var _check_failed := false       # the last check could not reach GitHub (the version line says so)
 var _reply: Array = []
 var _thread: Thread
 var _stop := false
@@ -107,6 +109,7 @@ func version_line() -> String:
 		return "You have an outdated version (%s). Newest: %s" % [mine, latest]
 	if state == "current": return "You have the newest version (%s)" % mine
 	if state == "checking": return "You have version %s. Checking for a newer one..." % mine
+	if state == "idle" and _check_failed: return "You have version %s. Could not check for a newer one." % mine
 	return "You have version %s" % mine
 
 
@@ -164,9 +167,11 @@ func check() -> bool:
 	if found.has("error"):
 		print("[update] check: %s" % found.error)
 		state = "current" if "not newer" in str(found.error) else before if before == "available" else "idle"
+		_check_failed = state == "idle"
 		if state == "current": saved.set_value("check", "current_for", _version()); saved.save(STATE)
 		_refresh(); return false
 	_manifest = found
+	_check_failed = false
 	latest = str(found.version); state = "available"
 	saved.set_value("check", "latest", latest); saved.set_value("check", "page", _page); saved.save(STATE)
 	print("[update] version %s is available (signed manifest verified)" % latest)
@@ -205,6 +210,14 @@ func _fetch(url: String, to_file: String, limit: int, accept: String) -> Diction
 		if _http.request(url, PackedStringArray(["User-Agent: " + USER_AGENT, "Accept: " + accept])) != OK: return {"error": "could not start a request"}
 		while _reply.is_empty():
 			if not await SHUTDOWN.frame(self): _http.cancel_request(); return {"error": "stopped"}
+		# A PC whose root store lacks GitHub's roots (VERIFY.fallback_tls): the same address once
+		# more with the game's own roots, kept for the rest of this run.
+		if int(_reply[0]) == HTTPRequest.RESULT_TLS_HANDSHAKE_ERROR and not _own_roots:
+			var roots := VERIFY.fallback_tls()
+			if roots != null:
+				_own_roots = true; _http.set_tls_options(roots)
+				print("[update] %s refused this system's certificates; trying the game's own root certificates" % _host(url))
+				continue
 		var code := int(_reply[1])
 		if code in [301, 302, 303, 307, 308]:
 			url = ""
@@ -212,9 +225,24 @@ func _fetch(url: String, to_file: String, limit: int, accept: String) -> Diction
 				if header.to_lower().begins_with("location:"): url = header.substr(9).strip_edges()
 			continue
 		if int(_reply[0]) != HTTPRequest.RESULT_SUCCESS or code != 200:
-			return {"error": "HTTP %d" % code if int(_reply[0]) == HTTPRequest.RESULT_SUCCESS else "network error %d" % int(_reply[0])}
+			return {"error": "HTTP %d from %s" % [code, _host(url)] if int(_reply[0]) == HTTPRequest.RESULT_SUCCESS else _network_problem(int(_reply[0]), _host(url))}
 		return {"body": _reply[3]}
 	return {"error": "too many redirects"}
+
+
+static func _host(url: String) -> String:
+	return url.substr(url.find("://") + 3).get_slice("/", 0) if "://" in url else url
+
+
+## The reason in words with the host, so a player's log says what failed and where.
+static func _network_problem(result: int, host: String) -> String:
+	match result:
+		HTTPRequest.RESULT_CANT_RESOLVE: return "could not look up %s: no internet, or DNS blocks it (network error 3)" % host
+		HTTPRequest.RESULT_CANT_CONNECT: return "could not connect to %s: a firewall, VPN or proxy may block it (network error 2)" % host
+		HTTPRequest.RESULT_CONNECTION_ERROR: return "the connection to %s broke (network error 4)" % host
+		HTTPRequest.RESULT_TLS_HANDSHAKE_ERROR: return "secure connection to %s refused: check this PC's date and time; antivirus HTTPS scanning can also cause this (network error 5)" % host
+		HTTPRequest.RESULT_TIMEOUT: return "%s did not answer in time (network error 13)" % host
+	return "network error %d at %s" % [result, host]
 
 
 static func _allowed(url: String, redirected: bool) -> bool:

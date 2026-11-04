@@ -10,6 +10,10 @@ const LAYOUT := "res://world/props/ponyville/farm_layout.json"
 const CATALOGUE := preload("res://world/foliage/grassy_catalogue.gd")
 const APPLE := preload("res://world/inventory/assets/apple.tscn")
 signal orchard_ready
+## A tree planted in Anon's row joined the orchard (add_tree; apple_bucking.gd adds its harvest row).
+signal tree_added(row: Dictionary)
+## A planted tree left the orchard (remove_tree: a loaded save without it); apple_bucking drops its row.
+signal tree_removed(tree_id: String)
 var orchard_trees: Array[Dictionary] = []
 var _orchard_by_id: Dictionary = {}
 var _apple_batch: MultiMesh
@@ -27,6 +31,10 @@ const MAX_SHAKING_TREES: int = 8
 const SHAKE_SECONDS: float = .65
 var _tries := 0
 var _built: bool = false
+## add_tree calls made before the orchard was built: [tree_id, at, scale], planted by _build.
+var _pending_planted: Array = []
+## Apple batches of planted trees (one each), swapped to the far apple with the main batch.
+var _planted_apples: Array[MultiMesh] = []
 
 func _ready() -> void:
 	set_process(false)
@@ -45,6 +53,7 @@ func _build() -> void:
 	_built = true
 	_fences(layout)
 	_orchard(layout)
+	_plant_pending()
 	orchard_ready.emit()
 
 ## Farm growth and fence posts belong on terrain, not on a roof above the site.
@@ -197,6 +206,8 @@ func _swap_apple_detail() -> void:
 	var nearest := eye.clamp(_apple_bounds.position, _apple_bounds.end)
 	var wanted: Mesh = _apple_far if eye.distance_to(nearest) > FAR_APPLES_FROM else _apple_near
 	if _apple_batch.mesh != wanted: _apple_batch.mesh = wanted
+	for batch: MultiMesh in _planted_apples:
+		if is_instance_valid(batch) and batch.mesh != wanted and wanted != null: batch.mesh = wanted
 
 ## An octahedron the apple's size and colour: at 150 m an apple is a pixel or two.
 static func _far_apple(near: Mesh) -> Mesh:
@@ -227,23 +238,30 @@ func set_fruit_growth(id: String, growth: float) -> void:
 	set_fruit_state(id, growth, _fruit_released.get(id, []))
 
 func set_fruit_state(id: String, growth: float, released: Array) -> void:
-	if _apple_batch == null or not _orchard_by_id.has(id): return
+	if not _orchard_by_id.has(id) or _apples_of(_orchard_by_id[id]) == null: return
 	var amount: float = clampf(growth, 0.0, 1.0)
 	if is_equal_approx(float(_fruit_growth.get(id, -1.0)), amount) and _fruit_released.get(id, []) == released: return
 	_fruit_growth[id] = amount
 	_fruit_released[id] = released.duplicate()
 	_update_fruit_instances(id)
 
+## The apple batch a tree's apples live in: its own for a planted tree, else the orchard's.
+func _apples_of(tree: Dictionary) -> MultiMesh:
+	var own: Variant = tree.get("apple_batch")
+	return own as MultiMesh if own is MultiMesh else _apple_batch
+
 func _update_fruit_instances(id: String, shake: Transform3D = Transform3D.IDENTITY) -> void:
 	var tree: Dictionary = _orchard_by_id[id]
+	var batch_of_apples: MultiMesh = _apples_of(tree)
+	if batch_of_apples == null: return
 	var amount: float = float(_fruit_growth.get(id, 1.0))
 	var released: Array = _fruit_released.get(id, [])
 	for index: int in tree.apples.size():
 		var original: Transform3D = tree.apples[index]
 		var visible_amount: float = .00001 if index in released else maxf(.00001, amount)
 		var scaled: Transform3D = shake * Transform3D(original.basis.scaled(Vector3.ONE * visible_amount), original.origin)
-		_apple_batch.set_instance_transform(int(tree.first) + index, scaled)
-		_apple_batch.set_instance_custom_data(int(tree.first) + index, Color(amount, 0, 0, 1))
+		batch_of_apples.set_instance_transform(int(tree.first) + index, scaled)
+		batch_of_apples.set_instance_custom_data(int(tree.first) + index, Color(amount, 0, 0, 1))
 
 func shake_tree(id: String, strength: float = 1.0) -> void:
 	if not _orchard_by_id.has(id) or not is_finite(strength) or strength <= 0.0: return
@@ -264,9 +282,110 @@ func _process(delta: float) -> void:
 		var basis: Basis = Basis(Vector3.RIGHT, angle) * Basis(Vector3.BACK, angle * .6)
 		var shake: Transform3D = Transform3D(basis, pivot - basis * pivot)
 		if batch != null: batch.multimesh.set_instance_transform(int(tree.instance), shake * Transform3D(tree.render_transform))
-		if _apple_batch != null: _update_fruit_instances(id, shake)
+		if _apples_of(tree) != null: _update_fruit_instances(id, shake)
 		if finished: _shakes.erase(id)
 	if _shakes.is_empty(): set_process(false)
+
+## A tree planted in Anon's row grows up (world/mechanics/stations/planting_plot.gd, P5 of
+## docs/MECHANICS_ARCHITECTURE_2026_11_01.md 8.3): one orchard tree at `at` (world position on the
+## ground) with the orchard's look, trunk collision and apples, as an orchard row like the authored
+## ones (its own tree and apple MultiMeshes, keys "apple_batch" and "first": 0), then tree_added.
+## The species is picked by hash(tree_id) exactly as apple_sapling.gd species() does, so the
+## sapling and its tree match. Waits for the orchard build; a second call for the same id does nothing.
+func add_tree(tree_id: String, at: Vector3, tree_scale: float) -> void:
+	if tree_id.is_empty() or _orchard_by_id.has(tree_id) or not at.is_finite() or not is_finite(tree_scale) or tree_scale <= 0.0: return
+	if not _built:
+		for waiting: Array in _pending_planted:
+			if str(waiting[0]) == tree_id: return
+		_pending_planted.append([tree_id, at, tree_scale])
+		return
+	var kinds := CATALOGUE.trees()
+	if kinds.is_empty(): return
+	var entry: Dictionary = kinds[absi(hash(tree_id)) % kinds.size()]
+	var kind: Dictionary = _species(entry)
+	if not kind.has("mesh"): return
+	var spec: Dictionary = _orchard_spec()
+	var rng := RandomNumberGenerator.new(); rng.seed = hash(tree_id)
+	var g: Vector3 = to_local(at)
+	var xform := Transform3D(Basis(Vector3.UP, rng.randf() * TAU).scaled(Vector3.ONE * tree_scale), g + Basis.from_scale(Vector3.ONE * tree_scale) * CATALOGUE.contact_offset(entry))
+	var safe := tree_id.replace(":", "_")
+	var batch_name := "FarmPlanted_" + safe
+	var render: Array[Transform3D] = [xform * kind.local]
+	_multimesh(batch_name, kind.mesh, null, render)
+	var trunks: StaticBody3D = get_node_or_null("FarmOrchardTrunks") as StaticBody3D
+	if trunks == null:
+		trunks = StaticBody3D.new(); trunks.name = "FarmOrchardTrunks"; trunks.collision_mask = 0; add_child(trunks)
+	var shape := CollisionShape3D.new(); var cyl := CylinderShape3D.new(); cyl.radius = 0.35; cyl.height = 2.2
+	shape.shape = cyl; shape.position = g + Vector3.UP * 1.1; trunks.add_child(shape)
+	shape.set_meta("apple_tree_id", tree_id)
+	var apples: Array[Transform3D] = []
+	var apple_mesh: Mesh = _apple_source()
+	if apple_mesh != null:
+		_hang_apples(xform, kind.box, apples, rng, int(spec.get("apples_per_tree", 36)), float(spec.get("apple_scale", 2.6)))
+	var own_apples: MultiMesh = null
+	if not apples.is_empty():
+		own_apples = MultiMesh.new(); own_apples.transform_format = MultiMesh.TRANSFORM_3D; own_apples.use_custom_data = true
+		own_apples.mesh = _apple_near if _apple_near != null else _orchard_apple(apple_mesh)
+		own_apples.instance_count = apples.size()
+		for i: int in apples.size():
+			own_apples.set_instance_transform(i, apples[i])
+			own_apples.set_instance_custom_data(i, Color(1, 0, 0, 1))
+		var mi := MultiMeshInstance3D.new(); mi.name = "FarmPlantedApples_" + safe; mi.multimesh = own_apples
+		var fruit_material: ShaderMaterial = ShaderMaterial.new()
+		fruit_material.shader = preload("res://world/minigames/apple_bucking/orchard_fruit.gdshader")
+		mi.material_override = fruit_material
+		add_child(mi)
+		_planted_apples.append(own_apples)
+		if _apple_bounds.size != Vector3.ZERO or _apple_batch != null:
+			for t: Transform3D in apples: _apple_bounds = _apple_bounds.expand(t.origin)
+	var tree: Dictionary = {"id": tree_id, "position": g, "radius": .35, "height": 2.2,
+		"batch": batch_name, "instance": 0, "render_transform": xform * kind.local,
+		"first": 0, "apples": apples, "shape": shape, "apple_batch": own_apples}
+	orchard_trees.append(tree); _orchard_by_id[tree_id] = tree
+	tree_added.emit(tree)
+
+## Takes a tree planted with add_tree out again (planting_plot.gd when a loaded save has no tree
+## in that slot). Authored grid trees are never removed; an unknown id does nothing.
+func remove_tree(tree_id: String) -> void:
+	for index: int in range(_pending_planted.size() - 1, -1, -1):
+		if str(_pending_planted[index][0]) == tree_id: _pending_planted.remove_at(index)
+	if not _orchard_by_id.has(tree_id): return
+	var tree: Dictionary = _orchard_by_id[tree_id]
+	if not str(tree.get("batch", "")).begins_with("FarmPlanted_"): return
+	var safe := tree_id.replace(":", "_")
+	for node_name: String in ["FarmPlanted_" + safe, "FarmPlantedApples_" + safe]:
+		var node := get_node_or_null(node_name)
+		if node != null: remove_child(node); node.queue_free()
+	var shape: Variant = tree.get("shape")
+	if shape is Node and is_instance_valid(shape): (shape as Node).get_parent().remove_child(shape); (shape as Node).queue_free()
+	var own: Variant = tree.get("apple_batch")
+	if own is MultiMesh: _planted_apples.erase(own)
+	orchard_trees.erase(tree); _orchard_by_id.erase(tree_id)
+	_shakes.erase(tree_id); _fruit_growth.erase(tree_id); _fruit_released.erase(tree_id)
+	tree_removed.emit(tree_id)
+
+## Trees planted before the orchard was built (a restored save), planted now.
+func _plant_pending() -> void:
+	var waiting := _pending_planted.duplicate()
+	_pending_planted.clear()
+	for row: Array in waiting: add_tree(str(row[0]), row[1], float(row[2]))
+
+## The orchard layout row (apples per tree, apple scale), read once.
+var _layout_orchard: Dictionary = {}
+func _orchard_spec() -> Dictionary:
+	if _layout_orchard.is_empty():
+		var layout: Variant = JSON.parse_string(FileAccess.get_file_as_string(LAYOUT))
+		var row: Variant = (layout as Dictionary).get("orchard", {}) if layout is Dictionary else {}
+		_layout_orchard = row if row is Dictionary else {}
+	return _layout_orchard
+
+## The hand-held apple's mesh, the source of the orchard's simplified one.
+func _apple_source() -> Mesh:
+	var found: Mesh = null
+	var apple_scene := APPLE.instantiate()
+	for mi: MeshInstance3D in apple_scene.find_children("*", "MeshInstance3D", true, false): found = mi.mesh; break
+	apple_scene.free()
+	return found
 
 func tree_from_hit(hit: Dictionary) -> String:
 	var body: CollisionObject3D = hit.get("collider") as CollisionObject3D

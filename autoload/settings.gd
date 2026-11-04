@@ -16,14 +16,18 @@ const LAUNCH := "res://world/launch_config.gd"
 const OUTLINES := ["Off", "Fine", "Ink", "Bold"]
 const OUTLINE_LABELS := {"Off": "Off", "Fine": "Thin", "Ink": "Ink", "Bold": "Thick"}
 ## Pony size presets from dev's chart (2026-09-15): canon show proportion, mounting
-## height, same height as Anon, full horse.
+## height, same height as Anon, full horse. "follows_anon": the scale is for a 6 ft Anon and
+## grows or shrinks with his chosen height (player/height_cm, pony_scale()).
 const PONY_SIZES := [
 	{"name": "canon", "label": "Canon", "scale": 1.0},
 	{"name": "mounting", "label": "JRHNBR", "scale": 1.35},
-	{"name": "same height", "label": "Same height as Anon", "scale": 1.7},
+	{"name": "same height", "label": "Same height as Anon", "scale": 1.7, "follows_anon": true},
 	{"name": "hoers", "label": "Hoers", "scale": 2.3},
 ]
 const BUSES := ["Voice", "SFX", "Ambience", "Music"]
+## The height (6 ft 0 in) the current Anon stands for: his body, eye, hands, held offsets and
+## reach were all tuned at it, so anon_height_scale() divides by it.
+const ANON_REFERENCE_CM := 182.88
 const DEFAULTS := {
 	"setup/completed": false,
 	# dev 2026-10-31: the machine check is opt-in. A new desktop player is asked once before the
@@ -31,9 +35,12 @@ const DEFAULTS := {
 	"setup/quality_asked": false,
 	"setup/season": 0,
 	"title/view": "random",
-	"player/height_cm": 182,
+	# Anon's real-world height (dev 2026-11-03: "scale anon using real world height with his current
+	# being 6 foot tall"). 6 ft 0 in is the Anon every system was tuned for: anon_height_scale() 1.0.
+	"player/height_cm": ANON_REFERENCE_CM,
 	"ponies/size": "canon",
 	"ponies/max_nearby": 0,
+	"ponies/boop_makes_mares_horny": false,
 	"video/quality": "High",
 	# The tier a "Custom" quality started from: its keys stay under the edited rows (hidden).
 	"video/quality_base": "High",
@@ -80,7 +87,9 @@ const DEFAULTS := {
 	"audio/wind": 100,
 	"audio/music": 80,
 	"voice/tts": true,
-	"voice/ponese_style": "syllables",
+	# Share of a word's syllables Ponese says (dev 2026-11-03): fewer sounds for the same words make
+	# lines shorter and less tiring. 100 = every syllable (PonyPoneseVoice "syllables" option).
+	"voice/ponese_syllables": 100,
 	"world/day_length_minutes": 60.0,
 	"world/season_days": 20,
 	"world/weather_frequency": 100,
@@ -114,10 +123,14 @@ const SPECS := {
 	"setup/quality_asked": {"type": "bool"},
 	"setup/season": {"type": "int", "min": 0, "max": 3, "step": 1},
 	"title/view": {"type": "choice", "options": [["random", "Random"], ["above_ponyville", "Above Ponyville"], ["golden_oak", "Golden Oak Library"], ["fluttershy_cottage", "Fluttershy's cottage"], ["zecora_hut", "Zecora's hut"], ["town_square", "Town square"], ["sweet_apple_acres", "Sweet Apple Acres"]]},
-	"player/height_cm": {"type": "int", "min": 100, "max": 250, "step": 1},
+	# Shown and typed in feet and inches or centimetres ("unit": "height", height_text/parse_height_cm);
+	# the arrows move one inch. Stored in centimetres.
+	"player/height_cm": {"type": "float", "unit": "height", "min": 120.0, "max": 230.0, "step": 0.1, "arrow_step": 2.54, "typed": true,
+		"width_sample": "7 ft 11 in (229.9 cm)"},
 	"ponies/size": {"type": "choice", "options": [["canon", "Canon"], ["mounting", "JRHNBR"], ["same height", "Same height as Anon"], ["hoers", "Hoers"]]},
 	"video/pony_impostors": {"type": "choice", "options": [["preset", "Preset"], [80, "80 m"], [100, "100 m"], [120, "120 m"], [150, "150 m"], [250, "250 m"], [0, "Unlimited"]]},
 	"ponies/max_nearby": {"type": "choice", "options": [[0, "Unlimited"], [4, "4"], [8, "8"], [12, "12"], [16, "16"], [24, "24"], [32, "32"], [48, "48"], [64, "64"]]},
+	"ponies/boop_makes_mares_horny": {"type": "bool", "labels": ["Off", "On"]},
 	"video/quality": {"type": "choice", "options": [["Very Low", "Very Low"], ["Low", "Low"], ["Medium", "Medium"], ["High", "High"], ["Ultra", "Ultra"], ["Custom", "Custom"]]},
 	"video/quality_base": {"type": "choice", "options": [["Very Low", "Very Low"], ["Low", "Low"], ["Medium", "Medium"], ["High", "High"], ["Ultra", "Ultra"]]},
 	"video/shadows": {"type": "choice", "options": [["preset", "Follow preset"], ["off", "Off"], ["very_low", "Very Low"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]},
@@ -160,8 +173,7 @@ const SPECS := {
 	"audio/wind": {"type": "int", "min": 0, "max": 100, "step": 10, "fmt": "%d%%"},
 	"audio/music": {"type": "int", "min": 0, "max": 100, "step": 10, "fmt": "%d%%"},
 	"voice/tts": {"type": "bool", "labels": ["Ponese only", "Character voices (TTS)"]},
-	# Ponese A/B (world/ai/chatter_voice.gd): syllable grains, or each letter's name said fast.
-	"voice/ponese_style": {"type": "choice", "options": [["syllables", "Syllables"], ["letters", "Letter by letter"]]},
+	"voice/ponese_syllables": {"type": "int", "min": 25, "max": 100, "step": 5, "fmt": "%d%%", "note": "shorter pony speech"},
 	"world/day_length_minutes": {"type": "float", "min": 15.0, "max": 720.0, "presets": [15.0, 30.0, 60.0, 90.0, 180.0, 360.0, 720.0], "fmt": "%.0f real minutes"},
 	"world/season_days": {"type": "int", "min": 5, "max": 60, "step": 5, "fmt": "%d days"},
 	"world/weather_frequency": {"type": "int", "min": 0, "max": 300, "step": 25, "fmt": "%d%%", "zero": "Never wet"},
@@ -211,9 +223,10 @@ const TABS := [
 		["Reset keys to defaults", "action:reset_bindings"], ["Controls map", "action:controls_map"]]],
 	["Controls map", []],
 	["VR comfort", [["Start in VR", "vr/start_mode"], ["Play style", "vr/seated"], ["Turning", "vr/turn_mode"], ["Snap angle", "vr/snap_angle"], ["Smooth turn speed", "vr/turn_speed"], ["Movement stick", "vr/move_hand"],
-		["Standing height (cm)", "player/height_cm"], ["Measure my height now", "action:measure_height"], ["Forget measured height", "action:forget_height"]]],
-	["Audio", [["Master volume", "audio/master"], ["Voice volume", "audio/voice"], ["Effects volume", "audio/sfx"], ["Ambience volume", "audio/ambience"], ["Flight wind volume", "audio/wind"], ["Music volume", "audio/music"], ["Pony voices", "voice/tts"], ["Ponese style", "voice/ponese_style"]]],
-	["World", [["Day length (time speed)", "world/day_length_minutes"], ["Season length", "world/season_days"], ["Title screen view", "title/view"], ["Rain & snow frequency", "world/weather_frequency"], ["Opening", "world/opening"], ["Pony size", "ponies/size"],
+		["Measure my height now", "action:measure_height"], ["Forget measured height", "action:forget_height"]]],
+	["Audio", [["Master volume", "audio/master"], ["Voice volume", "audio/voice"], ["Effects volume", "audio/sfx"], ["Ambience volume", "audio/ambience"], ["Flight wind volume", "audio/wind"], ["Music volume", "audio/music"], ["Pony voices", "voice/tts"], ["Ponese syllables", "voice/ponese_syllables"]]],
+	["World", [["Day length (time speed)", "world/day_length_minutes"], ["Season length", "world/season_days"], ["Title screen view", "title/view"], ["Rain & snow frequency", "world/weather_frequency"], ["Opening", "world/opening"], ["Anon's height (your real height)", "player/height_cm"], ["Pony size", "ponies/size"],
+		["Boop Makes Mares Horny", "ponies/boop_makes_mares_horny"],
 		["Ponies freeze while I talk or type", "ai/freeze_while_talking"], ["A pony freezes while she thinks", "ai/freeze_while_thinking"], ["Time-stop look (vignette, slow sound)", "ai/freeze_effect"], ["Summon the Great Evil", "action:spawn_barbiepone"]]],
 	["Accessibility", [["Subtitles", "access/subtitles"], ["Subtitle size", "access/subtitle_scale"], ["Caption background", "access/caption_card"], ["Background opacity", "access/caption_opacity"], ["Pony speech text", "access/speech_text"], ["Menu text size", "access/ui_scale"], ["Reduced motion", "access/reduced_motion"]]],
 	["Reading", [["Paper", "reading/paper"], ["Font", "reading/font"], ["Text size", "reading/size"]]],
@@ -459,6 +472,11 @@ func cycle(key: String, step: int) -> String:
 		"int":
 			set_value(key, clampi(int(get_value(key)) + int(spec.get("arrow_step", spec.step)) * step, int(spec.min), int(spec.max)))
 		"float":
+			if str(spec.get("unit", "")) == "height":
+				# One inch a press, landing on whole inches.
+				var inches := roundi(float(get_value(key)) / 2.54) + step
+				set_value(key, clampf(inches * 2.54, float(spec.min), float(spec.max)))
+				return display(key)
 			var presets: Array = spec.presets
 			var current := float(get_value(key)); var index := presets.find(current)
 			if index < 0:
@@ -486,11 +504,57 @@ func display(key: String) -> String:
 		"int":
 			if int(value) == 0 and spec.has("zero"): return str(spec.zero)
 			return str(spec.get("fmt", "%d")) % int(value)
-		"float": return str(spec.get("fmt", "%.2f")) % float(value)
+		"float":
+			if str(spec.get("unit", "")) == "height": return height_text(float(value))
+			return str(spec.get("fmt", "%.2f")) % float(value)
 		"choice":
 			for option in spec.options:
 				if same_value(option[0], value): return str(option[1])
 	return str(value)
+
+
+## "6 ft 0 in (182.9 cm)": the nearest whole inch, and centimetres to a tenth (whole when whole).
+static func height_text(cm: float) -> String:
+	var inches := roundi(cm / 2.54)
+	var tenths := roundi(cm * 10.0)
+	var metric := ("%d" % (tenths / 10)) if tenths % 10 == 0 else ("%.1f" % (tenths / 10.0))
+	return "%d ft %d in (%s cm)" % [inches / 12, inches % 12, metric]
+
+
+## A typed height in centimetres, or -1.0: 5'10", 5 ft 10 in, 6 feet, 70 in, 178 cm, 1.78 m. A bare
+## number is metres up to 3, feet below 9, inches below 100, else centimetres. Centimetres win
+## when the text has both (the row's own "6 ft 0 in (182.9 cm)").
+static func parse_height_cm(text: String) -> float:
+	var t := text.strip_edges().to_lower().replace(",", ".").replace("\u2019", "'").replace("\u2032", "'") \
+		.replace("\u201d", "\"").replace("\u2033", "\"")
+	var number := "(\\d+(?:\\.\\d+)?)"
+	var found := RegEx.create_from_string(number + "\\s*cm").search(t)
+	if found != null: return found.get_string(1).to_float()
+	found = RegEx.create_from_string("^" + number + "\\s*m(?:etres?|eters?)?$").search(t)
+	if found != null: return found.get_string(1).to_float() * 100.0
+	found = RegEx.create_from_string(number + "\\s*(?:'|ft|feet|foot)").search(t)
+	if found != null:
+		var inches := RegEx.create_from_string(number).search(t.substr(found.get_end()))
+		return (found.get_string(1).to_float() * 12.0 + (inches.get_string(1).to_float() if inches != null else 0.0)) * 2.54
+	found = RegEx.create_from_string("^" + number + "\\s*(?:\"|in|inch|inches)$").search(t)
+	if found != null: return found.get_string(1).to_float() * 2.54
+	if not t.is_valid_float(): return -1.0
+	var bare := t.to_float()
+	if bare <= 3.0: return bare * 100.0
+	if bare < 9.0: return bare * 30.48
+	if bare < 100.0: return bare * 2.54
+	return bare
+
+
+## The value typed into a row's field, or null when the text says nothing usable. Whole numbers
+## (with an optional %) for int rows; feet/inches or centimetres for the height row.
+static func parse_typed(key: String, text: String) -> Variant:
+	var spec: Dictionary = SPECS.get(key, {})
+	if str(spec.get("unit", "")) == "height":
+		var cm := parse_height_cm(text)
+		return cm if cm > 0.0 else null
+	var digits := text.strip_edges().trim_suffix("%").strip_edges()
+	return digits.to_int() if digits.is_valid_int() else null
 
 
 ## Options can mix kinds ("preset" beside 80): == between a String and an int is an error in a
@@ -506,7 +570,41 @@ static func row_label(label: String, key: String) -> String:
 
 
 func pony_scale() -> float:
-	return float(PONY_SIZES[_size_index()].scale)
+	var preset: Dictionary = PONY_SIZES[_size_index()]
+	return float(preset.scale) * (anon_height_scale() if bool(preset.get("follows_anon", false)) else 1.0)
+
+
+## Anon's chosen real-world height over the 6 ft Anon the game was tuned for (1.0 at 6 ft 0 in).
+## Desktop: his eye, capsule, body, hands, held and carried offsets. VR: his body and hands (the
+## headset keeps the camera); see player/desktop_player.gd apply_height and player/anon_body.gd.
+func anon_height_scale() -> float:
+	return float(get_value("player/height_cm")) / ANON_REFERENCE_CM
+
+
+## His standing eye in real metres for that height (the same 12 cm below the crown as the headset
+## measurement in player/anon_body.gd).
+func anon_eye_height_m() -> float:
+	return float(get_value("player/height_cm")) / 100.0 - 0.12
+
+
+## Whether the player has stored `key` (chosen it), as opposed to running on its default.
+func is_chosen(key: String) -> bool:
+	var config := ConfigFile.new()
+	return config.load(path) == OK and config.has_section_key(key.get_slice("/", 0), key.get_slice("/", 1))
+
+
+## Back to the default and no longer stored as chosen; listeners hear it like any change.
+func forget_value(key: String) -> void:
+	if not DEFAULTS.has(key): return
+	var config := ConfigFile.new()
+	if config.load(path) == OK and config.has_section_key(key.get_slice("/", 0), key.get_slice("/", 1)):
+		config.erase_section_key(key.get_slice("/", 0), key.get_slice("/", 1))
+		config.save(path)
+	var was: Variant = _values.get(key)
+	_values[key] = DEFAULTS[key]
+	if same_value(was, DEFAULTS[key]): return
+	_apply(key)
+	changed.emit(key)
 
 
 func tts_enabled() -> bool:
@@ -538,6 +636,18 @@ func _apply(key: String) -> void:
 	elif key == "access/ui_scale": _apply_text_scale()
 	elif key == "video/grass_density": apply_grass()
 	elif key in ["access/subtitles", "access/subtitle_scale"]: apply_subtitles()
+	elif key == "player/height_cm" and bool(PONY_SIZES[_size_index()].get("follows_anon", false)): _pony_size_follows_anon()
+
+
+## "Same height as Anon" ponies follow his height. One "ponies/size" change once a slider drag
+## settles (every listener rescales every pony and clears the impostor pictures).
+var _pony_follow_pending := false
+func _pony_size_follows_anon() -> void:
+	if _pony_follow_pending or not is_inside_tree(): return
+	_pony_follow_pending = true
+	var waited: bool = await preload("res://world/shutdown_waits.gd").seconds(self, 0.3)
+	_pony_follow_pending = false
+	if waited: changed.emit("ponies/size")
 
 
 ## Everything that lives in the world scene; game.gd calls this once the world is built.
@@ -841,11 +951,13 @@ func run_action(id: String) -> void:
 			if anon == null or not anon.has_method("begin_height_calibration"): message = "Height is measured in VR only."
 			else: anon.begin_height_calibration(); message = "Stand straight and look forward for three seconds…"
 		"forget_height":
+			# A measurement also set Anon's height (player/anon_body.gd): that goes back to 6 ft.
+			forget_value("player/height_cm")
 			var anon := _anon_body()
 			if anon != null and anon.has_method("calibrate"): anon.calibrate()
 			var calibration := "user://calibration.json"
 			if FileAccess.file_exists(calibration): DirAccess.remove_absolute(ProjectSettings.globalize_path(calibration))
-			message = "Measured height forgotten; it is estimated again while you stand."
+			message = "Measured height forgotten; Anon's height is 6 ft again, estimated while you stand in VR."
 		"spawn_barbiepone":
 			# world/events/barbiepone/barbiepone.gd answers the signal below.
 			message = ""

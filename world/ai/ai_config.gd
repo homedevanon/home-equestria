@@ -75,6 +75,7 @@ const DEFAULTS := {
 	## player speaks to or touches a pony (no overheard pony chatter, approach greetings or lulls);
 	## "off" = no dialogue model at all (the game runs as with --no-ai; first launch needs no provider).
 	"ai_usage": "full",
+	"adult_policy_hint": false,
 	"earshot_m": 10.0,
 	"chattiness": 1.0,               # town chatter: 1 = normal, lower = quieter day, much quieter night (world/ai/chattiness.gd)
 	"history_turns": 16,
@@ -181,6 +182,7 @@ static func save_connection(connection:Dictionary,input_device:String,path:=USER
 	if not preserve_input_device or not stt_in.is_empty(): data.stt=stt
 	if sections.has("chattiness"): data.chattiness=clampf(float(sections.chattiness),0.0,1.0)
 	if not usage.is_empty(): data.ai_usage=usage
+	if sections.has("adult_policy_hint"): data.adult_policy_hint=bool(sections.adult_policy_hint)
 	if not vision_in.is_empty():
 		var vision:Dictionary=data.get("vision",{}).duplicate(true)
 		for key in ["mode","base_url","api_key","model"]:vision[key]=str(vision_in.get(key,"")).strip_edges()

@@ -8,6 +8,11 @@ const REWARD: int = 20
 const DAILY_BASKETS: int = 6
 var trees: Dictionary = {}
 var _committing: bool = false
+## Today's basket limit and basket pay: DAILY_BASKETS and REWARD unless a town event changes them
+## (apple_bucking.refresh() reads the town calendar's "daily_baskets" and "basket_pay" effects,
+## world/mechanics/data/events.json Applebuck Season). Not saved: the snapshot is unchanged.
+var daily_baskets: int = DAILY_BASKETS
+var reward: int = REWARD
 
 ## Trees fruit from spring to autumn and stand bare in winter (dev 2026-10-28: a new game starts
 ## in spring, and autumn-only apples left the job empty for 40 in-game days). "cycle" is the day
@@ -34,7 +39,7 @@ func available(id: String, day: float, season_days: int) -> bool:
 	# change; calendar changes must not strand an unpaid partial harvest.
 	if not prior.is_empty() and not prior.paid:
 		return prior.released.size() < int(prior.count)
-	if not now.ripe or baskets_on(day) >= DAILY_BASKETS: return false
+	if not now.ripe or baskets_on(day) >= daily_baskets: return false
 	return prior.is_empty() or (prior.paid and int(prior.cycle) < int(now.cycle) and day >= float(regrown_day(prior)))
 
 ## Baskets started on this in-game day.
@@ -118,7 +123,7 @@ func pay(id: String, sink: Callable, envelope: Dictionary) -> bool:
 	var next: Dictionary = envelope.duplicate(true)
 	next.ledger = proposed
 	_committing = true
-	var accepted: bool = sink.call(receipt(id), REWARD, next) == true
+	var accepted: bool = sink.call(receipt(id), reward, next) == true
 	_committing = false
 	if accepted: trees[id].paid = true
 	return accepted

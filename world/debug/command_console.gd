@@ -5,7 +5,7 @@ const PLACEMENT := preload("res://world/navigation/roster_placement.gd")
 const SHUTDOWN := preload("res://world/shutdown_waits.gd")
 const OWNER := preload("res://player/desktop_action_owner.gd")
 const DEV := preload("res://world/dev_tools.gd")
-const HELP := "spawn <pony name> — bring that pony nearby\nbits [amount] — add that many bits (no amount: set balance to 999999)\nnoclip — fly through walls and ground (again: walk)\nfly — fly with collisions (again: walk)\nunstuck — stand on the ground where you are\nhome — back to the Ponyville spawn\ntime <hour> — set the clock (0–24, e.g. time 7.5)\nponese [syllables|letters] — switch the pony voice style (no word toggles)\nshow [tomorrow] — Trixie puts on a stage show at the schoolhouse now (or tomorrow at 17:00)\nhelp — show commands\nclear — clear output\nclose — close console"
+const HELP := "spawn <pony name> — bring that pony nearby\nbits [amount] — add that many bits (no amount: set balance to 999999)\nnoclip — fly through walls and ground (again: walk)\nfly — fly with collisions (again: walk)\nunstuck — stand on the ground where you are\nhome — back to the Ponyville spawn\ntime <hour> — set the clock (0–24, e.g. time 7.5)\nshow [tomorrow] — Trixie puts on a stage show at the schoolhouse now (or tomorrow at 17:00)\nhelp — show commands\nclear — clear output\nclose — close console"
 var game: Node
 var player_body: Node
 var field: LineEdit
@@ -140,8 +140,6 @@ func execute(text: String) -> String:
 			var difference: int = 999999 - int(wallet.bits)
 			var ok: bool = difference == 0 or (wallet.credit_bits(difference) if difference > 0 else wallet.debit_bits(-difference))
 			return "Balance: 999999" if ok else "Could not update balance: " + str(wallet.last_error)
-		"ponese":
-			return _ponese_style(argument.to_lower())
 		"noclip", "fly":
 			return _fly(command == "noclip")
 		"unstuck":
@@ -202,16 +200,6 @@ func _place(at: Vector3, reply: String) -> String:
 		if "velocity" in player_body: player_body.velocity = Vector3.ZERO
 	return reply
 
-
-## Ponese A/B (world/ai/chatter_voice.gd): same setting as Settings > Audio > Ponese style.
-func _ponese_style(choice: String) -> String:
-	var settings := get_node_or_null("/root/Settings")
-	if settings == null: return "Settings are not ready."
-	var current := str(settings.get_value("voice/ponese_style"))
-	if choice.is_empty(): choice = "letters" if current == "syllables" else "syllables"
-	if choice not in ["syllables", "letters"]: return "Usage: ponese [syllables|letters]"
-	settings.set_value("voice/ponese_style", choice)
-	return "Ponese style: " + ("letter by letter" if choice == "letters" else "syllables") + " (next line spoken)"
 
 func _spawn(id: String) -> String:
 	var population: Node = game.population

@@ -1,0 +1,46 @@
+{
+	"_source": "MLP Vector Club pony colour index; explicit eyelid/eyeshadow overrides only.",
+	"_default": "Universal Colors: black over coat at 5\u201315% for expressive lids. Runtime uses 12%.",
+	"ponies": {
+		"aloe": {
+			"color": "#B9E3F2",
+			"label": "Eyeshadow",
+			"source": "https://mlpvector.club/cg/pony/v/145"
+		},
+		"lotus_blossom": {
+			"color": "#B9E3F2",
+			"label": "Eyeshadow",
+			"source": "https://mlpvector.club/cg/pony/v/146"
+		},
+		"maud_pie": {
+			"color": "#9885B7",
+			"label": "Eyeshadow (Matches Mane Fill)",
+			"source": "https://mlpvector.club/cg/pony/v/52"
+		},
+		"shimmy_shake": {
+			"color": "#EF9B46",
+			"label": "Eyeshadow",
+			"source": "https://mlpvector.club/cg/pony/v/504"
+		},
+		"somnambula": {
+			"color": "#45769A",
+			"label": "Eyeshadow",
+			"source": "https://mlpvector.club/cg/pony/v/340"
+		},
+		"tempest_shadow": {
+			"color": "#783469",
+			"label": "Eyeshadow",
+			"source": "https://mlpvector.club/cg/pony/v/526"
+		},
+		"rarity": {
+			"color": "#B8E1F0",
+			"label": "Eyeshadow",
+			"source": "https://mlpvector.club/cg/pony/v/6"
+		},
+		"luna": {
+			"color": "#7796EC",
+			"label": "Eyeshadow",
+			"source": "https://mlpvector.club/cg/pony/v/9"
+		}
+	}
+}

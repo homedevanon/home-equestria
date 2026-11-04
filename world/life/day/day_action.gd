@@ -14,7 +14,7 @@ var seconds := 0.0        # time spent in this step (real seconds)
 ## Begin the step; false if it cannot be done now (the runner drops it).
 func start(_ctx: Dictionary) -> bool: return false
 
-## "running", "done" or "failed".
+## "running", "done" or "failed"; "made" is done with the memory already written by the handler.
 func tick(_ctx: Dictionary, _delta: float) -> String: return "done"
 
 ## Cut short: leave the pony standing and free.
@@ -54,6 +54,12 @@ func place_point(ctx: Dictionary, target: String) -> Vector3:
 static func label(tree: SceneTree, target: String) -> String:
 	if target.begins_with("spot:"): return target.trim_prefix("spot:").replace("_", " ")
 	if target == "home": return "home"
+	if target.begins_with("station:") or target.begins_with("job:"):
+		# Mechanics stations and jobs (P7 day tables): their names ("cider press", "cider stand").
+		var owner: Node = tree.get_first_node_in_group("mechanics_stations" if target.begins_with("station:") else "mechanics_jobs") if tree != null else null
+		var id := target.get_slice(":", 1)
+		var row: Variant = owner.call("spec", id) if owner != null and owner.has_method("spec") else null
+		return str((row as Dictionary).get("name", id.replace("_", " "))) if row is Dictionary else id.replace("_", " ")
 	if not target.contains(":"): return target.replace("_", " ").capitalize().split(" ")[0]
 	var e := PLACES.find(tree, target)
 	return str(e.get("label", target))

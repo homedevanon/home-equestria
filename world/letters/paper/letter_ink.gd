@@ -4,8 +4,10 @@ extends Node
 ## page quads (letter_sheet.gd) show its texture directly, so writing needs no image readback.
 ## Anon writes in CelestiaMediumRedux, a pony in its alternate cut. Crossed-out sentences ("~~",
 ## letter_text.gd) are struck through in ink. The text shrinks to fit one side; past the smallest
-## size it carries on onto the back (a second viewport, made only then). A layout is made once
-## per frame at most, and only after the text or paper changed; the viewport then draws once.
+## size it stays that size and carries on over as many sides as it needs, two to a sheet (dev
+## 2026-11-03: "the text is really small on longer letters"; a viewport per side, made only then).
+## A layout is made once per frame at most, and only after the text or paper changed; the viewports
+## then draw once.
 const LETTER_TEXT := preload("res://world/letters/letter_text.gd")
 const STATIONERY := preload("res://world/letters/stationery.gd")
 const FONT_ANON := "res://world/ui/fonts/CelestiaMediumRedux.ttf"
@@ -13,7 +15,7 @@ const FONT_PONY := "res://world/ui/fonts/CelestiaMediumReduxAlternate.ttf"
 ## The sheet's shape (letter_sheet.gd W:H = 0.15:0.21), sharp at reading distance in a headset.
 const PAGE_PX := Vector2i(720, 1008)
 const MARGIN := Vector2(70.0, 76.0)
-const SIZES := [48, 44, 40, 36, 33, 30, 27, 25, 23]
+const SIZES := [48, 44, 40, 36, 33]
 signal laid_out
 
 var sides := 1
@@ -39,7 +41,7 @@ func show_text(value: String, stationery: String, pony := false) -> void:
 	set_process(true)
 
 func texture(side: int) -> Texture2D:
-	if side >= _pages.size(): return null
+	if side >= sides or side >= _pages.size(): return null
 	return _pages[side].get_texture()
 
 func _process(_delta: float) -> void:
@@ -59,22 +61,20 @@ func layout() -> void:
 		_style(body, size)
 		body.text = bbcode
 		if body.get_content_height() <= room: break
-	var split := 0.0
-	if body.get_content_height() > room:
-		# Past the smallest size: the front ends at the last whole line that fits, the back
-		# carries on from there.
-		sides = 2
-		for line in body.get_line_count():
-			var bottom: float = body.get_line_offset(line + 1) if line + 1 < body.get_line_count() else body.get_content_height()
-			if bottom > room: split = body.get_line_offset(line); break
-	_clips[0].size.y = split if sides == 2 else room
-	if sides == 2:
-		_page(1)
-		var back := _bodies[1]
-		_style(back, font_size)
-		back.text = bbcode
-		back.position.y = -split
-	for index in _pages.size():
+	# Past the smallest size: each side ends at the last whole line that fits, the next carries on.
+	var tops: Array[float] = [0.0]
+	var lines := body.get_line_count()
+	for line in lines:
+		var bottom: float = body.get_line_offset(line + 1) if line + 1 < lines else body.get_content_height()
+		if bottom - tops[-1] > room: tops.append(body.get_line_offset(line))
+	sides = tops.size()
+	for index in sides:
+		_page(index)
+		if index > 0:
+			_style(_bodies[index], font_size)
+			_bodies[index].text = bbcode
+		_bodies[index].position.y = -tops[index]
+		_clips[index].size.y = (tops[index + 1] - tops[index]) if index + 1 < sides else room
 		_papers[index].color = STATIONERY.paper(kind)
 		(_papers[index].get_child(0) as Control).queue_redraw()
 		_pages[index].render_target_update_mode = SubViewport.UPDATE_ONCE

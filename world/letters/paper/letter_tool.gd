@@ -9,8 +9,9 @@ extends Node3D
 ##   sends it. Derpy comes for it (letter_courier.gd collect); at her grab the letter leaves the
 ##   hand and the briefcase. A small ring fills while the button is held.
 ## - A letter to read (hers, or one of his): use opens it in front of the eyes (book_hold.gd pose
-##   rules), turns a long letter over to its back, then folds it. Her letter's first opening is
-##   recorded (post.set_status "opened").
+##   rules), turns through a long letter's sides, then folds it. Desktop: the wheel brings it closer
+##   and right click goes back a side. Her letter's first opening is recorded (post.set_status
+##   "opened").
 const STATIONERY := preload("res://world/letters/stationery.gd")
 const BOOK_HOLD := preload("res://world/books/book_hold.gd")
 const LETTER_ITEM := "res://world/letters/paper/letter_item.tscn"
@@ -150,7 +151,7 @@ func use(inventory: Node, side: String) -> bool:
 		if str(letter.get("from", "player")) != "player" and str(letter.get("status", "")) in ["in_mailbox", "taken"]:
 			var post := _post()
 			if post != null: post.call("set_status", letter_id(), "opened")
-	elif sheet.sides() > 1 and sheet.side == 0: sheet.turn_over()
+	elif sheet.more_pages(): sheet.next_page()
 	else: sheet.fold()
 	return true
 
@@ -166,6 +167,7 @@ func refresh_sheet(live: Variant = null) -> void:
 	if sheet == null: return
 	var letter := row()
 	var text: String = str(live) if live is String else str(letter.get("text", ""))
+	sheet.follow_end = is_draft()
 	if text == _shown_text and live == null: return
 	_shown_text = text
 	sheet.refresh(text, str(letter.get("stationery", "plain")), str(letter.get("from", "player")) != "player")
@@ -298,7 +300,7 @@ func _place_sheet(sample: Variant) -> void:
 	var eye: Camera3D = _inventory.get("camera")
 	if eye == null: return
 	if bool(_inventory.get("_desktop")) or not sample is Dictionary:
-		sheet.place(eye.global_transform * READ_DESKTOP)
+		sheet.place(eye.global_transform * sheet.reading_pose(READ_DESKTOP))
 	else:
 		var current: Basis = sheet.sheet.global_basis if sheet.sheet != null else Basis()
 		sheet.place(BOOK_HOLD.from_hand(sample, eye.global_transform, current, true))
@@ -356,7 +358,10 @@ func hint(side: String) -> Dictionary:
 			if bool(check.get("ok", false)): text += "   Hold %s · Send to %s" % [click.to_lower() if desktop else "trigger", str(check.get("to_name", ""))]
 	else:
 		var opened: bool = sheet != null and sheet.opened
-		text = "%s · %s" % [click, "Read" if not opened else ("Turn over" if sheet.sides() > 1 and sheet.side == 0 else "Fold")]
+		text = "%s · %s" % [click, "Read" if not opened else ("Next page" if sheet.more_pages() else "Fold")]
+		if opened and desktop:
+			text += "   Wheel · Closer"
+			if sheet.page > 0: text += "   Right click · Back"
 	if Time.get_ticks_msec() * 0.001 < _notice_until and not _notice.is_empty(): text = _notice + "   " + text
 	return {"target": item, "text": text, "point": item.global_position + Vector3.UP * 0.12, "outline": null}
 

@@ -63,6 +63,7 @@ func _physics_process(delta: float) -> void:
 	var hours: float = float(clock.hours)
 	if hours > 7.5 and hours < 20.0: _bring_down_unloaded()
 	_sky_visits(hours)
+	if not _bed_requests.is_empty(): _bed_request_step(night)
 	if not _outbound.is_empty(): _outbound_step()
 	_essence_nights(night)
 	for id: String in population.live.keys():
@@ -82,6 +83,8 @@ func _physics_process(delta: float) -> void:
 			# Streamed back in: a sleeper out of the player's sight goes straight to bed.
 			entry.actor = actor
 			if entry.phase in ["asleep", "settling", "climbing", "going"]: entry.phase = "going"
+		# An AI go_to_bed owns her until she gets up (_bed_request_step).
+		if _bed_requests.has(id): continue
 		_step(id, entry, actor)
 
 ## Unloaded residents keep their nights (dev 2026-09-26: the model unloads, the essence lives
@@ -174,6 +177,13 @@ static func bedtime(id: String, night: int) -> Vector2:
 
 func _nav(actor: Node3D) -> Node: return actor.get_node_or_null("Navigator")
 
+## Between tries at an unreachable bed she stands still instead of replanning every second.
+const RETRY_SECONDS := 20.0
+func _talking(id: String) -> bool:
+	var director: Variant = get_parent().get("director") if get_parent() != null else null
+	return is_instance_valid(director) and director is Node and (director as Node).has_method("holds_in_place") \
+		and bool((director as Node).call("holds_in_place", id))
+
 func _busy(actor: Node3D) -> bool:
 	if actor.get("water_escape") != null and actor.water_escape.active: return true
 	if actor.get("_held") or (actor.get("hoof_hold") != null and actor.hoof_hold.active()): return true
@@ -214,6 +224,15 @@ func _step(id: String, entry: Dictionary, actor: Node3D) -> void:
 			entry.erase("climb_tween")
 			actor.motion_paused = false
 		if entry.phase in ["asleep", "settling", "outside"]: _release(entry, actor, false)
+		entry.phase = ""
+		return
+	# A chat comes first, as for a day step (dev 2026-11-04: "she keeps trying to leave even if she's
+	# like ok i wont leave"). Bed can wait until the chat ends or he walks off.
+	if entry.phase in ["", "going"] and _talking(id):
+		var chat_nav := _nav(actor)
+		if entry.phase == "going" and chat_nav.command_owner.begins_with(OWNER):
+			chat_nav.stay()
+			chat_nav.command_owner = ""
 		entry.phase = ""
 		return
 	if entry.phase == "settling":
@@ -262,19 +281,23 @@ func _step(id: String, entry: Dictionary, actor: Node3D) -> void:
 			var to_bed := Vector2(here.x - rest_at.x, here.z - rest_at.z).length()
 			var level := absf(here.y - side.y) < .8
 			var stopped: bool = not nav._has_target or nav.state in [nav.State.ARRIVED, nav.State.UNREACHABLE, nav.State.BLOCKED, nav.State.IDLE]
+			var stuck_walk: bool = nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED]
 			if level and (to_side < 1.3 or to_bed < 1.8 or (stopped and (to_side < 2.6 or to_bed < 3.0))):
 				_climb(id, entry, actor, house)
-			elif nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED] or Time.get_ticks_msec() * .001 > float(entry.until):
+			elif stuck_walk and Time.get_ticks_msec() * .001 < float(entry.get("retry_at", 0.0)):
+				pass
+			elif stuck_walk or Time.get_ticks_msec() * .001 > float(entry.until):
 				# No sleeping on the ground outside while she has a bed: keep trying, and the
 				# moment nobody is near to watch, she is simply home in bed.
 				entry.retries += 1
-				print("[night] %s cannot reach her bed (navigator state %d, try %d)" % [id, int(nav.state), entry.retries])
+				entry["retry_at"] = Time.get_ticks_msec() * .001 + RETRY_SECONDS
+				print("[night] %s cannot reach her bed (navigator state %d, try %d): %s" % [id, int(nav.state), entry.retries, nav.reason])
 				if not _seen(actor): _tuck_in(id, entry, actor, house)
 				# Watched in her own house (player bug board #19: Fluttershy sat on the floor for
 				# hours beside an unreachable bed): after two failed walks she hops in from here.
 				elif entry.retries >= 2 and level and house.contains(here): _climb(id, entry, actor, house)
 				else: nav.go_to(side, nav.Gait.WALK); entry.until = Time.get_ticks_msec() * .001 + 60.0
-			elif not nav._has_target: nav.go_to(side, nav.Gait.WALK)
+			elif not nav._has_target and not stuck_walk: nav.go_to(side, nav.Gait.WALK)
 		"asleep":
 			_begin_sleep(entry, actor)
 
@@ -341,7 +364,8 @@ func _begin_sleep(entry: Dictionary, actor: Node3D) -> void:
 	var nav := _nav(actor)
 	if nav != null: nav.stay()
 	if actor.request_posture("lie_down"):
-		actor.sleeping = true
+		# An AI go_to_bed by day lies there awake ("sleep" false); bedtime always sleeps.
+		actor.sleeping = bool(entry.get("sleep", true))
 		entry.phase = "asleep"
 	else:
 		actor.sleeping = false
@@ -497,6 +521,12 @@ func _sleep_here(entry: Dictionary, actor: Node3D) -> void:
 ## Her AI chose to get up (wake_up(), pony_action_executor.gd). True when she was asleep or on
 ## her way to bed tonight; she may turn in again ten minutes later if it is still night.
 func wake_up(id: String) -> bool:
+	if _bed_requests.has(id):
+		var request: Dictionary = _bed_requests[id]
+		_bed_requests.erase(id)
+		var body: Variant = population.live.get(id, {}).get("actor")
+		if is_instance_valid(body): _wake(id, request, body)
+		return true
 	var entry: Dictionary = _state.get(id, {})
 	var actor: Variant = entry.get("actor")
 	if entry.is_empty() or not is_instance_valid(actor): return false
@@ -518,13 +548,17 @@ func _wake(id: String, entry: Dictionary, actor: Node3D) -> void:
 	if SKY_HOMES.has(id) and not indoors and _sky_spot(id).is_finite() and actor.global_position.distance_to(_sky_spot(id)) < 25.0:
 		_come_down(id, entry, actor); return
 	var house: Node3D = population.home_house(id) if population.has_method("home_house") else null
-	var in_bed: bool = entry.phase == "asleep" and house != null and is_instance_valid(house.get("bed")) \
-		and actor.global_position.distance_to(house.bed_rest(id).origin) < 1.2
+	# An AI go_to_bed names its own house and bed (send_to_bed); bedtime is her own.
+	var bed_key := id
+	if entry.has("bed") and is_instance_valid(entry.get("house")):
+		house = entry.house; bed_key = str(entry.bed)
+	var in_bed: bool = entry.phase == "asleep" and house != null and (is_instance_valid(house.get("bed")) or entry.has("bed")) \
+		and actor.global_position.distance_to(house.bed_rest(bed_key).origin) < 1.2
 	actor.sleeping = false
 	actor.request_posture("stand")
 	if in_bed:
 		# Stand up on the mattress, then hop back down beside the bed.
-		var side: Vector3 = house.bed_side(id)
+		var side: Vector3 = house.bed_side(bed_key)
 		var from := [Vector3.ZERO]
 		var tween := create_tween().bind_node(actor)
 		tween.tween_interval(1.6)
@@ -566,7 +600,7 @@ func _come_down(id: String, entry: Dictionary, actor: Node3D) -> void:
 var _visits: Dictionary = {}
 func _sky_visits(hours: float) -> void:
 	for id: String in SKY_HOMES:
-		if not population.live.has(id): continue
+		if not population.live.has(id) or _bed_requests.has(id): continue
 		var actor: Node3D = population.live[id].get("actor")
 		if not is_instance_valid(actor) or not actor.is_inside_tree(): continue
 		var night_entry: Dictionary = _state.get(id, {})
@@ -689,6 +723,97 @@ func _outbound_step() -> void:
 			var town: Vector3 = _ground(population.home_position(id, true) if population.has_method("home_position") else Vector3.INF)
 			if town.is_finite(): actor.reset_motion(Transform3D(actor.global_basis, town + Vector3.UP * .05))
 		_release({}, actor, false)
+
+## An AI [go_to_bed] (world/ai/pony_action_executor.gd; thread report 2026-11-03: "lay down in your
+## bed" got "Fine, five minutes" and she never moved). She walks to the bed, climbs in (the bedtime
+## climb) and lies there: awake by day, asleep in her night. She gets up on [wake_up], when picked up
+## or given another command, by day after BED_REQUEST_SECONDS, and in the morning after a night
+## there. `bed` is the bed key in `house`: her id for her own bed, "" for the house's first bed.
+const BED_REQUEST_SECONDS := 600.0
+var _bed_requests := {}   # id -> {house, bed, phase, until, retries, sleep, shared_bed, wake_at, climb_tween}
+
+func send_to_bed(id: String, house: Node3D, bed: String) -> bool:
+	if population == null or not population.live.has(id) or not is_instance_valid(house) or not house.has_method("bed_side"): return false
+	var actor: Node3D = population.live[id].get("actor")
+	var nav := _nav(actor) if is_instance_valid(actor) else null
+	if nav == null or house.ensure_bed(bed) == null: return false
+	var side: Vector3 = house.bed_side(bed)
+	if not side.is_finite(): return false
+	var now := Time.get_ticks_msec() * .001
+	var times := _bedtime(id, _night_key())
+	var request := {"house": house, "bed": bed, "phase": "going", "retries": 0, "until": now + 90.0 + actor.global_position.distance_to(side) / 1.2,
+		"sleep": _is_night({"bed_time": times.x, "wake_time": times.y}), "shared_bed": not bed.is_empty() and house.bed_shared(bed)}
+	_bed_requests[id] = request
+	nav.stay(); nav.command_owner = OWNER + id
+	actor.request_posture("stand")
+	if house.on_mattress(actor.global_position, bed) or not _seen(actor): _tuck_in(bed, request, actor, house)
+	else: nav.go_to(side, nav.Gait.WALK)
+	print("[night] %s going to bed (%s)" % [id, "own bed" if bed == id else "bed in " + str(house.name)])
+	return true
+
+func _bed_request_step(night: int) -> void:
+	var now := Time.get_ticks_msec() * .001
+	for id: String in _bed_requests.keys():
+		var request: Dictionary = _bed_requests[id]
+		var body: Variant = population.live.get(id, {}).get("actor")
+		var house_ref: Variant = request.get("house")
+		if not is_instance_valid(body) or not (body as Node3D).is_inside_tree() or not is_instance_valid(house_ref):
+			if is_instance_valid(body): _release(request, body, false)
+			_bed_requests.erase(id); continue
+		var actor: Node3D = body
+		var house: Node3D = house_ref
+		var bed := str(request.bed)
+		var nav := _nav(actor)
+		var flying: bool = actor.get("flight") != null and actor.flight.active()
+		if nav == null or (not flying and _busy(actor)):
+			# Picked up, or another command (hers or the player's): she is up again.
+			if request.has("climb_tween"):
+				var climbing: Tween = request.climb_tween
+				if climbing != null and climbing.is_valid(): climbing.kill()
+				request.erase("climb_tween")
+			_release(request, actor, false)
+			_bed_requests.erase(id); continue
+		var times := _bedtime(id, night)
+		var night_now := _is_night({"bed_time": times.x, "wake_time": times.y})
+		match str(request.phase):
+			"going":
+				if flying: continue
+				var side: Vector3 = house.bed_side(bed)
+				if not side.is_finite():
+					_release(request, actor, false); _bed_requests.erase(id); continue
+				var here := actor.global_position
+				if house.on_mattress(here, bed): _tuck_in(bed, request, actor, house); continue
+				var rest_at: Vector3 = house.bed_rest(bed).origin
+				var to_side := Vector2(here.x - side.x, here.z - side.z).length()
+				var to_bed := Vector2(here.x - rest_at.x, here.z - rest_at.z).length()
+				var level := absf(here.y - side.y) < .8
+				var stopped: bool = not nav._has_target or nav.state in [nav.State.ARRIVED, nav.State.UNREACHABLE, nav.State.BLOCKED, nav.State.IDLE]
+				if level and (to_side < 1.3 or to_bed < 1.8 or (stopped and (to_side < 2.6 or to_bed < 3.0))):
+					_climb(bed, request, actor, house)
+				elif not _seen(actor): _tuck_in(bed, request, actor, house)
+				elif nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED] or now > float(request.until):
+					request.retries = int(request.retries) + 1
+					print("[night] %s cannot reach the bed she was asked to (navigator state %d, try %d)" % [id, int(nav.state), int(request.retries)])
+					# Same as bedtime (bug board #19): in that house and level with it, she hops in from here.
+					if int(request.retries) >= 2 and level and house.contains(here): _climb(bed, request, actor, house)
+					elif int(request.retries) >= 3:
+						_release(request, actor, false); _bed_requests.erase(id)
+					else:
+						nav.go_to(side, nav.Gait.WALK); request.until = now + 60.0
+				elif not nav._has_target: nav.go_to(side, nav.Gait.WALK)
+			"settling":
+				_begin_sleep(request, actor)
+			"asleep":
+				if not request.has("wake_at"): request.wake_at = now + BED_REQUEST_SECONDS
+				# Night fell while she lay there: she sleeps on; morning wakes her.
+				if night_now != bool(request.sleep):
+					request.sleep = night_now
+					actor.sleeping = night_now
+				if not night_now and (now > float(request.wake_at) or bool(request.get("slept", false))):
+					_bed_requests.erase(id)
+					_wake(id, request, actor)
+				elif actor.posture_status().requested != "lie_down": _begin_sleep(request, actor)
+				if night_now: request.slept = true
 
 ## An AI "go_home" (world/ai/pony_action_executor.gd): fly up to her cloud home now and rest there
 ## a few minutes, then come back down like after an afternoon visit. False when she cannot.

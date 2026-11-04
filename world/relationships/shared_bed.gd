@@ -44,6 +44,10 @@ var _laid_for: Array = []
 var _lane := 0.0
 var _side := 1.0
 var _mare_fits := false
+## The mare size the layout was made for: the ponies' size setting (thread 43671981: at "same
+## height as Anon" every mare used to be refused outright). Her half of BESIDE and her footprint
+## grow with it; Anon's half stays.
+var _mare_scale := 1.0
 var _mare_rest := Transform3D.IDENTITY
 var _mare_front := Vector3.INF
 var _eye := Vector3.INF
@@ -107,7 +111,8 @@ func refresh() -> void:
 	_scan_mattress()
 	if not seats[0].free_for() or not _guest.is_empty(): return
 	var lane := _house_lane()
-	var signature := [_bed.global_transform, _sleeper.get_instance_id() if is_instance_valid(_sleeper) else 0, lane if is_finite(lane) else 99.0]
+	_mare_scale = _size_setting()
+	var signature := [_bed.global_transform, _sleeper.get_instance_id() if is_instance_valid(_sleeper) else 0, lane if is_finite(lane) else 99.0, _mare_scale]
 	if signature != _laid_for:
 		_laid_for = signature
 		_layout()
@@ -169,8 +174,10 @@ func _layout() -> void:
 		_side = 1.0 if (_frame.affine_inverse() * _sleeper.global_position).x >= 0.0 else -1.0
 		_lane = -_side * minf(0.48, maxf(_half.x - 0.3, 0.0))
 	else:
-		_lane = -_side * BESIDE * 0.5
-	_mare_fits = not is_instance_valid(_sleeper) and absf(_lane + _side * BESIDE) + MARE_HALF_WIDTH <= _half.x
+		_lane = -_side * _beside() * 0.5
+	_mare_fits = not is_instance_valid(_sleeper) and absf(_lane + _side * _beside()) + MARE_HALF_WIDTH * _mare_scale <= _half.x
+	# Bigger than canon: her whole length (couch.gd MARE_HALF_LENGTH) must lie on the mattress too.
+	if _mare_fits and _mare_scale > 1.05: _mare_fits = absf(head_z + 0.55) + MARE_HALF_LENGTH * _mare_scale <= _half.z
 	if not _mare_fits and not is_finite(shared_lane) and not is_instance_valid(_sleeper): _lane = 0.0
 	var seat_at := _frame * Vector3(_lane, 0.0, head_z + 0.77)
 	_top_y = _top_at(seat_at)
@@ -181,7 +188,7 @@ func _layout() -> void:
 	_eye_floor = eye_y - 0.06
 	# Sit facing the foot, then lie back with the head toward the pillows.
 	seats[0].global_transform = Transform3D(Basis.looking_at(_frame.basis.z, Vector3.UP), Vector3(seat_at.x, _top_y, seat_at.z))
-	var mare_at := _frame * Vector3(_lane + _side * BESIDE, 0.0, head_z + 0.55)
+	var mare_at := _frame * Vector3(_lane + _side * _beside(), 0.0, head_z + 0.55)
 	# She lands on the physics mattress; pony_posture then sinks her into the drawn bedding.
 	_mare_rest = Transform3D(Basis.looking_at(-_frame.basis.z, Vector3.UP), Vector3(mare_at.x, _top_at(mare_at) + 0.02, mare_at.z))
 	seats[1].global_transform = _mare_rest
@@ -191,6 +198,15 @@ func _layout() -> void:
 	# stand the frame on the mattress beside you, on her side.
 	var hint_at := _frame * Vector3(_lane + _side * 0.35, 0.0, head_z + 0.42)
 	global_transform = Transform3D(_frame.basis, Vector3(hint_at.x, _top_y - HEIGHT, hint_at.z))
+
+## Centre to centre lying side by side: Anon's half of BESIDE plus hers at the size setting.
+func _beside() -> float:
+	return BESIDE * 0.5 * (1.0 + _mare_scale)
+
+## The ponies' size setting (1.0 canon; 1.0 when the Settings autoload is absent, fixtures).
+func _size_setting() -> float:
+	var settings: Node = get_node_or_null("/root/Settings")
+	return float(settings.call("pony_scale")) if settings != null and settings.has_method("pony_scale") else 1.0
 
 ## The shared home's own lane for "player" when its bed sleeps two; NAN otherwise.
 func _house_lane() -> float:
@@ -308,7 +324,8 @@ func eligible(actor: Node3D) -> bool:
 	if actor.get_meta("affection_active", false): return false
 	if actor.has_method("action_interruption_reason") and not str(actor.action_interruption_reason()).is_empty(): return false
 	if actor.get("flight") != null and actor.flight.active(): return false
-	if float(actor.get("body_scale")) > 1.05: return false
+	# Laid out for the size setting; one bigger than that (an adult stallion) does not fit her spot.
+	if float(actor.get("body_scale")) > 1.05 * _mare_scale: return false
 	if Time.get_ticks_msec() < int(_cooldowns.get(actor.get_instance_id(), 0)): return false
 	var nav := actor.get_node_or_null("Navigator")
 	if nav == null: return false
@@ -447,7 +464,7 @@ func _front_for(actor: CharacterBody3D) -> Vector3:
 	var z := (_frame.affine_inverse() * _mare_rest.origin).z
 	var candidates: Array[Vector3] = [_frame * Vector3(_side * (_half.x + 0.55), 0.0, z)]
 	if _bed.has_meta("side_local"): candidates.append(_bed.to_global(Vector3(_bed.get_meta("side_local"))))
-	candidates.append(_frame * Vector3(_lane + _side * BESIDE, 0.0, _half.z + 0.6))
+	candidates.append(_frame * Vector3(_lane + _side * _beside(), 0.0, _half.z + 0.6))
 	var clearance := float(actor.profile.clearance)
 	var radius := float(actor.profile.radius)
 	for at: Vector3 in candidates:

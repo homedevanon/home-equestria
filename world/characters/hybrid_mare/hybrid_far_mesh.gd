@@ -51,6 +51,12 @@ const TILE := 64
 const TILE_PAD := 4
 const ATLAS_COLUMNS := 8
 static var _pending: Dictionary = {}  # identity id -> {task, job}
+## Process frame of the last main-thread step (gather or assemble). One step per frame (thread
+## 43671981 D1): a gather reads every source surface and texture back from the GPU, and several
+## identities asking in the same frame after a load stacked into 100-200 ms frames. Callers poll
+## every frame while they wait (hybrid_mare.gd _poll_far_mesh, _set_shadow_proxy), so the rest
+## simply go next frame. build_now (tools, tests) is not limited.
+static var _step_frame := -1
 
 static func discard_pending() -> void:
 	for pending: Dictionary in _pending.values():
@@ -79,13 +85,16 @@ static func request(pony: Node) -> ArrayMesh:
 		return cache[id]
 	if _pending.has(id):
 		var pending: Dictionary = _pending[id]
-		if WorkerThreadPool.is_task_completed(pending.task):
+		if WorkerThreadPool.is_task_completed(pending.task) and _take_step():
 			WorkerThreadPool.wait_for_task_completion(pending.task)
 			_pending.erase(id)
+			preload("res://world/debug/hitch_monitor.gd").mark("far mesh assemble " + id)
 			cache[id] = _assemble(pending.job)
 			shadow_cache[id] = _assemble_shadow(pending.job)
 			eyes_cache[id] = _assemble_eyes(pending.job)
 			return cache[id]
+		return null
+	if not _take_step():
 		return null
 	preload("res://world/debug/hitch_monitor.gd").mark("far mesh gather " + id)
 	var job := _gather(pony)
@@ -94,6 +103,14 @@ static func request(pony: Node) -> ArrayMesh:
 	var task := WorkerThreadPool.add_task(_skin_all.bind(job), false, "Far mesh " + id)
 	_pending[id] = {"task": task, "job": job}
 	return null
+
+
+static func _take_step() -> bool:
+	var frame := Engine.get_process_frames()
+	if frame == _step_frame:
+		return false
+	_step_frame = frame
+	return true
 
 
 ## Synchronous build (tools, tests); also fills the cache.

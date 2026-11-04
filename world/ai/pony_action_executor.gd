@@ -86,6 +86,8 @@ func capabilities() -> Array:
 		result.append_array(["fly_to","hover","land","loop_de_loop","barrel_roll","circle_over","air_show"])
 		if str(actor.identity.id) == "rainbow_dash": result.append("sonic_rainboom")
 	if is_instance_valid(navigator) and (_sky_home() != null or _home_house() != null): result.append("go_home")
+	# Her own bed (or her cloud nap); [go_to_bed: here] is checked when it runs (thread report 2026-11-03).
+	if is_instance_valid(navigator) and actor.has_method("request_posture") and (_sky_home() != null or _home_house() != null): result.append("go_to_bed")
 	if actor.has_method("send_letter"): result.append("send_letter")
 	# Trixie may call her own stage show when Anon has paid for one or her week's rest is over.
 	if actor.get("identity") != null and str(actor.identity.id) == "trixie":
@@ -132,6 +134,8 @@ func submit(actions: Array, targets: Dictionary, turn: int, ai_origin := false) 
 		action["ai"] = ai_origin
 		# A model's go_to with Anon nearby is a walk together: she keeps his pace.
 		if action.type == "go_to" and ai_origin and is_instance_valid(targets.get("player")): action["companion"] = weakref(targets.player)
+		# [go_to_bed: here]: the bed in the house where Anon is, found when it runs.
+		if action.type == "go_to_bed" and is_instance_valid(targets.get("player")): action["anon"] = weakref(targets.player)
 		if action.type == "step":
 			var stepped := _step_goal(str(action.get("direction", "aside")), float(action.get("distance_m", 1.5)), targets.get("player"))
 			if not stepped.is_finite(): _report(action, "failed", "No room to step that way"); continue
@@ -145,7 +149,7 @@ func submit(actions: Array, targets: Dictionary, turn: int, ai_origin := false) 
 				var posed: bool = actor.request_posture(action.type)
 				_report(action, "completed" if posed else "failed", "Posture while riding" if posed else str(actor.posture_status().refusal))
 				continue
-			if action.type in ["call_pony", "send_pony", "approach", "follow", "go_to", "step", "lead", "stay", "sit_on_seat", "fly_to", "hover", "land", "loop_de_loop", "barrel_roll", "circle_over", "sonic_rainboom", "air_show", "magic_show", "go_home", "resume_routine"]:
+			if action.type in ["call_pony", "send_pony", "approach", "follow", "go_to", "step", "lead", "stay", "sit_on_seat", "fly_to", "hover", "land", "loop_de_loop", "barrel_roll", "circle_over", "sonic_rainboom", "air_show", "magic_show", "go_home", "go_to_bed", "resume_routine", "use"]:
 				_report(action, "failed", "Riding in the balloon; that waits until it lands")
 				continue
 		match action.type:
@@ -194,6 +198,22 @@ func submit(actions: Array, targets: Dictionary, turn: int, ai_origin := false) 
 				if not changed.is_empty(): wardrobe.dress(actor, str(actor.identity.id), wardrobe._season())
 				_report(action, "completed" if not changed.is_empty() else "failed",
 					("Now wearing " if on else "Took off ") + changed if not changed.is_empty() else ("You have nothing like that put away" if on else "You are not wearing that"))
+			"pay_player":
+				if is_instance_valid(coordinator): coordinator.dispatch_pay(character_id, action)
+				else: _report(action, "failed", "Payment coordinator unavailable")
+			"give", "ask", "offer_job", "use", "invite", "sell", "buy":
+				# [use] walks her to a station through her day card (stations.gd request_use): an earlier
+				# model move lets go of her navigator first, as [resume_routine] does.
+				if action.type == "use":
+					_end_move("cancelled", "Off to work a station", true)
+					# A finished move or posture leaves "rest_after_command", which no day step may
+					# take over (day_runner._free): she is let go as [resume_routine] does.
+					if is_instance_valid(navigator) and str(navigator.command_owner) == "rest_after_command":
+						if actor.has_method("request_posture"): actor.request_posture("stand")
+						_release(true)
+				# Shared mechanics (world/mechanics/mechanics.gd dispatch); the game validates it again.
+				if is_instance_valid(coordinator): coordinator.dispatch_mechanic(character_id, action)
+				else: _report(action, "failed", "Unavailable")
 			"give_house":
 				if is_instance_valid(coordinator): coordinator.dispatch_house(character_id, action)
 				else: _report(action, "failed", "House grant coordinator unavailable")
@@ -306,6 +326,20 @@ func _physics_step(delta: float) -> void:
 		# door). inside() is only the first point through the doorway; going there left her standing
 		# in her own doorway with the trip never confirmed (2026-10-24, tools/fluttershy/route_probe.gd).
 		movement.home_goal = house.center()
+	# go_to_bed (thread report 2026-11-03: "lay down in your bed" got "Fine, five minutes" and she never
+	# moved): NightRest walks her to the bed, climbs her in and keeps her lying there (night_rest.gd
+	# send_to_bed). Without a walk-in sky home it is her cloud nap, as for go_home.
+	if movement.type == "go_to_bed":
+		var action := movement.duplicate()
+		var bed := _bed_for(action)
+		var rest: Node = get_tree().get_first_node_in_group("night_rest")
+		if bed.has("error") or rest == null:
+			_end_move("failed", str(bed.get("error", "Bedtime is unavailable"))); return
+		_end_move("completed", "Heading to bed: " + str(bed.label))
+		var pony := str(actor.identity.id)
+		var sent: bool = rest.send_home(pony) if bed.get("house") == null else rest.send_to_bed(pony, bed.house, str(bed.key))
+		if not sent: _report(action, "failed", "Could not get to that bed right now")
+		return
 	if movement.type in ["fly_to","hover","land","loop_de_loop","barrel_roll","circle_over","sonic_rainboom","air_show"]:
 		if not movement.get("flight_started",false):
 			if movement.type == "air_show":
@@ -570,6 +604,8 @@ func travel_pace(goal: Vector3, companion: Node3D, dt: float) -> float:
 	var pace := -1.0
 	if movement.get("ai", false):
 		pace = walk_top if indoors else trot_floor * (1.2 if str(movement.get("pace", "walk")) == "trot" else .7)
+		# Nobody holds one exact speed: her own slow drift of a few percent (dev 2026-10-31).
+		if not indoors: pace *= 1.0 + .07 * sin(Time.get_ticks_msec() * .00021 + float(absi(hash(String(actor.name))) % 628) * .01)
 	if companion == null or indoors:
 		_companion_last = Vector3.INF
 		return pace
@@ -703,6 +739,21 @@ func _trixie_show() -> Node:
 	var show: Node = population.host.get_node_or_null("TrixieShow")
 	return show if show != null and show.has_method("ai_start") else null
 
+## The bed a go_to_bed means: {"house", "key", "label"} ("key" is the house's bed key: her id for her
+## own bed, "" for the house's first bed; no "house" = her cloud nap), or {"error"}.
+func _bed_for(action: Dictionary) -> Dictionary:
+	var own := _home_house()
+	if str(action.get("bed", "own")) != "here":
+		if own != null: return {"house": own, "key": str(actor.identity.id), "label": "your own bed"}
+		return {"house": null, "key": "", "label": "a nap on your cloud"} if _sky_home() != null else {"error": "You have no bed of your own"}
+	var anon: Node3D = (action.anon as WeakRef).get_ref() as Node3D if action.get("anon") is WeakRef else null
+	if anon == null or not anon.is_inside_tree(): return {"error": "Anon is not here to show you a bed"}
+	for house: Node in get_tree().get_nodes_in_group("house_interiors"):
+		if not house.has_method("bed_side") or not house.has_method("contains") or not house.contains(anon.global_position): continue
+		if house == own: return {"house": own, "key": str(actor.identity.id), "label": "your own bed"}
+		return {"house": house, "key": "", "label": "the bed in the house where Anon is"}
+	return {"error": "Anon is not in a house with a bed"}
+
 ## Her own house in town, or null.
 func _home_house() -> Node3D:
 	var population := get_tree().get_first_node_in_group("pony_populations")
@@ -744,6 +795,11 @@ func _report(action: Dictionary, status: String, reason: String) -> void:
 	recent.append(event)
 	if recent.size() > 12: recent.pop_front()
 	outcome.emit(event)
+
+## Where her current model-asked trip goes ("" when none): the place a "walk with me" means.
+func ai_destination() -> String:
+	if movement.is_empty() or not bool(movement.get("ai", false)) or str(movement.get("type", "")) not in ["go_to", "lead"]: return ""
+	return str(movement.get("location_id", ""))
 
 func context_lines() -> String:
 	var lines := PackedStringArray()

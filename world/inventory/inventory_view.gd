@@ -32,10 +32,14 @@ func _flash_colour(colour: Color) -> void:
 	_message_colour = colour; refresh()
 func bind(store: RefCounted):
 	inventory=store;size=SIZE;mouse_filter=Control.MOUSE_FILTER_IGNORE
+	add_to_group(CATALOG.ICON_CAMERA.GROUP)
 	for id in CATALOG.ITEMS: _icons[id]=CATALOG.icon(id)
 	store.changed.connect(refresh)
 	refresh()
 func refresh(): queue_redraw();dirty.emit()
+## item_icon_camera.gd took this item's picture.
+func icon_ready(id: String):
+	_icons.erase(id);refresh()
 func slot_rect(index: int) -> Rect2:
 	return Rect2(GRID_ORIGIN+Vector2(index%9,index/9)*CELL,Vector2(116,118))
 func slot_at(point: Vector2) -> int:

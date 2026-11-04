@@ -15,6 +15,7 @@ const GRAB := preload("res://world/inventory/grab_targets.gd")
 const OUTLINE := preload("res://world/ui/interact_outline.gd")
 const FOOD_CATALOG := preload("res://world/food/food_catalog.gd")
 const SHOP_ITEMS := preload("res://world/shop/shop_items.gd")
+const MARKET := preload("res://world/mechanics/market/market.gd")
 const PLAYER_FORM := preload("res://world/life/player_form.gd")
 const DESKTOP_OWNER := preload("res://player/desktop_action_owner.gd")
 const ICON_PATH := "res://world/ui/prompts/%s.png"
@@ -278,6 +279,9 @@ func selection() -> Dictionary:
 	if not furnishing_hint.is_empty(): return furnishing_hint
 	var cooking_hint: Dictionary = preload("res://world/cooking/cooking_input.gd").hint(inventory)
 	if not cooking_hint.is_empty(): return cooking_hint
+	# Mechanics stations (world/mechanics/stations/station_input.gd): press, plot, stand tap.
+	var station_hint: Dictionary = preload("res://world/mechanics/stations/station_input.gd").hint(inventory)
+	if not station_hint.is_empty(): return station_hint
 	for side: String in (["right", "left"] if xr else ["desktop"]):
 		var slot: Node3D = inventory.shelf_offer(side) if inventory.has_method("shelf_offer") else null
 		if slot != null:
@@ -359,9 +363,16 @@ func _item_hint(item: Node3D, control: String, point: Vector3) -> Dictionary:
 	elif item.has_meta("shelf_book"): word = "Take book"
 	elif item.is_in_group("world_food") and bool(item.get_meta("food_for_sale", false)):
 		var price := FOOD_CATALOG.price_bits(str(item.get_meta("item_id", "")))
+		# A keeper's live [sell] offer (world/mechanics/market/market.gd) is the price shown.
+		var stall: Variant = item.get_parent().get("display_id") if is_instance_valid(item.get_parent()) else null
+		if price > 0 and stall is String: price = MARKET.live_price(item, str(stall), str(item.get_meta("item_id", "")), price)
 		word = "Buy · " + CURRENCY.amount(price) + "\nBalance " + CURRENCY.amount(inventory.inventory.bits) if price > 0 else "Take"
 	elif item.is_in_group("shop_items"):
-		word = "Buy · " + CURRENCY.amount(SHOP_ITEMS.price_bits(str(item.get_meta("item_id", "")))) + "\nBalance " + CURRENCY.amount(inventory.inventory.bits)
+		var shelf: Variant = item.get_meta("shop_display") if item.has_meta("shop_display") else null
+		var good := str(item.get_meta("item_id", ""))
+		var cost := SHOP_ITEMS.price_bits(good)
+		if is_instance_valid(shelf) and (shelf as Node).get("display_id") is String: cost = MARKET.live_price(item, str((shelf as Node).get("display_id")), good, cost)
+		word = "Buy · " + CURRENCY.amount(cost) + "\nBalance " + CURRENCY.amount(inventory.inventory.bits)
 	var sep := " " if control.begins_with("[") else " · "
 	if not xr and control == "[E]":
 		return {"target": item, "text": "Click · " + word + "   E · Store", "point": point, "collider": item}
@@ -457,6 +468,9 @@ static func _collect_bounds(node: Node, inverse: Transform3D, boxes: Array[AABB]
 
 ## Hint text -> [{icons: [names], text: String}]. Segments are separated by three spaces or " | ";
 ## each is "<control> · <words>" or "[KEY] <words>". Unknown controls keep their words.
+## Every segment reads the same way, control first, then "Hold: words" (thread 43671981: the
+## carry row printed "Tap G · Put down Hold G, let go · Throw" as raw text beside icon rows).
+## A keyboard key with no drawn icon (G, K, B on desktop) becomes "cap:<KEY>", a drawn key cap.
 static func parse(text: String) -> Array:
 	var result: Array = []
 	for raw: String in text.replace(" | ", "   ").split("   ", false):
@@ -465,15 +479,40 @@ static func parse(text: String) -> Array:
 		var control := ""; var words := part
 		if part.begins_with("["):
 			var close := part.find("]")
-			if close > 0: control = part.substr(1, close - 1); words = part.substr(close + 1).strip_edges()
+			if close > 0: control = part.substr(1, close - 1); words = part.substr(close + 1).strip_edges().trim_prefix("· ")
 		elif part.contains(" · "):
 			control = part.get_slice(" · ", 0); words = part.substr(control.length() + 3).strip_edges()
 		var icons := control_icons(control)
+		# Keys the icon set lacks ("G", "Tap B", the G of "Shift+G") become key caps.
+		if not control.is_empty():
+			var caps := key_caps(control)
+			if caps.size() > icons.size(): icons = caps
+		var lower := control.to_lower()
 		if icons.is_empty() and not control.is_empty(): words = part
-		elif control.to_lower().begins_with("hold "): words = "Hold: " + words
-		elif control.to_lower().begins_with("release "): words = "Release: " + words
+		elif lower.begins_with("hold ") and lower.ends_with(", let go"): words = "Hold, let go: " + words
+		elif lower.begins_with("hold "): words = "Hold: " + words
+		elif lower.begins_with("release "): words = "Release: " + words
 		result.append({"icons": icons, "text": words})
 	return result
+
+## Key caps ["cap:G"] for a keyboard control without an icon: "G", "Tap B", "Hold B key",
+## "Hold G, let go", "F5", "Ctrl+G" (known keys keep their icons). [] when any part is words
+## ("Aim at its basket"), so instructions stay plain text.
+static func key_caps(control: String) -> Array:
+	var c := control.strip_edges()
+	for prefix: String in ["Tap ", "Press ", "Hold ", "Release "]:
+		if c.begins_with(prefix): c = c.substr(prefix.length()); break
+	c = c.trim_suffix(", let go").trim_suffix(" key").strip_edges()
+	var caps: Array = []
+	var key := RegEx.create_from_string("^([A-Z0-9]|F[0-9]{1,2}|Kp [0-9]|[A-Z][a-z]+[A-Z][a-z]*)$")
+	for token: String in c.replace(" + ", "+").split("+", false):
+		var t := token.strip_edges()
+		var known := control_icons(t)
+		# Keyboard icons only: a desktop "Tap B" is the B key, never the controller's B button.
+		if known.size() == 1 and str(known[0]).begins_with("key_"): caps.append(known[0])
+		elif key.search(t) != null: caps.append("cap:" + t)
+		else: return []
+	return caps
 
 ## Icon names (world/ui/prompts/<name>.png) for a control phrase like "Right grip", "B", "E/Q",
 ## "Grip + trigger", "LMB", "Ctrl".
@@ -499,8 +538,16 @@ func _build_prompt(text: String) -> void:
 	for child: Node in _prompt3d.get_children(): child.queue_free()
 	for child: Node in _prompt2d.get_children(): child.queue_free()
 	var x := 0.0
+	var first := true
 	for segment: Dictionary in parse(text):
+		# A gap between segments, so "Put down" never runs into the next control.
+		if not first:
+			var gap := Control.new(); gap.custom_minimum_size = Vector2(18, 0); gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			_prompt2d.add_child(gap)
+		first = false
 		for name: String in segment.icons:
+			if name.begins_with("cap:"):
+				x = _add_key_cap(name.substr(4), x); continue
 			var texture := _icon(name)
 			if texture == null: continue
 			var sprite := Sprite3D.new(); sprite.texture = texture
@@ -531,6 +578,34 @@ func _build_prompt(text: String) -> void:
 		text_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_prompt2d.add_child(text_label)
 	_prompt3d.set_meta("width", x)
+
+## A dark key cap with the key in white, sized and placed like the drawn key icons
+## (prompts/key_*.png), for keys that have no icon. Returns the next 3D x.
+func _add_key_cap(key: String, x: float) -> float:
+	var letters := Label3D.new(); letters.text = key; CURRENCY.apply(letters)
+	letters.font_size = 40; letters.pixel_size = ICON_M / 72.0; letters.outline_size = 30
+	letters.modulate = Color("f4f1ff"); letters.outline_modulate = Color("1f1d26")
+	letters.no_depth_test = true; letters.render_priority = 10
+	letters.position = Vector3(x + ICON_M * .5, 0, 0)
+	_prompt3d.add_child(letters)
+	var holder := CenterContainer.new(); holder.custom_minimum_size = Vector2(52, 52)
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var cap := PanelContainer.new(); cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color("1f1d26"); style.border_color = Color("9a97a8")
+	style.set_border_width_all(2); style.border_width_bottom = 4
+	style.set_corner_radius_all(9)
+	style.content_margin_left = 8.0; style.content_margin_right = 8.0
+	cap.add_theme_stylebox_override("panel", style)
+	cap.custom_minimum_size = Vector2(42, 42)
+	var text := Label.new(); text.text = key; CURRENCY.apply(text)
+	text.add_theme_font_size_override("font_size", 26)
+	text.add_theme_color_override("font_color", Color("f4f1ff"))
+	text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cap.add_child(text); holder.add_child(cap)
+	_prompt2d.add_child(holder)
+	return x + ICON_M * maxf(1.05, .3 + key.length() * .33)
 
 ## VR: the row floats just above the target point, turned to face the eye, sized for distance.
 ## Desktop: the 2D row under the crosshair.

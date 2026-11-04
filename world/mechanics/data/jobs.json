@@ -1,0 +1,21 @@
+{"version": 1, "jobs": [
+ {"id": "orchard_bucking", "name": "apple bucking", "driver": "apple_bucking", "employers": ["applejack", "big_mcintosh"],
+  "station": "orchard_tree", "unit": "basket", "wage": {"per_unit": 20}, "payers": ["applejack", "big_mcintosh", "town"],
+  "hours": [6, 20], "open": {"season_not": ["winter"]}, "daily_cap": 6, "offer_any_day": false,
+  "copper": {"takes": [], "makes": ["tag:apple"], "facts": ["worked", "harvested", "hired"], "verbs": ["offer_job", "ask"],
+   "plans": ["buck_apples"], "consumers": ["cider_press", "applebuck_season", "ask"]}},
+ {"id": "hayburger", "name": "Hayburger counter", "driver": "hayburger", "employers": [], "till": "business:hayburger",
+  "unit": "order", "wage": {"per_hour": 10, "max_hours": 14, "tip": 3}, "payers": ["business:hayburger", "town"],
+  "tip_payers": ["customer", "town"],
+  "copper": {"takes": [], "makes": ["food:hayburger"], "facts": ["worked", "paid"], "verbs": [], "plans": [], "consumers": ["eat", "ask"]}},
+ {"id": "spa", "name": "day spa", "driver": "spa", "employers": ["aloe", "lotus_blossom"], "unit": "service",
+  "wage": {"per_unit": {"file": 10, "rub": 10, "wings": 4, "feather": 1}}, "payers": ["customer", "aloe", "town"], "hours": [9, 19],
+  "copper": {"takes": [], "makes": [], "facts": ["worked", "paid"], "verbs": ["offer_job"], "plans": [], "consumers": ["ask", "gift"]}},
+ {"id": "cider_stand", "name": "cider stand", "driver": "native", "employers": ["applejack", "big_mcintosh"],
+  "where": {"world": [62.6, 0, -460.3], "ground": true},
+  "station": "cider_stall", "unit": "mug", "price": 6, "wage": {"per_unit": 2}, "payers": ["applejack", "big_mcintosh", "town"],
+  "customer_payers": ["customer", "town"], "hours": [10, 18], "open": {"event": "cider_season"}, "offer_any_day": true, "daily_cap": 24,
+  "customers": {"max": 3, "cooldown_s": 120, "radius": 150, "patience_s": 300},
+  "copper": {"takes": ["food:sweet-apple-acres-cider"], "makes": [], "facts": ["worked", "sold", "paid"], "verbs": ["offer_job", "ask"],
+   "plans": ["work_stand"], "consumers": ["cider_season", "ask", "gift"]}}
+]}

@@ -23,7 +23,14 @@ static func shape(item: Node) -> CollisionShape3D:
 		if child is CollisionShape3D and child.shape != null and not child.disabled: return child
 	return null
 
+## Where this hand's furniture would go and whether it may: {"target", "pose", "ok", "why", "point",
+## "home", "wall"}, or {} when the aim is on nothing. The green or red preview shows this
+## (placement_preview.gd); the same answer places it, so what shows green is what lands.
 static func offer(ui: Node3D, side: String) -> Dictionary:
+	var pick := plan(ui, side)
+	return pick if not pick.is_empty() and bool(pick.ok) else {}
+
+static func plan(ui: Node3D, side: String) -> Dictionary:
 	var item: RigidBody3D = ui.held.get(side)
 	if not eligible(item) or ui.get_tree().paused: return {}
 	if not is_instance_valid(ui.camera) or not ui.camera.global_transform.is_finite(): return {}
@@ -58,24 +65,77 @@ static func surface_offer(ui: Node3D, item: RigidBody3D, owned_home: Node3D, hit
 	var point: Vector3 = hit.get("position", Vector3.INF)
 	if not point.is_finite() or not normal.is_finite(): return {}
 	var pose := Transform3D.IDENTITY
+	var size := size_of(item)
 	var local_box: AABB = holder.transform * holder.shape.get_debug_mesh().get_aabb()
+	local_box = AABB(local_box.position * size, local_box.size * size)
+	var why := ""
 	if RULES.wall(id):
-		if absf(normal.y) > .2: return {}
-		normal.y = 0.0; normal = normal.normalized()
-		pose.basis = Basis(Vector3.UP.cross(normal), Vector3.UP, normal)
-		pose.origin = point + normal * (-local_box.position.z + .012) - Vector3.UP * local_box.get_center().y
+		if absf(normal.y) > .2:
+			why = "That needs a wall"
+			pose.basis = Basis.looking_at(-normal, ui.camera.global_basis.x if absf(normal.y) > .9 else Vector3.UP)
+			pose.origin = point + normal * .012
+		else:
+			normal.y = 0.0; normal = normal.normalized()
+			pose.basis = Basis(Vector3.UP.cross(normal), Vector3.UP, normal)
+			pose.origin = point + normal * (-local_box.position.z + .012) - Vector3.UP * local_box.get_center().y
 	else:
-		if normal.y < .9: return {}
+		if normal.y < .9: why = "That needs a floor or a surface"
 		var heading: Basis = ui.camera.global_basis if side == "desktop" else item.global_basis
-		pose.basis = Basis(Vector3.UP, heading.get_euler().y)
+		pose.basis = Basis(Vector3.UP, heading.get_euler().y + deg_to_rad(float(item.get_meta("furnishing_turn", 0.0))))
 		var turned: AABB = Transform3D(pose.basis, Vector3.ZERO) * local_box
 		pose.origin = point + Vector3.UP * (-turned.position.y + .008)
-	if not fits_home(owned_home, pose, local_box): return {}
-	var query := PhysicsShapeQueryParameters3D.new()
-	query.shape = holder.shape; query.transform = pose * holder.transform
-	query.collision_mask = 1 | ITEM_LAYER; query.exclude = excluded
-	if not ui.get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty(): return {}
-	return {"target": item, "point": point, "pose": pose, "home": str(owned_home.place_id()), "wall": RULES.wall(id)}
+	if why.is_empty() and not fits_home(owned_home, pose, local_box): why = "Doesn't fit here"
+	if why.is_empty():
+		var query := PhysicsShapeQueryParameters3D.new()
+		query.shape = _sized_shape(holder.shape, size)
+		query.transform = pose * Transform3D(holder.transform.basis, holder.transform.origin * size)
+		query.collision_mask = 1 | ITEM_LAYER; query.exclude = excluded
+		if not ui.get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty(): why = "Something is in the way"
+	return {"target": item, "point": point, "pose": pose, "home": str(owned_home.place_id()), "wall": RULES.wall(id), "ok": why.is_empty(), "why": why}
+
+## A box as large as `size` times the item's own shape, for testing a size it does not have yet.
+static func _sized_shape(shape_: Shape3D, size: float) -> Shape3D:
+	if size == 1.0 or not shape_ is BoxShape3D: return shape_
+	var box := BoxShape3D.new()
+	box.size = (shape_ as BoxShape3D).size * size
+	return box
+
+## The size this held or placed item is set to.
+static func size_of(item: Node) -> float:
+	return float(item.get_meta("furnishing_size", 1.0))
+
+static func resizable(item: Node) -> bool:
+	return eligible(item) and RULES.sizes(str(item.get_meta("item_id", ""))).size() > 1
+
+## The next size up, wrapping, while the hand aims at a spot in the home.
+static func step_size(ui: Node3D, side: String, step: int = 1) -> bool:
+	var item: RigidBody3D = ui.held.get(side)
+	if not resizable(item) or plan(ui, side).is_empty(): return false
+	var sizes: Array = RULES.sizes(str(item.get_meta("item_id", "")))
+	item.set_meta("furnishing_size", float(sizes[posmod(sizes.find(size_of(item)) + step, sizes.size())]))
+	return true
+
+## Desktop wheel while placing: size for a print, a turn for floor furniture. False when not placing.
+static func wheel(ui: Node3D, side: String, step: int) -> bool:
+	var item: RigidBody3D = ui.held.get(side)
+	if not eligible(item) or plan(ui, side).is_empty(): return false
+	if resizable(item): return step_size(ui, side, step)
+	if RULES.wall(str(item.get_meta("item_id", ""))): return false
+	item.set_meta("furnishing_turn", float(item.get_meta("furnishing_turn", 0.0)) + step * RULES.TURN_DEGREES)
+	return true
+
+## Scales the item's look and collision to `size`. The body itself stays unscaled: physics bodies
+## keep the scale they entered with.
+static func apply_size(item: RigidBody3D, size: float) -> void:
+	var holder := shape(item)
+	for visual: Node in item.get_children():
+		if visual is Node3D and "bounds" in visual: (visual as Node3D).scale = Vector3.ONE * size
+	if holder == null or not holder.shape is BoxShape3D: return
+	if not item.has_meta("furnishing_base"):
+		item.set_meta("furnishing_base", [(holder.shape as BoxShape3D).size, holder.position])
+	var base: Array = item.get_meta("furnishing_base")
+	(holder.shape as BoxShape3D).size = Vector3(base[0]) * size
+	holder.position = Vector3(base[1]) * size
 
 static func fits_home(owned_home: Node3D, pose: Transform3D, box: AABB) -> bool:
 	if not pose.is_finite() or not "floors" in owned_home or not "floor_y" in owned_home: return false
@@ -123,7 +183,7 @@ static func place(ui: Node3D, side: String) -> bool:
 	if pick.is_empty(): return false
 	var item: RigidBody3D = ui.held[side]
 	var token := str(item.get_meta("token", ""))
-	if not ui.inventory.set_furnishing(token, pick.pose, pick.home): ui._error(); return true
+	if not ui.inventory.set_furnishing(token, pick.pose, pick.home, size_of(item)): ui._error(); return true
 	item.global_transform = pick.pose
 	ui._unglow(item)
 	configure(item, true)
@@ -136,6 +196,8 @@ static func place(ui: Node3D, side: String) -> bool:
 
 static func configure(item: RigidBody3D, placed: bool) -> void:
 	if not eligible(item): return
+	if not placed and item.has_meta("furnishing_size"): item.remove_meta("furnishing_size")
+	if resizable(item): apply_size(item, size_of(item))
 	item.collision_layer = (1 | ITEM_LAYER) if placed else ITEM_LAYER
 	if placed:
 		item.freeze = true; item.linear_velocity = Vector3.ZERO; item.angular_velocity = Vector3.ZERO
@@ -154,10 +216,13 @@ static func configure(item: RigidBody3D, placed: bool) -> void:
 
 static func hint(ui: Node3D) -> Dictionary:
 	for side: String in (["desktop"] if ui._desktop else ["right", "left"]):
-		var pick := offer(ui, side)
+		var pick := plan(ui, side)
 		if pick.is_empty(): continue
 		var item: RigidBody3D = ui.held[side]
+		if not bool(pick.ok): return {"target": item, "point": pick.point, "text": str(pick.why), "outline": null, "visible_pick": true}
 		var action := "Hang in your home" if pick.wall else "Place in your home"
+		if side == "desktop": action += "   Wheel · Size" if resizable(item) else "   Wheel · Turn" if not pick.wall else ""
+		elif resizable(item): action += "   Trigger · Size"
 		var control := "Shift+Q" if side == "desktop" else "Grip" if ui.inventory.loans.get(str(item.get_meta("token", "")), {}).get("equipped", false) else "Release grip"
 		return {"target": item, "point": pick.point, "text": control + " · " + action, "outline": null, "visible_pick": true}
 	return {}

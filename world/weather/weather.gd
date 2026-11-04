@@ -542,6 +542,8 @@ func _update_shelter() -> void:
 			if actor.identity != null and actor.identity.has_method("has_wings") and actor.identity.has_wings(): continue
 			if not (owner.is_empty() or owner.begins_with("life:") or owner.begins_with("social:")): continue
 			if actor.get("_held") or actor.get("sleeping"): continue
+			var director: Variant = game.get("director")
+			if is_instance_valid(director) and director.holds_in_place(id): continue
 			var house: Node3D = population.home_house(id) if population.has_method("home_house") else null
 			if house == null or house.contains(actor.global_position): continue
 			nav.stay(); nav.command_owner = SHELTER_OWNER + id

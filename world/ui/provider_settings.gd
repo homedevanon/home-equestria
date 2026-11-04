@@ -47,6 +47,7 @@ const USAGE_MODES:=[["full","Full: ponies also chat among themselves and come to
 const CACHE_MODES:=[["auto","Automatic (Claude through OpenRouter)"],["on","On (cache hints on every request)"],["off","Off"]]
 const CHATTINESS_NAMES:={1.0:"Normal",0.75:"A bit quieter",0.5:"Quiet",0.25:"Very quiet",0.1:"Almost silent"}
 var ai_usage:="full"
+var adult_policy_hint:=false
 ## Photos a pony can see (world/ai/photo_vision.gd); off by default.
 ## The dialogue protocols (Protocol row): native Gemini since 0.0.3.
 const PROTOCOLS:=[["openai","OpenAI-compatible"],["anthropic","Anthropic Messages"],["gemini","Google Gemini (native)"]]
@@ -121,6 +122,7 @@ func setup(surface:Node, in_tab := false)->void:
 	label("How much the AI runs",27)
 	label("Every pony line is a paid request to your provider. \"Only when I talk\" stops the requests the game makes on its own; \"Off\" needs no provider at all.",19)
 	_buttons.usage=choice("AI usage",USAGE_MODES,_set_to.bind("ai_usage"))
+	_buttons.adult_hint=choice("Adult content policy hint",[[true,"On: tell the model this prompt follows adult content policies"],[false,"Off"]],_set_to.bind("adult_policy_hint"))
 	_buttons.chattiness=choice("Town chattiness",CHATTINESS_STEPS.map(func(step:float)->Array:return [step,CHATTINESS_NAMES[step]]),_set_to.bind("chattiness"))
 	label("Language model (LLM)",27)
 	label("Choose your provider, paste your key, then fetch or enter a model.",20)
@@ -381,6 +383,7 @@ func open()->void:
 	chattiness=float(config.get_value("chattiness",1.0))
 	if not CHATTINESS_STEPS.has(chattiness):chattiness=1.0
 	ai_usage=CONFIG.usage_of(config)
+	adult_policy_hint=bool(config.get_value("adult_policy_hint",false))
 	cache_hints=str(connection.get("cache_hints","auto"))
 	if cache_hints not in CONFIG.CACHE_HINTS:cache_hints="auto"
 	var stt:Dictionary=config.section("stt")
@@ -427,6 +430,8 @@ func refresh()->void:
 	set_choice(_buttons.usage,_caption(USAGE_MODES,ai_usage))
 	set_choice(_buttons.chattiness,str(CHATTINESS_NAMES.get(chattiness,"Normal")))
 	_buttons.chattiness.visible=ai_usage=="full"
+	set_choice(_buttons.adult_hint,"On: tell the model this prompt follows adult content policies" if adult_policy_hint else "Off")
+	_buttons.adult_hint.visible=ai_usage!="off"
 	set_choice(_buttons.cache,_caption(CACHE_MODES,cache_hints))
 	set_choice(_buttons.stt,_caption(STT_PROVIDERS,stt_provider))
 	set_choice(_buttons.stt_mode,_caption(STT_MODES,stt_mode))
@@ -650,7 +655,7 @@ func _vision_section()->Dictionary:
 	return section
 
 func save_connection()->void:
-	var error:=CONFIG.save_connection(_llm_connection(),input_device,config_path,{"stt":_stt_section(),"tts":_tts_section(),"chattiness":chattiness,"ai_usage":ai_usage,"vision":_vision_section()})
+	var error:=CONFIG.save_connection(_llm_connection(),input_device,config_path,{"stt":_stt_section(),"tts":_tts_section(),"chattiness":chattiness,"ai_usage":ai_usage,"adult_policy_hint":adult_policy_hint,"vision":_vision_section()})
 	status.add_theme_color_override("font_color",WARN if not error.is_empty() and not error.begins_with("!") else TEXT)
 	if not error.is_empty() and not error.begins_with("!"):
 		status.text=error;panel.refresh();return

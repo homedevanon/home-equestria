@@ -18,6 +18,8 @@ const PLACE_LINES := 24
 ## invite him in her words; the offer itself is made when they next talk.
 ## relationship_answer only for his open offers that make no timed plan (letter_post.gd LETTER_ANSWERS).
 const CAPABILITIES := ["meet", "meet_cancel", "relationship_answer"]
+## Only while she has room for a favour (world/mechanics/asks/asks.gd letter_context): one line.
+const FAVOUR := "Optional, only if you really need his help: [ask: WANT, REWARD] ask him a favour (2 apples, fetch PONY, go to PLACE_ID or help at JOB; REWARD bits you hold or thanks), and ask it in the letter too."
 const TASK := """Anon sent you this letter by Derpy's post. Read it as yourself, decide, and write back.
 Start with tags only, one per line:
 [heart: 0-100] how much it touched you: kind, personal, about your interests and what you two shared = high; careless or rude = low
@@ -39,7 +41,7 @@ static func system_prompt(parts: Dictionary) -> String:
 		var line := _clip(str(parts.get(key, "")).replace("\n", " "), LINE_CHARS)
 		if not line.is_empty(): lines.append(line)
 	var today := str(parts.get("today", ""))
-	for key: String in ["appointment", "offer"]:
+	for key: String in ["appointment", "offer", "favour"]:
 		var extra := str(parts.get(key, "")).strip_edges()
 		if not extra.is_empty(): today += "\n" + extra
 	var places: PackedStringArray = []

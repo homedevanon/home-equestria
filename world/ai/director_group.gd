@@ -13,6 +13,7 @@ const AMBIENT_BUDGET := preload("res://world/ai/ambient_budget.gd")
 const CHATTINESS := preload("res://world/ai/chattiness.gd")
 const CHATTER := preload("res://world/ai/chatter_topics.gd")
 const ADDRESSEE := preload("res://world/ai/addressee.gd")
+const FILTERS := preload("res://world/ai/reply_filters.gd")
 ## Longest wait for bodies to turn before the first line; longer only while one walks up to the other.
 const FACING_TIMEOUT := 4.0
 const FACING_WALK_TIMEOUT := 10.0
@@ -270,7 +271,7 @@ func _on_group_reply(text: String, error: String, turn: int) -> void:
 		# A script cut off at the output limit keeps its complete lines (tester 2026-10-20: ambient
 		# chats showed "group llm: model output limit reached"). Ponies chatting among themselves do
 		# not pay a second full-price request for them; a group the player addressed is first asked
-		# once more with recovery room. Nothing usable: silence for ambient, her fallback line otherwise.
+		# once more with recovery room. Nothing usable: silence for ambient, an error code otherwise.
 		var salvaged := complete_lines(text, host.group.members)
 		if (salvaged.is_empty() or not host.group.ambient) and host._repair_response(text, "The exchange was cut off by the model output limit. Return fewer COMPLETE short lines, finishing every sentence and tag; omit optional feelings/thoughts.", true): return
 		if salvaged.is_empty():
@@ -278,19 +279,18 @@ func _on_group_reply(text: String, error: String, turn: int) -> void:
 			var addressed: String = host.group.members[0]
 			_clear_group()
 			host._current = addressed
-			host._speak_fallback("group llm: " + error); return
+			host._llm_error("group llm", error); return
 		print("[ai] group reply cut off at the output limit; kept its complete lines")
 		text = salvaged
 		error = ""
 	if error != "":
 		if str(host.llm.get("last_outcome")) in ["refusal", "transient"]:
-			# Ponies chatting among themselves just skip it; a pony the player addressed answers.
+			# Ponies chatting among themselves just skip it; a group the player addressed shows the code.
 			if host.group.ambient: host._finish_silence(); return
 			var first: String = host.group.members[0]
 			_clear_group()
 			host._current = first
-			host._speak_fallback("group llm: " + error); return
-		host._fail("group llm: " + error); return
+		host._llm_error("group llm", error); return
 	if not host._listener_available() or not host._group_turn_valid(): host.interrupt(); return
 	var contexts := {}
 	for id in host.group.members:
@@ -314,8 +314,28 @@ func _on_group_reply(text: String, error: String, turn: int) -> void:
 	if decoded.has("error"):
 		if host._repair_response(text, str(decoded.error), true): return
 		host._fail("invalid group exchange: " + decoded.error); return
+	# Provider refusal boilerplate (reply_filters.gd) is never voiced; a line of nothing else goes.
+	# No spoken line left: a refusal, handled like one that survived llm_client.gd's retries.
+	var refused := false
+	for beat: Dictionary in decoded.beats:
+		if bool(beat.get("silent_travel", false)): continue
+		var own_words := FILTERS.without_refusals(str(beat.speech))
+		if own_words == str(beat.speech): continue
+		refused = true
+		beat.speech = own_words
+		if not FILTERS.has_speech(own_words): beat.refused = true
+	if refused:
+		print("[ai] group reply: dropped refusal boilerplate")
+		decoded.beats = decoded.beats.filter(func(item: Dictionary) -> bool: return not bool(item.get("refused", false)))
+		if decoded.beats.filter(func(item: Dictionary) -> bool: return not bool(item.get("silent_travel", false))).is_empty():
+			if host.group.ambient: host._finish_silence(); return
+			var addressed: String = host.group.members[0]
+			_clear_group()
+			host._current = addressed
+			host._llm_error("group llm", LLM.REFUSAL_ERROR); return
 	var previous := {}
 	for id in host.group.members: previous[id] = host.characters[id].spoken.duplicate()
+	var said := {}
 	for beat in decoded.beats:
 		if bool(beat.get("silent_travel", false)): continue
 		var missing := INTENT.missing(host._player_text, beat.speech, beat.actions) if not host.group.ambient else ""
@@ -324,11 +344,16 @@ func _on_group_reply(text: String, error: String, turn: int) -> void:
 			host._fail("Accepted trip lacks travel action"); return
 		var tagged := FACE_TAGS.parse(beat.speech)
 		beat.face = tagged.face
+		beat.face_map = FACE_TAGS.sentence_faces(SENTENCES.split(beat.speech))
 		beat.gesture = tagged.gesture
 		beat.speech = host.clean_reply(tagged.speech)
 		if host._strip_tag(beat.speech).is_empty():
 			if host._repair_response(text, "One line contains only control tags, with no spoken dialogue. Remove that line or write a brief spoken answer to the actual question.", true): return
 			host._fail("empty group speech"); return
+		# A sentence this pony said moments ago (or earlier in this exchange) is left out locally.
+		var earlier: Array = FILTERS.recent(host._said_recently, str(beat.speaker_id), host._now()) + said.get(beat.speaker_id, [])
+		beat.speech = FILTERS.without_repeats(str(beat.speech), earlier)
+		said[beat.speaker_id] = said.get(beat.speaker_id, []) + FILTERS.sentences(host._strip_tag(beat.speech))
 		var repetition := VARIETY.reason(host._strip_tag(beat.speech), previous[beat.speaker_id], host._player_text)
 		# A repeated pet name is dropped from the line, not re-requested at full prompt price.
 		for _attempt in VARIETY.PET_NAMES.size():

@@ -8,6 +8,7 @@ const STORE := preload("res://world/inventory/inventory_store.gd")
 const CATALOG := preload("res://world/inventory/item_catalog.gd")
 const FOOD := preload("res://world/food/food_interaction.gd")
 const COOKING := preload("res://world/cooking/cooking_input.gd")
+const STATION_INPUT := preload("res://world/mechanics/stations/station_input.gd")
 const BANANAS := preload("res://world/food/banana_boxes.gd")
 const SHOP_ITEMS := preload("res://world/shop/shop_items.gd")
 const HOTBAR := preload("res://world/inventory/wrist_hotbar.gd")
@@ -253,6 +254,11 @@ func _update_hand_step(side: String, sample: Dictionary, _delta: float):
 	if host._laser_input(side,sample):
 		host._pressed[side]=grip
 		return
+	# Mechanics stations (station_input.gd): a free hand's grip goes to the nearest station node
+	# (a crank, a slot); the node that took it hears the release.
+	if not grip and STATION_INPUT.engaged(side): STATION_INPUT.offer(host, side, false)
+	elif grip and not host._pressed[side] and not host.hand_busy(side) and STATION_INPUT.offer(host, side, true):
+		host._pressed[side] = true; return
 	if grip and not host._pressed[side] and host._cooking_armed[side] and not host.hand_busy(side):
 		var cooking_offer: Dictionary = COOKING.offer(host, side)
 		if cooking_offer.get("role", "") == "knob" and COOKING.activate(host, side):
@@ -291,6 +297,16 @@ func _update_hand_step(side: String, sample: Dictionary, _delta: float):
 				host._pressed[side] = grip; return
 		elif item.get_meta("item_id", "") == "goods:quill":
 			host.QUILL_TOOL.on(item).vr_step(host, side)
+		elif host.NOTEBOOK_TOOL.handles(item):
+			# Anon's notebook: trigger opens its favour pages, turns them, closes it (world/mechanics/asks/).
+			host.NOTEBOOK_TOOL.on(item).vr_step(host, side, sample)
+		elif host.PHOTO_JOURNAL.handles(item):
+			host.PHOTO_JOURNAL.on(item).vr_step(host, side, sample)
+		elif host.FURNISHING.resizable(item):
+			# A held print over a wall: the trigger steps through its sizes (home_furnishing.gd).
+			var resize: bool = float(sample.trigger) > .7
+			if resize and not host._pressed.get(side + "_resize", false): host.FURNISHING.step_size(host, side)
+			host._pressed[side + "_resize"] = resize
 		if item.get_meta("item_id", "") == "spray-bottle" and float(sample.trigger) > .7:
 			item.get_node("SprayBottle").spray()
 		if CATALOG.is_book(String(item.get_meta("item_id",""))):
@@ -302,7 +318,7 @@ func _update_hand_step(side: String, sample: Dictionary, _delta: float):
 			item.remove_meta("ray_hold")
 			item.remove_meta("stash_rejected")
 		var let_go:bool=not grip and not item.has_meta("ray_hold") and not item.has_meta("stash_rejected")
-		if host.inventory.loans.get(str(item.get_meta("token")), {}).get("equipped", false) or CATALOG.is_book(String(item.get_meta("item_id",""))) or CATALOG.is_letter(String(item.get_meta("item_id",""))):
+		if host.inventory.loans.get(str(item.get_meta("token")), {}).get("equipped", false) or CATALOG.is_book(String(item.get_meta("item_id",""))) or CATALOG.is_letter(String(item.get_meta("item_id",""))) or host.NOTEBOOK_TOOL.handles(item):
 			# dev 2026-09-26: books are held by toggle so the hand can rest while reading; letters
 			# too (world/letters/), while reading or writing with the quill in the other hand.
 			# Letting go of grip keeps the book; the next squeeze puts it down (or away).

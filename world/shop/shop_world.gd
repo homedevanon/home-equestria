@@ -50,8 +50,10 @@ const PLACEMENTS: Array[Dictionary] = [
 			Transform3D(Basis(Vector3.BACK, PI / 2.0), Vector3(2.1, -0.175, 0.2))]},
 	# Applejack's cider stall beside the Sweet Apple Acres sign (world/items/cider_keg.gd); "@orchard"
 	# is that sign, placed by world/minigames/apple_bucking/apple_bucking.gd. It faces the lane.
-	{"id": "sweet-apple-acres:farm:cider", "anchor": "@orchard", "at": Vector3(1.6, 0, 0.7), "columns": 1,
-		"items": ["goods:cider-keg"], "spacing": Vector2(0.62, 0.55)},
+	# The apple sapling (P5, world/items/apple_sapling.gd) is appended after the keg, so the saved
+	# stock key "0:goods:cider-keg" stays valid.
+	{"id": "sweet-apple-acres:farm:cider", "anchor": "@orchard", "at": Vector3(1.6, 0, 0.7), "columns": 2,
+		"items": ["goods:cider-keg", "goods:apple-sapling"], "spacing": Vector2(0.62, 0.55)},
 ]
 var game: Node
 var _stock: Dictionary = {}
@@ -187,12 +189,25 @@ func _restock_check() -> void:
 		return
 	if refill_day <= restocked_day: return
 	restocked_day = refill_day
+	# The pony economy (world/mechanics/market/market.gd, P7): keepers refill only the slots they
+	# pay for (or have supply for). Without the hub's market (fixtures) everything refills as before.
+	var hub: Node = get_tree().get_first_node_in_group("mechanics") if is_inside_tree() else null
+	var market: Variant = hub.get("market") if hub != null else null
+	var plan: Variant = (market as Node).call("plan_restock") if is_instance_valid(market) and market is Node and (market as Node).has_method("economy_on") and bool((market as Node).call("economy_on")) else null
 	_restocking = true
-	for display: Variant in _displays.values():
-		if is_instance_valid(display): display.restock()
-	for key: String in _stock: _stock[key].taken = []
 	var food: Node = game.get("food_world")
-	if is_instance_valid(food) and food.has_method("restock"): food.restock()
+	if plan is Dictionary:
+		for display: Variant in _displays.values():
+			if is_instance_valid(display): display.restock_keys((plan as Dictionary).get(str(display.display_id), []))
+		for key: String in _stock:
+			var refill: Array = (plan as Dictionary).get(key, [])
+			_stock[key].taken = (_stock[key].taken as Array).filter(func(taken: Variant) -> bool: return not taken in refill)
+		if is_instance_valid(food) and food.has_method("restock_keys"): food.restock_keys(plan)
+	else:
+		for display: Variant in _displays.values():
+			if is_instance_valid(display): display.restock()
+		for key: String in _stock: _stock[key].taken = []
+		if is_instance_valid(food) and food.has_method("restock"): food.restock()
 	_restocking = false
 	stock_changed.emit(snapshot())
 	print("[shops] restocked for day ", refill_day)

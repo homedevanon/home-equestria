@@ -1,7 +1,7 @@
 {
-	"build_ms": 10262,
+	"build_ms": 10205,
 	"cell": 16.0,
-	"fingerprint": "50a0ce6297e770b3c3d5ae6de85fd22a7d153ad02aedb64a9d65bb3087315e8f",
+	"fingerprint": "2c5034a59438889fef74975f0e100efb714ffc289bc8d2c4b8d3d04e6fdb3f80",
 	"format": "rgba8-srgb",
 	"half_resolution": true,
 	"origin": [
@@ -14,5 +14,5 @@
 		1153,
 		897
 	],
-	"packed_fingerprint": "33cf32b7a33f29404c6c6013139271c676d6a8815b29f86c1cc0284d8d6ca6f2"
+	"packed_fingerprint": "0ba60d40d913a12cccaf03601db7e0d7557367863bb0290131e3013eb97b9b82"
 }

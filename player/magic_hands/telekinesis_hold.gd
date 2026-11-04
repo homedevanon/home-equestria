@@ -37,6 +37,8 @@ static func liftable(hit: Object, own: Node = null) -> Node3D:
 	if pony != null and pony != own: return pony as Node3D
 	if hit is RigidBody3D:
 		var body := hit as RigidBody3D
+		# A pony's belongings shown in her home (world/mechanics/gifts/belongings.gd) stay put.
+		if body.has_meta("belonging_key"): return null
 		if (not body.freeze or body.has_meta("item_id")) and body.mass <= MAX_MASS: return body
 	return null
 

@@ -1,7 +1,8 @@
 {
-	"_why": "Sweet Apple Acres dressing on Ponyville's north outskirts (dev 2026-09-23: moved closer, 'add fences and shit'). World XZ metres; heights come from the ground at runtime. Fence runs are open polylines; a gate is a gap between runs.",
+	"_why": "Sweet Apple Acres dressing on Ponyville's north outskirts (dev 2026-09-23: moved closer, 'add fences and shit'). World XZ metres; heights come from the ground at runtime. Fence runs are open polylines; a gate is a gap between runs. The north-west corner stays open (2026-10-31): the painted road from town to the windmill crosses it at X 4..14 on the north side and Z -372..-391 on the west side.",
 	"fences": [
-		{"points": [[54, -368], [2, -368], [2, -494], [150, -494], [150, -424]]},
+		{"points": [[54, -368], [17, -368]]},
+		{"points": [[2, -394], [2, -494], [150, -494], [150, -424]]},
 		{"points": [[150, -412], [150, -368], [66, -368]]}
 	],
 	"fence": {"post_spacing": 2.4, "post_height": 1.15, "post_width": 0.13, "rail_heights": [0.45, 0.9], "rail_thickness": 0.07, "color": "8a5a36"},

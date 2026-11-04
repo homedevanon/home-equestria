@@ -21,6 +21,7 @@ const FX := preload("res://world/events/trixie_show/show_fx.gd")
 const AURA := preload("res://world/characters/magic/magic_aura.gd")
 const ESSENCE := preload("res://world/life/essence.gd")
 const LIFE_CORE := preload("res://world/life/living_world.gd")
+const LEGACY := preload("res://world/mechanics/legacy.gd")
 const OWNER := "show:"
 const TRIXIE := "trixie"
 const STATE_KEY := "town_events"
@@ -134,8 +135,16 @@ func _process(delta: float) -> void:
 			state.erase("forced_day")
 			start()
 		return
-	if not off_cooldown(day, int(state.get("last_day", -1000))): return
-	if h >= _roll(day) and not _raining(): start()
+	if h >= scheduled_hour(day) and not _raining(): start()
+
+## The hour today's town show starts, or INF (cooldown, or the day's roll missed). The town
+## calendar (world/mechanics/calendar/town_calendar.gd, events.json "trixie_show") owns the roll
+## since 2026-11-01, with the same seed, chance, cooldown and window, so the same days fire.
+## `-- --old-events`, or no calendar (fixtures), keeps this runtime's own roll.
+func scheduled_hour(day: int) -> float:
+	var calendar: Node = get_tree().get_first_node_in_group("town_calendar") if is_inside_tree() and not LEGACY.old_events() else null
+	if calendar != null and calendar.has_method("due_hour"): return float(calendar.call("due_hour", "trixie_show", day))
+	return _roll(day) if off_cooldown(day, int(_state().get("last_day", -1000))) else INF
 
 const FORCED_HOUR := 17.0
 ## Books a show for the next game day at FORCED_HOUR, whatever the roll, cooldown or weather.

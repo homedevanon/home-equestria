@@ -32,7 +32,7 @@ func interaction_hint() -> Dictionary:
 		if camera == null: return {}
 		var presentation: Node = _desktop_presentation()
 		if not is_instance_valid(presentation) or presentation.is_busy(): return {}
-		return _trunk_hint(_ray(camera.global_position, camera.global_position-camera.global_basis.z*_desktop_reach()), "[LMB] Punch trunk · Shake ripe apples")
+		return _trunk_hint(_ray(camera.global_position, camera.global_position-camera.global_basis.z*_desktop_reach()), "[LMB] Punch trunk · Shake ripe apples", true)
 	for hand_side: String in ["right", "left"]:
 		if not available(hand_side): continue
 		var sample: Dictionary = ui.hand_sample(hand_side)
@@ -46,22 +46,29 @@ func interaction_hint() -> Dictionary:
 			var reach: float = float(tree.radius)+INTENT.CONTACT+INTENT.WITHDRAWAL
 			if pose.origin.distance_to(centre) > reach: continue
 			var hit: Dictionary = _ray(pose.origin, centre)
-			var hint: Dictionary = _trunk_hint(hit, hand_side.capitalize()+" grip + trigger, punch trunk · Buck ripe apples")
+			var hint: Dictionary = _trunk_hint(hit, hand_side.capitalize()+" grip + trigger, punch trunk · Buck ripe apples", true)
 			if not hint.is_empty(): return hint
 	return {}
 
-func _trunk_hint(hit: Dictionary, text: String) -> Dictionary:
+## `explain`: a trunk that cannot be bucked says why (a player punched a bare tree at dusk and
+## nothing happened, thread report 2026-10-31); without it only a buckable trunk counts.
+func _trunk_hint(hit: Dictionary, text: String, explain := false) -> Dictionary:
 	var id: String = activity.orchard.tree_from_hit(hit)
 	if id.is_empty() or not activity.trees.has(id): return {}
-	if not activity.can_strike(id): return {}
 	var tree: Dictionary = activity.trees[id]
 	if activity.player_position().distance_to(tree.position) > 3.2: return {}
+	var blocked: bool = not activity.can_strike(id)
+	if blocked:
+		if not explain: return {}
+		text = str(activity.strike_block_reason(id))
+		if text.is_empty(): return {}
 	var collider: CollisionObject3D = hit.get("collider") as CollisionObject3D
 	if collider == null or not hit.has("shape"): return {}
 	# All trunks share a body. Outline only the shape actually hit, not the
 	# body containing every tree and not the canopy MultiMesh.
 	var target: Node3D = collider.shape_owner_get_owner(collider.shape_find_owner(int(hit.shape))) as Node3D
 	if not is_instance_valid(target): return {}
+	if blocked: return {"target":target, "text":text, "point":hit.position, "collider":collider, "outline":null}
 	return {"target":target, "text":text, "point":hit.position, "collider":collider}
 
 func inventory() -> Node:

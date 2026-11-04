@@ -8,7 +8,12 @@ const PROMPT='''Feeling tags (private, never spoken), only AFTER your complete s
 ## 25-point tiers. Kindness now counts double, with per-reply caps and the five-minute sitting
 ## budget doubled to match; setbacks are unchanged.
 const GAIN:=2
-const CAPS:={"friendship":[10,40],"romance":[4,16]}   # axis -> [per reply, per sitting]
+const CAPS:={"friendship":[10,40],"romance":[2,4]}   # axis -> [per reply, per sitting]
+## Love is slow on purpose (dev 2026-11-03: "i had one chat with rarity and the way to crush is up
+## to 16 of 30 ... it needs to be realistically hard"). It only grows from Friend on, without the
+## kindness doubling, and at most this much per game day: before a crush, then after one.
+const LOVE_PER_DAY:=[6,12]
+const FACTS:=preload("res://world/mechanics/facts.gd")
 var core:Node
 var context:Node
 var notes:Dictionary={}
@@ -45,10 +50,13 @@ func commit(id:String,raw:Dictionary,event_id:String):
 	# No romance with fillies or with a young player, whatever the model tags.
 	var bonds:Variant=context.get("player_bonds")
 	if data.has("romance") and is_instance_valid(bonds) and not bonds.eligible_for_romance(id):data.erase("romance")
+	if int(data.get("romance",0))>0:
+		var room:=love_room(id)
+		if room<=0:data.erase("romance")
+		else:data.romance=mini(int(data.romance),room)
 	if data.is_empty():return
 	if data.has("friendship"):data.friendship=PERSONALITY.positive_impression(id,int(data.friendship))
-	for axis:String in ["friendship","romance"]:
-		if int(data.get(axis,0))>0:data[axis]=int(data[axis])*GAIN
+	if int(data.get("friendship",0))>0:data.friendship=int(data.friendship)*GAIN
 	var now:=Time.get_unix_time_from_system()
 	# The per-pony budget (CAPS, per sitting) covers a five-minute sitting counted from its
 	# start. Restarting the clock on every change kept one long chat in a single sitting forever,
@@ -61,6 +69,10 @@ func commit(id:String,raw:Dictionary,event_id:String):
 	for axis:String in ["friendship","romance"]:
 		var add:int=mini(int(data.get(axis,0)),mini(int(CAPS[axis][0]),core.get_scenario_remaining(id,axis)))
 		if add>0:gained[axis]=int(gained[axis])+add
+		if add>0 and axis=="romance":
+			var day:=int(FACTS.clock().day)
+			gained.love_today=add+(int(gained.get("love_today",0)) if int(gained.get("love_day",-1))==day else 0)
+			gained.love_day=day
 	xp[id]=gained
 	var token:int=core.stage_deltas({id:{"friendship":data.get("friendship",0),"romance":data.get("romance",0)}},[id])
 	core.commit_pending(token)
@@ -71,6 +83,13 @@ func commit(id:String,raw:Dictionary,event_id:String):
 	while applied.size()>512:applied.erase(applied.keys()[0])
 	context.state.player_impressions={"core":core.get_save_state(),"notes":notes.duplicate(true),"sessions":sessions.duplicate(true),"applied":applied.duplicate(true),"xp":xp.duplicate(true)}
 	context._changed();changed.emit(id)
+## Love she can still gain from Anon today: none before Friend, then what LOVE_PER_DAY leaves.
+func love_room(id:String)->int:
+	var bonds:Variant=context.get("player_bonds")
+	if is_instance_valid(bonds) and str(bonds.record_for(id).stage)=="acquaintance":return 0
+	var row:=xp_for(id)
+	var used:=int(row.get("love_today",0)) if int(row.get("love_day",-1))==int(FACTS.clock().day) else 0
+	return maxi(0,int(LOVE_PER_DAY[1 if int(row.romance)>=int(LADDER.LOVE_XP.crush) else 0])-used)
 func xp_for(id:String)->Dictionary:
 	var row:Variant=xp.get(id)
 	if row is Dictionary and row.has("friendship") and row.has("romance"):return (row as Dictionary).duplicate()

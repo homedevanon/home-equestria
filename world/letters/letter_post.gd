@@ -339,8 +339,16 @@ func build_request(id: String) -> Dictionary:
 		"appointment": str(appointments.call("prompt_note", pony)) if appointments != null else "",
 		"offer": offer, "places": pairs}
 	var day := int(floorf(at))
+	var decode: Dictionary = READER.decode_context(pairs, _relationship_context(pony), {"day": int(floorf(now)), "hours": (now - floorf(now)) * 24.0})
+	# A favour by letter (world/mechanics/asks/asks.gd), only while she has room for one.
+	var asks := _asks()
+	var favour: Dictionary = asks.call("letter_context", pony) if asks != null else {}
+	if not favour.is_empty():
+		parts.favour = READER.FAVOUR
+		(decode.capabilities as Array).append("ask")
+		decode.merge(favour, true)
 	return {"system": READER.system_prompt(parts), "user": READER.user_message(str(r.text), str(r.stationery), day, (at - day) * 24.0),
-		"context": READER.decode_context(pairs, _relationship_context(pony), {"day": int(floorf(now)), "hours": (now - floorf(now)) * 24.0})}
+		"context": decode}
 
 func _apply(id: String, parsed: Dictionary, mode: String) -> void:
 	var r := row(id)
@@ -427,6 +435,13 @@ func _dispatch(pony: String, id: String, action: Dictionary, gist: String) -> Di
 		"relationship_answer":
 			var pending: Dictionary = bonds.pending(pony) if bonds != null and bonds.has_method("pending") else {}
 			if str(pending.get("kind", "")) in LETTER_ANSWERS: bonds.answer(pony, str(action.get("offer_id", "")), "pony", bool(action.get("accept", false)))
+		"ask":
+			# Her favour goes in Anon's notebook, open for a day after her reply reaches him.
+			var asks := _asks()
+			var r := row(id)
+			if asks == null or r.is_empty(): return {}
+			var hours := (due_after(float(r.get("delivered_at", _now()))) - _now()) * 24.0 + 24.0
+			asks.call("create", pony, str(action.get("want", "")), str(action.get("reward", "thanks")), gist.left(120), "letter", hours)
 	return {}
 
 ## The meeting his letter itself asks for, {"place", "day", "time"} as written, or {}.
@@ -616,3 +631,6 @@ func _appointments() -> Node:
 
 func _courier() -> Node:
 	return get_tree().get_first_node_in_group("letter_courier") if is_inside_tree() else null
+
+func _asks() -> Node:
+	return get_tree().get_first_node_in_group("mechanics_asks") if is_inside_tree() else null

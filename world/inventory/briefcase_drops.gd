@@ -55,6 +55,7 @@ func _make_item(token: String, id: String, visual: Node3D) -> RigidBody3D:
 		item.call_deferred("set", "freeze", true)
 		Callable(load(EASEL_FOLD), "configure").call_deferred(item, token)
 	if host.inventory.loans.get(token, {}).has("furnishing_home"):
+		item.set_meta("furnishing_size", float(host.inventory.loans[token].get("furnishing_size", 1.0)))
 		FURNISHING.configure(item, true)
 	item.contact_monitor = true; item.max_contacts_reported = 1
 	item.body_entered.connect(func(_body: Node):

@@ -103,8 +103,7 @@ func populate() -> void:
 			MERGE.cap_indoor(visual, _interior_range())
 			visual.acquired.connect(MERGE.uncap_indoor.bind(visual), CONNECT_ONE_SHOT)
 		if not _cards.has(key):
-			_cards[key] = true
-			_make_price_card(id, surface * Transform3D(Basis.IDENTITY, Vector3(0.0, 0.006, spacing_z * 0.5 - 0.05)))
+			_cards[key] = _make_price_card(id, surface * Transform3D(Basis.IDENTITY, Vector3(0.0, 0.006, spacing_z * 0.5 - 0.05)))
 
 ## Metre footprint including the physical cards; used by authored shop table legs.
 func surface_size() -> Vector3:
@@ -124,7 +123,7 @@ func _spacing(ids: Array[String]) -> Vector2:
 		spacing.y = maxf(spacing.y, float(size[2]) + spacing_margin.y)
 	return spacing
 
-func _make_price_card(id: String, at: Transform3D) -> void:
+func _make_price_card(id: String, at: Transform3D) -> Label3D:
 	var card: MeshInstance3D = MeshInstance3D.new()
 	card.name = "FoodPriceCard"
 	card.top_level = true
@@ -155,6 +154,12 @@ func _make_price_card(id: String, at: Transform3D) -> void:
 	if indoor:
 		MERGE.cap_indoor(card, _interior_range())
 	add_child(card)
+	return label
+
+## The card's words for a price (a [sell] offer, world/mechanics/market/market.gd) or the list price.
+func _card_text(id: String, price: int) -> String:
+	var text := str(CATALOG.definition(id).name) + "\n" + (CURRENCY.amount(price) if for_sale else "Complimentary")
+	return category_label + " · " + text if not category_label.is_empty() else text
 
 func _interior_range() -> float:
 	var quality: Node = get_node_or_null("/root/Quality")
@@ -213,3 +218,38 @@ func restore_stock(state: Dictionary) -> bool:
 
 func available_count() -> int:
 	return _items.size()
+
+# Uniform stock API for the market (world/mechanics/market/market.gd, P7): ponies buy and give
+# from stalls, keepers refill only the slots they pay for, and [sell] offers show on the card.
+
+## Untaken portions on the counter: [{key, id, node}].
+func stock_rows() -> Array[Dictionary]:
+	var rows: Array[Dictionary] = []
+	for key: String in _items:
+		if is_instance_valid(_items[key]) and not _taken.has(key): rows.append({"key": key, "id": key.substr(key.find(":") + 1), "node": _items[key]})
+	return rows
+
+## A pony took this portion: it leaves the counter.
+func take(key: String) -> bool:
+	if key.is_empty() or _taken.has(key): return false
+	var item: Variant = _items.get(key)
+	if is_instance_valid(item): (item as Node).queue_free()
+	_on_acquired(key)
+	return true
+
+## The 06:00 refill of only these slots (the keeper paid for them).
+func restock_keys(keys: Array) -> void:
+	var changed := false
+	for key: Variant in keys:
+		if _taken.erase(str(key)): changed = true
+	if not changed: return
+	_populated = false
+	populate()
+	stock_changed.emit(snapshot())
+
+## A [sell] price on one card (`price` < 0 puts the list price back).
+func refresh_card(key: String, price: int) -> void:
+	var label: Variant = _cards.get(key)
+	if not label is Label3D or not is_instance_valid(label): return
+	var id := key.substr(key.find(":") + 1)
+	(label as Label3D).text = _card_text(id, CATALOG.price_bits(id) if price < 0 else price)

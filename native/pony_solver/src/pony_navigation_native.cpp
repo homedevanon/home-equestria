@@ -781,6 +781,13 @@ Array PonyNavigationNative::take_follow_events() {
 			blocked.append(float(disc.radius));
 		}
 		event["blocked"] = blocked;
+		PackedFloat32Array peers;
+		for (const ponynav::BlockedDisc &disc : entry.peers) {
+			peers.append(float(disc.x));
+			peers.append(float(disc.z));
+			peers.append(float(disc.radius));
+		}
+		event["peer_blocked"] = peers;
 		events.append(event);
 	}
 	return events;
@@ -819,6 +826,10 @@ Dictionary PonyNavigationNative::follow_state(int64_t p_slot, int64_t p_generati
 	result["permitted"] = state->last.permitted;
 	result["bearing"] = state->last.bearing;
 	result["reversing"] = state->reversing;
+	// Committed pass round a pony (navigation_steering.cpp pass_step).
+	result["pass_side"] = int64_t(state->pass_side);
+	result["pass_time"] = state->pass_time;
+	result["pass_distance"] = state->pass_distance;
 	result["escalation"] = String(ponynav::escalation_name(state->monitor.level()));
 	result["stall_cause"] = String(state->monitor.cause());
 	result["stalled"] = state->monitor.stalled();

@@ -24,6 +24,7 @@ enum Preset { VERY_LOW, LOW, MEDIUM, HIGH, ULTRA }
 
 signal preset_changed(preset: int)
 
+const LOG_LEVEL := preload("res://world/debug/log_level.gd")
 const PRESET_NAMES: Array[String] = ["Very Low", "Low", "Medium", "High", "Ultra"]
 
 ## Temporary --debug experiments; never merged into saved quality settings.
@@ -594,6 +595,11 @@ func _ready() -> void:
 	_apply_viewport_settings()
 	get_viewport().size_changed.connect(_on_window_resized)
 	_plan_engine_threads()
+	# Player builds log errors and warnings only until debug mode is on (world/debug/log_level.gd).
+	LOG_LEVEL.apply()
+	var settings := get_node_or_null("/root/Settings")
+	if settings != null: settings.changed.connect(func(key: String) -> void:
+		if key == "debug/unlocked": LOG_LEVEL.apply())
 
 
 # Engine threads (dev 2026-10-20 multithreading), checked against the Godot 4.5-stable source:

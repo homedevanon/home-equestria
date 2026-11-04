@@ -24,6 +24,10 @@ const GIVE_UP := "Anon has not answered you at all, even after you tried again. 
 ## out to the player at her door and greets him, no dice and regardless of the approach settings.
 const KNOCK := "[Observed situation, not player speech] Anon knocked on your front door and you came out to answer it. He is standing at your door now. Greet him in character and ask what brings him by. One or two short sentences; no action tags needed."
 var knocked := false
+## Sometimes she walks up with a favour to ask (world/mechanics/asks/asks.gd): only when she has no
+## open favour and may ask one now, so her [ask] capability is really there when she arrives.
+const FAVOUR_CHANCE := 0.25
+const FAVOUR := "[Observed situation, not player speech] You noticed Anon nearby and walked over because you would like to ask him a small favour, something you really need today. You have now reached him. Greet him and ask it in your own words, in character, and add [ask: WANT, REWARD]. One or two short sentences."
 var knock_goal := Vector3.INF
 var nudged := false
 var said_at := 0.0   # director clock when her last line finished
@@ -48,9 +52,61 @@ func nearby(d: Node, pony: Node3D, radius: float, required_region: String) -> bo
 	var here := str(pony.get_meta("navigation_region", WorldLayout.nearest(pony.global_position).get("id", "")))
 	return not required_region.is_empty() and here == required_region
 
+## Ponies who walk over to needle him rather than to chat (thread 43671981: Diamond Tiara ran
+## across town to insult him every day) come over unprompted at most once every SOUR_DAYS game
+## days, at a walk. That covers the schoolyard snobs, any pony whose friendship with him is
+## negative or whose last impression of him was annoyed or angry, and any character file with
+## "player_approach_days" (its value wins; 0 turns the limit off).
+const SNOBS := ["diamond_tiara", "silver_spoon"]
+const SOUR_DAYS := 3
+const SOUR_MOODS := ["annoyed", "angry"]
+
+## Game days she must leave between unprompted approaches; 0 = only the ordinary cooldowns.
+static func sour_days(d: Node, who: String) -> int:
+	var entry: Dictionary = d.characters.get(who, {})
+	var profile: Dictionary = entry.get("profile", {}) if entry.get("profile") is Dictionary else {}
+	if profile.has("player_approach_days"): return maxi(0, int(profile.player_approach_days))
+	if who in SNOBS: return SOUR_DAYS
+	var context: Node = d.get("world_context")
+	var impressions: Node = context.get("impressions") if is_instance_valid(context) else null
+	if not is_instance_valid(impressions): return 0
+	var core: Node = impressions.get("core")
+	if is_instance_valid(core) and int(core.call("get_score", who, "friendship")) < 0: return SOUR_DAYS
+	var note: Variant = (impressions.get("notes") as Dictionary).get(who, {}) if impressions.get("notes") is Dictionary else {}
+	if note is Dictionary and str((note as Dictionary).get("mood", "")) in SOUR_MOODS: return SOUR_DAYS
+	return 0
+
+static func _game_day(d: Node) -> int:
+	var clock: Node = d.get_node_or_null("/root/TimeOfDay") if d.is_inside_tree() else null
+	return int(clock.day) if clock != null else 0
+
+## The game day of her last unprompted approach (kept in the world, so a reload does not send her
+## again), or a large negative number.
+static func last_sour_day(d: Node, who: String) -> int:
+	var context: Node = d.get("world_context")
+	if not is_instance_valid(context) or not context.get("state") is Dictionary: return -1000000
+	var record: Dictionary = (context.state as Dictionary).get("player_approaches", {})
+	return int((record.get("last_day", {}) as Dictionary).get(who, -1000000))
+
+static func _mark_sour_day(d: Node, who: String) -> void:
+	var context: Node = d.get("world_context")
+	if not is_instance_valid(context) or context.get("_read_only") == true or not context.get("state") is Dictionary: return
+	var record: Dictionary = (context.state as Dictionary).get("player_approaches", {})
+	var days: Dictionary = record.get("last_day", {})
+	days[who] = _game_day(d)
+	record["last_day"] = days
+	context.state["player_approaches"] = record
+	if context.has_method("_changed"): context.call("_changed")
+
+## True while her SOUR_DAYS wait since her last unprompted approach is still running.
+static func sour_blocked(d: Node, who: String) -> bool:
+	var days := sour_days(d, who)
+	return days > 0 and _game_day(d) - last_sour_day(d, who) < days
+
 func eligible(d: Node, who: String, here: String, radius: float) -> bool:
 	var pony: Node3D = d.characters[who].node
 	if clock < float(cooldowns.get(who, 0.0)) or not nearby(d, pony, radius, here): return false
+	if sour_blocked(d, who): return false
 	if pony.has_method("is_speaking") and pony.is_speaking(): return false
 	if preload("res://world/ai/pony_ambient_chatter.gd").hushed(pony): return false
 	if d._now() - float(d.characters[who].get("chat_last", -1e9)) < 120.0: return false
@@ -100,7 +156,9 @@ func tick(d: Node, delta: float) -> void:
 	nav.command_owner = OWNER; nav.wander_enabled = false
 	nav.command_speed_limit = INF; nav.command_pace_target = -1.0
 	if pony.has_method("request_posture"): pony.request_posture("stand")
-	if not nav.command_destination(goal, "trot"): cancel()
+	var sour := sour_days(d, who) > 0
+	if sour: _mark_sour_day(d, who)
+	if not nav.command_destination(goal, "walk" if sour else "trot"): cancel()
 
 ## Navigator owners a knock may take her from: wandering, the living world, outings, chat stops,
 ## lounging on her couch. A story, an errand, bedtime or anything else the player or a system started keeps her.
@@ -197,7 +255,13 @@ func advance(d: Node) -> void:
 	if Vector2(offset.x, offset.z).length() > 2.8: return
 	if not d.awareness.can_hear(actor, d.player_head, 4.0): cancel(); return
 	nav.stay(); talking = true
-	if not d.begin_player_greeting(id, KNOCK if knocked else ""): cancel()
+	if not d.begin_player_greeting(id, KNOCK if knocked else _favour(d)): cancel()
+
+## The favour greeting, or "" for the ordinary one (a quarter of the time when she may ask).
+func _favour(d: Node) -> String:
+	if rng.randf() >= FAVOUR_CHANCE or not d.is_inside_tree() or d._encounter_claimed(id): return ""
+	var asks: Node = d.get_tree().get_first_node_in_group("mechanics_asks")
+	return FAVOUR if asks != null and str(asks.call("can_ask", id)).is_empty() else ""
 
 func finished(d: Node = null) -> void:
 	if not active(): return

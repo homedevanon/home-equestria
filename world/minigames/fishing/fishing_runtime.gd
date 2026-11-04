@@ -4,6 +4,7 @@ extends Node3D
 const DOCK := preload("res://world/minigames/fishing/fishing_dock.gd")
 const HANDS := preload("res://world/minigames/fishing/fishing_hands.gd")
 const COMPANIONS := preload("res://world/minigames/fishing/fishing_companions.gd")
+const STATIONS := preload("res://world/mechanics/stations/stations.gd")
 var host: Node
 var dock: Node3D
 var hands: Node
@@ -37,6 +38,14 @@ func _landed(rod: Node3D, at: Vector3) -> void:
 	if fish==null: return
 	preload("res://world/audio/interaction_sounds.gd").play_at(fish, "prop_fish_land")
 	_catch_index+=1
+	# Stations adapter (world/mechanics/stations/stations.gd, row fishing_dock): the "caught" fact,
+	# counters only; shared_activity owns the memory.
+	var catcher := "player"
+	if pony != null:
+		catcher = ""
+		for lease: Dictionary in companions.leases:
+			if lease.get("actor") == pony: catcher = str(lease.get("id", ""))
+	STATIONS.note(self, "fishing_dock", catcher, ["river-fish"], "caught")
 	if is_instance_valid(host.get("relationship_runtime")) and is_instance_valid(companions) and companions._player_fishing():
 		var participants:Array=[]
 		for lease:Dictionary in companions.leases:participants.append(str(lease.id))

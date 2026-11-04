@@ -11,6 +11,11 @@ var temporary := true
 var rest_label := "grass"
 var seat_offsets: Array[Vector3] = [Vector3.ZERO, Vector3(.60, 0, 0)]
 
+## Open ground has no cushion ends: a mare of any size setting lies here (couch.gd fits() measures
+## sofas); her hop and lie-down still check the room around her.
+func fits(_actor: Node3D) -> bool:
+	return true
+
 ## Physical blanket adapter: caller validates and owns support and placement. It supplies
 ## world frame and two edge seats; food/blanket save ownership stays with the caller.
 static func create_surface(parent: Node, world_frame: Transform3D, offsets: Array[Vector3]) -> Node3D:

@@ -41,6 +41,11 @@ var _rest_axes: PackedVector3Array
 var _rest_lengths: PackedFloat64Array
 var _rest_bases: Array[Basis] = []
 var _limbs: Array = []                      # [upper, lower, leaf, target, pole]
+## Animated desktop body (player/anon_motion.gd via anon_body.gd): world points the knees bend
+## toward, keyed "left"/"right"; empty uses the fixed forward knee pole. While animated the legs
+## keep their native length (the clip's feet are reachable by construction).
+var knee_hints: Dictionary = {}
+var leg_stretch := true
 
 
 func _resolve(skel: Skeleton3D) -> void:
@@ -160,7 +165,11 @@ func _modification_step() -> void:
 	# The observed head anchors the inferred torso. A short spine may not
 	# pull the shoulders/head away from the headset while reclining.
 	var pelvis_g := skel.get_bone_global_pose(_pelvis)
-	pelvis_g.origin += head_t.origin - skel.get_bone_global_pose(_head).origin
+	var head_shift := head_t.origin - skel.get_bone_global_pose(_head).origin
+	# Animated legs keep their length, so the body follows the camera only as far as both planted
+	# feet still reach; the hidden head may then sit a few centimetres off the eye.
+	if not leg_stretch: head_shift = _reachable_shift(skel, to_skel, head_shift)
+	pelvis_g.origin += head_shift
 	_write_global(skel, _pelvis, pelvis_g)
 
 	# --- limbs: analytic two-bone IK.
@@ -183,14 +192,47 @@ func _modification_step() -> void:
 			pole_dir = _arm_pole(upper, shoulder, target_t, hip_t.basis,
 				signf((limb[4] as Vector3).x), delta)
 		else:
+			var hint: Variant = knee_hints.get("left" if upper == _limbs[2][0] else "right")
+			if hint is Vector3 and (hint as Vector3).is_finite():
+				var knee: Vector3 = to_skel * (hint as Vector3) - skel.get_bone_global_pose(upper).origin
+				if knee.length_squared() > .000001: pole_dir = knee.normalized()
 			if _poles.has(upper):
 				pole_dir = (_poles[upper] as Vector3).slerp(pole_dir, leg_pole_blend)
 			_poles[upper] = pole_dir
 		if is_arm:
 			_solve_tracked_arm(skel,upper,lower,leaf,target_t,pole_dir)
 		else:
-			_solve_two_bone(skel,upper,lower,leaf,target_t,pole_dir)
+			_solve_two_bone(skel,upper,lower,leaf,target_t,pole_dir,1.0,max_arm_stretch if leg_stretch else 1.0)
 	_stretch_demand = 0.0
+
+
+## The largest part of a pelvis shift that keeps both leg targets within native leg reach
+## (skeleton units). A shift that only brings the hips closer to the feet always applies.
+func _reachable_shift(skel: Skeleton3D, to_skel: Transform3D, shift: Vector3) -> Vector3:
+	if _leg_slack(skel, to_skel, shift) >= 0.0: return shift
+	var low := 0.0
+	var high := 1.0
+	if _leg_slack(skel, to_skel, Vector3.ZERO) < 0.0:
+		# Already out of reach: allow only the part of the shift that moves the hips down.
+		return Vector3(0.0, minf(shift.y, 0.0), 0.0)
+	for i in 6:
+		var mid := (low + high) * .5
+		if _leg_slack(skel, to_skel, shift * mid) >= 0.0: low = mid
+		else: high = mid
+	return shift * low
+
+func _leg_slack(skel: Skeleton3D, to_skel: Transform3D, shift: Vector3) -> float:
+	var slack := INF
+	for li in [2, 3]:
+		if li >= _limbs.size(): continue
+		var limb: Array = _limbs[li]
+		var target: Node3D = limb[3]
+		if int(limb[0]) == -1 or int(limb[2]) == -1 or not is_instance_valid(target) or not target.is_inside_tree(): continue
+		var hip: Vector3 = skel.get_bone_global_pose(int(limb[0])).origin + shift
+		var foot: Vector3 = to_skel * target.global_position
+		var length: float = _rest_lengths[int(limb[1])] + _rest_lengths[int(limb[2])] - .002
+		slack = minf(slack, length - hip.distance_to(foot))
+	return slack if slack != INF else 0.0
 
 
 ## Solve the entire connected chain to the observed wrist. The old solver
@@ -280,7 +322,7 @@ func _arm_pole(key: int, shoulder: Vector3, target: Transform3D,
 ## Two-bone IK: law of cosines for the bend, pole vector for the plane,
 ## rest-relative leaf orientation from the target basis.
 func _solve_two_bone(skel: Skeleton3D, upper: int, lower: int, leaf: int,
-		target: Transform3D, pole_dir: Vector3, base_scale: float = 1.0) -> void:
+		target: Transform3D, pole_dir: Vector3, base_scale: float = 1.0, stretch_limit: float = -1.0) -> void:
 	var root_g: Transform3D = skel.get_bone_global_pose(_parents[upper])
 	var upper_g: Transform3D = root_g * skel.get_bone_pose(upper)
 	var a: Vector3 = upper_g.origin
@@ -295,8 +337,9 @@ func _solve_two_bone(skel: Skeleton3D, upper: int, lower: int, leaf: int,
 	var stretch: float = base_scale
 	var reach: float = (rest_upper + rest_lower) * base_scale
 	if target_distance > reach - 0.001:
-		stretch = clampf(target_distance / (rest_upper + rest_lower), base_scale, max_arm_stretch)
-		if base_scale < max_arm_stretch:
+		var limit := max_arm_stretch if stretch_limit < 0.0 else stretch_limit
+		stretch = clampf(target_distance / (rest_upper + rest_lower), base_scale, maxf(base_scale, limit))
+		if base_scale < limit:
 			_stretch_demand = maxf(_stretch_demand, stretch)
 	var len_upper: float = rest_upper * stretch
 	var len_lower: float = rest_lower * stretch

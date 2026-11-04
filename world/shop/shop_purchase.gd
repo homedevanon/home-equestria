@@ -14,6 +14,9 @@ const ITEMS := preload("res://world/shop/shop_items.gd")
 const STORE := preload("res://world/inventory/inventory_store.gd")
 const PLAYER_FORM := preload("res://world/life/player_form.gd")
 const SFX := preload("res://world/audio/interaction_sounds.gd")
+const LEDGER := preload("res://world/mechanics/ledger.gd")
+const MARKET := preload("res://world/mechanics/market/market.gd")
+const TIDY := preload("res://world/inventory/loose_tidy.gd")
 const WRONG_FORM := "Tailored for Anon's human form. Come back on two legs to buy it."
 const WRONG_FORM_PONY := "Pony wear, made for ponies. Come back in pony form to buy it."
 const MESSAGE_SECONDS := 4.0
@@ -21,15 +24,24 @@ const MESSAGE_SECONDS := 4.0
 static func take_world(inventory: Node, side: String, item: RigidBody3D, pose: Transform3D) -> bool:
 	if not is_instance_valid(item) or not item.is_in_group("shop_items") or bool(item.get_meta("shop_claiming", false)): return false
 	if ITEMS.wardrobe_only(str(item.get_meta("item_id", ""))): return _buy_for_wardrobe(inventory, side, item)
-	if not pose.is_finite() or inventory.hand_busy(side) or inventory.held.has(side): return false
+	if not pose.is_finite(): return false
+	# These refusals used to be silent: a click on a good did nothing (thread report 2026-10-30).
+	if inventory.hand_busy(side) or inventory.held.has(side):
+		_say(inventory, "Hands full. Press E to buy it straight into the briefcase." if side == "desktop" else "That hand is full."); return false
 	if is_instance_valid(inventory.player_body) and "controls_locked" in inventory.player_body and inventory.player_body.controls_locked: return false
-	if inventory.inventory.loans.size() >= inventory.MAX_LOOSE: return false
+	# At the cap an empty mug or photo left lying about goes back in the briefcase by itself
+	# (world/inventory/loose_tidy.gd); otherwise the refusal says why (thread report 2026-11-03).
+	if not TIDY.make_room(inventory):
+		_say(inventory, TIDY.full_text(inventory)); return false
 	var id := str(item.get_meta("item_id", ""))
 	if not ITEMS.has(id): return false
 	var store: RefCounted = inventory.inventory
 	# Pony wear sells to human Anon too (dev 2026-10-22: "ponies still need to buy it"; bought as a
 	# gift, held up to a pony to give it: world/relationships/hand_feeding.gd).
-	var price := ITEMS.price_bits(id)
+	var display: Node = item.get_meta("shop_display") if item.has_meta("shop_display") else null
+	var display_id: String = str(display.get("display_id")) if is_instance_valid(display) and display.get("display_id") != null else ""
+	# A keeper's live [sell] offer on this good (world/mechanics/market/market.gd) is its price now.
+	var price := MARKET.live_price(inventory, display_id, id, ITEMS.price_bits(id))
 	if store.bits < price:
 		store.last_error = "insufficient funds!"
 		inventory._error(); return false
@@ -44,15 +56,16 @@ static func take_world(inventory: Node, side: String, item: RigidBody3D, pose: T
 		next[at].count += 1
 		extras += 1
 	var slot: int = STORE._place(next, id, -1)
-	if slot < 0: return false
+	if slot < 0:
+		_say(inventory, "No room in your briefcase."); return false
 	var token := "shop_%d_%d" % [Time.get_ticks_usec(), item.get_instance_id()]
 	var checked: Dictionary = store.loans.duplicate(true)
 	checked[token] = {"id": id, "slot": slot}
 	item.set_meta("shop_claiming", true)
-	if not store._commit(next, checked, store.bits - price):
+	# One commit takes the bits with the good; the shopkeeper keeps them (world/mechanics/ledger.gd).
+	if not LEDGER.commit_purchase(inventory, next, checked, price, display_id, id):
 		item.remove_meta("shop_claiming"); return false
 	item.remove_from_group("shop_items")
-	var display: Node = item.get_meta("shop_display") if item.has_meta("shop_display") else null
 	if is_instance_valid(display): display.sold(str(item.get_meta("shop_key", "")))
 	item.remove_meta("shop_claiming"); item.remove_meta("for_sale")
 	item.set_meta("token", token)
@@ -92,6 +105,7 @@ static func _buy_for_wardrobe(inventory: Node, side: String, item: RigidBody3D) 
 	if not error.is_empty():
 		store.last_error = error; inventory._error(); return false
 	var display: Node = item.get_meta("shop_display") if item.has_meta("shop_display") else null
+	if is_instance_valid(display): LEDGER.note_sale(inventory, price, str(display.get("display_id")) if display.get("display_id") != null else "", id)
 	if is_instance_valid(display) and display.has_method("refresh_owned"): display.refresh_owned()
 	inventory._clear_purchase_error()
 	var text := "%s: in your wardrobe now." % str(ITEMS.definition(id).name)

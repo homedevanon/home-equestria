@@ -7,6 +7,8 @@ extends RefCounted
 ## pony wear costs 50 bits and the wing sandals 200 (dev 2026-10-22).
 const VISUAL := preload("res://world/shop/shop_item_visual.gd")
 const CIDER := preload("res://world/items/cider_keg.gd")
+## The apple sapling sold at the farm stall (P5, planted in Anon's row at Sweet Apple Acres).
+const SAPLING := preload("res://world/items/apple_sapling.gd")
 const HOUSEHOLD := "res://world/props/household/%s.glb"
 ## model: [name, target longest edge in metres, price, description]. Every row stays a valid
 ## item (owned pieces persist where they were set down); only some are stocked
@@ -90,6 +92,7 @@ static var _icons: Dictionary = {}
 static func has(id: String) -> bool:
 	if id == WING_SANDALS: return true
 	if CIDER.is_keg(id): return true
+	if SAPLING.is_sapling(id): return true
 	if id.begins_with("wear:"):
 		var parts := id.split(":")
 		if parts.size() == 3 and parts[1] in FITTED_WEAR: return parts[2] == "0"
@@ -122,6 +125,7 @@ static func extras(id: String) -> Array[String]:
 
 static func definition(id: String) -> Dictionary:
 	if CIDER.is_keg(id): return CIDER.definition(id)
+	if SAPLING.is_sapling(id): return SAPLING.definition(id)
 	if id == WING_SANDALS:
 		return {"name": "Hercules wing sandals", "description": "Kept in Anon's wardrobe once bought: choose them as footwear there. F takes off; hold Space to flap, release to glide, S to brake; left/right mouse banks left/right. In VR use A to take off and flap, B to land. Wingbeats use stamina; gliding restores it.", "stack": 1, "price_bits": 200, "shop": true}
 	if id.begins_with("goods:") and GOODS.has(id.substr(6)):
@@ -170,6 +174,7 @@ static func icon(id: String) -> Texture2D:
 	if _icons.has(id): return _icons[id]
 	var colour := Color("8a6a4a")
 	if CIDER.is_keg(id): colour = Color("c98b3a")
+	if SAPLING.is_sapling(id): colour = Color("6f9a3c")
 	if kind(id) == "outfit":
 		var suit: Array = OUTFITS[id.substr(7)][2].suit
 		colour = Color(str(preload("res://world/customization/clothing_profile.gd").PALETTES.suit[int(suit[0])]).get_slice(":", 1))

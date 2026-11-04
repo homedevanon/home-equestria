@@ -240,6 +240,18 @@ func _draw() -> void:
 	var labels: Array[Rect2] = []
 	if has_position: labels.append(Rect2(world_to_map(live_position) - Vector2(16, 17), Vector2(69, 34)))
 	var area := Rect2(Vector2(5, 5), size - Vector2(10, 10))
+	# The compact map's name budget (four, the YOU tag counting as one) ignores the reserved spots.
+	var placed := 1 if has_position else 0
+	# Names keep clear of the scale bar, the north disc and the pony discs drawn over them
+	# (thread 43671981: "Berry Punch & Ruby Pinch's home" under the minimap's scale bar, names
+	# hidden under pony icons on the big map).
+	var length_m := _scale_length()
+	labels.append(_scale_rect(length_m, font))
+	labels.append(Rect2(Vector2(size.x - 32, 4), Vector2(28, 28)))
+	var disc := pony_radius() + 2.0
+	for marker: Dictionary in pony_markers:
+		var at := world_to_map(marker.position)
+		if area.grow(disc).has_point(at): labels.append(Rect2(at - Vector2.ONE * disc, Vector2.ONE * disc * 2.0))
 	if has_position:
 		for marker in markers:
 			if marker.id == selected_id: draw_dashed_line(world_to_map(live_position), world_to_map(marker.position), GOLD, 1.5, 6)
@@ -274,13 +286,14 @@ func _draw() -> void:
 		var place_font: Font = PLACE_FONT if local else font
 		var font_size: int = LOCAL_PLACES.FONT_SIZE if local else label_font_size
 		var text_size := place_font.get_string_size(marker.name, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
-		var pos := pixel + Vector2(10, -11)
-		pos.x = clampf(pos.x, 4, maxf(4, size.x - text_size.x - 12)); pos.y = clampf(pos.y, 4, maxf(4, size.y - 22))
-		var box := Rect2(pos, text_size + Vector2(12, 6))
-		var overlaps := false
-		for occupied in labels:
-			if occupied.intersects(box): overlaps = true; break
-		if overlaps or (compact and labels.size() >= 4 and not chosen): continue
+		if compact and placed >= 4 and not chosen: continue
+		var box := place_label(pixel, text_size + Vector2(12, 6), size, labels)
+		if not box.has_area():
+			# The chosen name always shows, on its usual right-hand spot.
+			if not chosen: continue
+			box = place_label(pixel, text_size + Vector2(12, 6), size, [])
+		var pos := box.position
+		placed += 1
 		labels.append(box.grow(3))
 		_tag(box, chosen, alpha)
 		draw_string(place_font, pos + Vector2(6, font_size + 2), marker.name, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(GOLD if chosen else STYLE.CREAM, alpha))
@@ -302,13 +315,42 @@ func _draw() -> void:
 	draw_arc(north, 12, 0, TAU, 32, Color(STYLE.LILAC, 0.7), 1.0, true)
 	var n_size := font.get_string_size("N", HORIZONTAL_ALIGNMENT_LEFT, -1, 14)
 	draw_string(font, north + Vector2(-n_size.x * 0.5, 5), "N", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, STYLE.CREAM)
-	var length_m := pow(10.0, floor(log(90.0 / zoom) / log(10.0)))
-	if length_m * zoom < 35: length_m *= 5
 	var from := Vector2(14, size.y - 16)
 	draw_line(from, from + Vector2(length_m * zoom, 0), Color.WHITE, 2)
-	var scale_text := "%.1f km" % (length_m / 1000) if length_m >= 1000 else "%d m" % int(length_m)
+	var scale_text := _scale_text(length_m)
 	draw_string_outline(font, from - Vector2(0, 7), scale_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 4, INK)
 	draw_string(font, from - Vector2(0, 7), scale_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
+
+
+## The scale bar's round length in metres for the current zoom.
+func _scale_length() -> float:
+	var length_m := pow(10.0, floor(log(90.0 / zoom) / log(10.0)))
+	if length_m * zoom < 35: length_m *= 5
+	return length_m
+
+func _scale_text(length_m: float) -> String:
+	return "%.1f km" % (length_m / 1000) if length_m >= 1000 else "%d m" % int(length_m)
+
+## The bottom-left corner the scale bar and its figure take (bar at y - 16, text 7 px above it).
+func _scale_rect(length_m: float, font: Font) -> Rect2:
+	var text_width := font.get_string_size(_scale_text(length_m), HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+	var width := maxf(length_m * zoom, text_width) + 8.0
+	return Rect2(Vector2(10, size.y - 34), Vector2(width, 24))
+
+## A free spot for a name tag of `box_size` beside the marker at `pixel`, inside a map of
+## `bounds`: right of the dot first (the usual spot), then left, below and above. Rect2() when
+## every spot overlaps one of `occupied`.
+static func place_label(pixel: Vector2, box_size: Vector2, bounds: Vector2, occupied: Array) -> Rect2:
+	var spots: Array[Vector2] = [pixel + Vector2(10, -11), pixel + Vector2(-10 - box_size.x, -11),
+		pixel + Vector2(-box_size.x * .5, 9), pixel + Vector2(-box_size.x * .5, -box_size.y - 9)]
+	for spot: Vector2 in spots:
+		var pos := Vector2(clampf(spot.x, 4, maxf(4, bounds.x - box_size.x)), clampf(spot.y, 4, maxf(4, bounds.y - 22)))
+		var box := Rect2(pos, box_size)
+		var free := true
+		for taken: Rect2 in occupied:
+			if taken.intersects(box): free = false; break
+		if free: return box
+	return Rect2()
 
 
 func update_ponies(reference: Node3D, force := false) -> void:

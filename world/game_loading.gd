@@ -42,11 +42,36 @@ func _load_everything(cover: Node) -> bool:
 				return false
 		host.population.end_startup()
 		print("[game] loading screen: %d ponies out" % host.population.live.size())
+	if not await _wait_for_furnishing(cover):
+		TimeOfDay.release("loading")
+		return false
 	TimeOfDay.release("loading")
 	# This also runs after TitleVista restores the saved place on Continue.
 	# Only certified old terrain positions qualify, while body physics is held.
 	TERRAIN_RESUME.repair_loaded_position(host)
 	COTTAGE_RESUME.repair_loaded_position(host)
+	return true
+
+
+## Houses lay out their furniture over several frames each, taking turns 200 ms apart
+## (house_interior.gd _furnish_when_ready, interior_furnisher.gd). A town still furnishing when
+## the cover lifted made the first 5-10 s of play run at 70-200 ms frames (thread 43671981 D1;
+## tools/profile/play_bench.gd --post-load --furnish-log: 12 houses left, 75-400 ms of main-thread
+## work each). The houses that have started finish behind the cover; houses still waiting for a
+## bed or floor are not counted, and the wait is bounded.
+const FURNISH_WAIT_MS := 20000
+
+func _wait_for_furnishing(cover: Node) -> bool:
+	var deadline := Time.get_ticks_msec() + FURNISH_WAIT_MS
+	var started := Time.get_ticks_msec()
+	while Time.get_ticks_msec() < deadline:
+		var left := 0
+		for house: Node in host.get_tree().get_nodes_in_group("house_interiors"):
+			if house.get("furnish") == true and house.get("_furnished") == true and house.get("furnish_done") != true: left += 1
+		if left == 0: break
+		cover.show_text("Furnishing the houses…\n%d to go" % left)
+		if not await SHUTDOWN.seconds(host, 0.1): return false
+	print("[game] loading screen: houses furnished in %.1f s" % ((Time.get_ticks_msec() - started) / 1000.0))
 	return true
 
 

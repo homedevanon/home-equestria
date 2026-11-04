@@ -10,6 +10,11 @@ const HANDS := preload("res://world/minigames/hayburger/hayburger_hands.gd")
 const CURRENCY := preload("res://world/ui/currency.gd")
 const SHUTDOWN := preload("res://world/shutdown_waits.gd")
 const COVER := preload("res://world/ui/sleep_cover.gd")
+const LEDGER := preload("res://world/mechanics/ledger.gd")
+const FACTS := preload("res://world/mechanics/facts.gd")
+const LEGACY := preload("res://world/mechanics/legacy.gd")
+const JOB_SHIFT := preload("res://world/mechanics/jobs/job_shift.gd")
+const JOBS := preload("res://world/mechanics/jobs/jobs.gd")
 
 ## The room inside the source shell (building-local): +Z of the room faces the -Z entrance.
 static func room_placement() -> Transform3D:
@@ -88,6 +93,14 @@ func _ready() -> void:
 		"center_x":0.0, "width":2.3, "back_z":4.9, "landing_z":5.3,
 		"toe_z":6.6, "height":0.0, "toe_y":-0.05})
 	threshold.name = "EntryThreshold"; room.add_child(threshold)
+	# The wood FloorSlab ends at z 5.24 (hayburger_interior.gd), level with the landing: the stone
+	# drawn over the planks z-fought in front of the door (thread report 2026-10-31). The visible
+	# stone starts at the plank edge; collision keeps the whole landing under the doorway.
+	var shown: StaticBody3D = preload("res://world/buildings/stair_brush.gd").build({
+		"center_x":0.0, "width":2.3, "back_z":5.24, "landing_z":5.3,
+		"toe_z":6.6, "height":0.0, "toe_y":-0.05})
+	(threshold.get_node("StoneRamp") as MeshInstance3D).mesh = (shown.get_node("StoneRamp") as MeshInstance3D).mesh
+	shown.free()
 	_bell = AudioStreamPlayer3D.new(); _bell.name = "ServiceBell"
 	_bell.stream = preload("res://world/inventory/assets/deposit.wav")
 	_bell.bus = "SFX" if AudioServer.get_bus_index("SFX") >= 0 else "Master"
@@ -155,7 +168,10 @@ func work_action(action: String) -> bool:
 		_working = true; customers.set_working(true)
 		var clock: Node = get_node_or_null("/root/TimeOfDay")
 		shift_started = {"day": int(clock.day), "hours": float(clock.hours)} if clock != null else {}
-		duty_hours = 0.0; _duty_clock = _clock_hours(); last_summary = ""
+		# Jobs core (world/mechanics/jobs/job_shift.gd): a wage that could not be saved stays owed
+		# and is paid with this shift's; `-- --old-jobs` keeps the old reset.
+		if LEGACY.old_jobs(): duty_hours = 0.0
+		_duty_clock = _clock_hours(); last_summary = ""
 		shift_group.clear()
 		return true
 	if action == "quit":
@@ -197,11 +213,39 @@ func _count_duty() -> void:
 func wage_for(hours: float) -> int:
 	return int(floor(clampf(hours, 0.0, WAGE_MAX_HOURS) * float(WAGE_PER_HOUR)))
 
+## The running jobs core when it serves this game's world (none in fixtures without the hub).
+func _jobs() -> Node:
+	var jobs: Node = JOBS.of(get_tree()) if is_inside_tree() else null
+	return jobs if jobs != null and is_instance_valid(game) and jobs.get("context") == game.get("world_context") else null
+
 func _pay_wage(result: Dictionary) -> void:
+	if LEGACY.old_jobs():
+		_pay_wage_old(result)
+		return
 	var wage: int = wage_for(duty_hours)
 	var paid := wage == 0
 	if wage > 0 and is_instance_valid(game) and is_instance_valid(game.get("inventory")):
-		paid = game.inventory.inventory.credit_bits(wage)
+		# The jobs core's shift wage: the Hayburger till pays, then the town; receipt
+		# job:hayburger:<day>:<saved serial>; duty is kept (owed) when the payment fails.
+		var jobs := _jobs()
+		var pay: RefCounted = JOB_SHIFT.new()
+		pay.job_id = "hayburger"; pay.duty_hours = duty_hours
+		paid = bool(pay.end(game, ["business:hayburger", "town"], int(jobs.next_serial()) if jobs != null else -1,
+			{"per_hour": WAGE_PER_HOUR, "max_hours": WAGE_MAX_HOURS}).get("paid", false))
+	var served: int = int(result.get("served", 0))
+	last_summary = "Shift over: %d hayburger%s served (%s in tips), %.1f h behind the counter.\nWage %s%s." % [
+		served, "" if served == 1 else "s", CURRENCY.amount(served * SHIFT.REWARD_BITS), duty_hours, CURRENCY.amount(wage),
+		" paid" if paid else " could not be paid; it is added to your next wage if you work another shift before leaving"]
+	last_summary_until_ms = Time.get_ticks_msec() + 90000
+	if paid: duty_hours = 0.0
+
+## The pre-port wage (`-- --old-jobs`): the town pays and the duty resets even when it failed.
+func _pay_wage_old(result: Dictionary) -> void:
+	var wage: int = wage_for(duty_hours)
+	var paid := wage == 0
+	if wage > 0 and is_instance_valid(game) and is_instance_valid(game.get("inventory")):
+		# One pay path (world/mechanics/ledger.gd); the town pays until the jobs core (WP5).
+		paid = LEDGER.transfer(game, "town", "player", wage, "wage").is_empty()
 	var served: int = int(result.get("served", 0))
 	last_summary = "Shift over: %d hayburger%s served (%s in tips), %.1f h behind the counter.\nWage %s%s." % [
 		served, "" if served == 1 else "s", CURRENCY.amount(served * SHIFT.REWARD_BITS), duty_hours, CURRENCY.amount(wage),
@@ -213,7 +257,11 @@ func _pay(amount: int) -> bool:
 	if not business_open or not _working or amount != SHIFT.REWARD_BITS or not is_instance_valid(game): return false
 	var orders: Array = shift.snapshot().orders
 	if orders.is_empty() or not customers.can_serve(orders[0].id): return false
-	return game.inventory.inventory.credit_bits(SHIFT.REWARD_BITS)
+	var jobs := _jobs()
+	if LEGACY.old_jobs() or jobs == null:
+		return LEDGER.transfer(game, "town", "player", SHIFT.REWARD_BITS, "tip").is_empty()
+	# The jobs core's unit pay: the customer tips from her purse, else the town; "worked" fact.
+	return jobs.pay_unit("hayburger", "player", "", str(orders[0].get("customer_id", "")), SHIFT.REWARD_BITS, {"item": "food:hayburger"}).is_empty()
 
 func _served(order: Dictionary, _reward: int) -> void:
 	_sync_order_context()
@@ -221,6 +269,10 @@ func _served(order: Dictionary, _reward: int) -> void:
 		game.relationship_runtime.shared_activity("meal",room.global_position,"meal_"+str(get_instance_id())+"_"+str(order.id),[str(order.customer_id)])
 	_cancel_order_speech()
 	customers.on_order_served(order, 20)
+	# Facts stream (world/mechanics/facts.gd): counters only; the meal memory is shared_activity's.
+	# With the jobs core, pay_unit already added it with the tip.
+	if LEGACY.old_jobs() or _jobs() == null:
+		FACTS.note(self, "worked", {"actor": "player", "target": str(order.customer_id), "item": "food:hayburger", "ref": "hayburger"})
 	_bell.play()
 	var id := str(order.customer_id)
 	if shift_group.has(id): shift_group[id] = "served"

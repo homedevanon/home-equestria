@@ -117,6 +117,12 @@ static func on_event(nav: Node, event: Dictionary) -> void:
 		3, 4: # replan / alternate route around the obstruction evidence
 			var blocked: PackedFloat32Array = event.get("blocked", PackedFloat32Array())
 			nav._native_blocked = blocked
+			# Held by ponies: the search also goes round the ones standing on her way (fresh discs
+			# only; the native evidence above never carries ponies).
+			var peers: PackedFloat32Array = event.get("peer_blocked", PackedFloat32Array())
+			if not peers.is_empty():
+				nav._peer_discs = peers
+				nav._peer_discs_msec = Time.get_ticks_msec()
 			nav._cancel_queries()
 			nav._needs_path = true
 			nav.reason = str(event.get("reason", "Replanning"))

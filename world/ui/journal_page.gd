@@ -617,6 +617,9 @@ func _disc(id: String, side: float) -> Control:
 		picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE; picture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		picture.size = Vector2.ONE * side * 0.66; picture.position = Vector2.ONE * side * 0.17
 		disc.add_child(picture)
+	else:
+		# The princesses' marks are blank in the atlas: their sun / moon instead of an empty disc.
+		preload("res://world/ui/pony_symbol.gd").add_to(disc, id, side)
 	return disc
 
 

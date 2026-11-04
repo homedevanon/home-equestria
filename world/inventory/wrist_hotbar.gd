@@ -53,6 +53,7 @@ const DESKTOP_HINT := "Click: equip  ·  Shift-click two slots: move  ·  I: bri
 func setup(inventory: RefCounted, desktop: bool) -> void:
 	store = inventory
 	store.changed.connect(refresh)
+	add_to_group(CATALOG.ICON_CAMERA.GROUP)
 	for m in [_idle, _lit, _selected_material]:
 		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -133,6 +134,10 @@ func _build_hud() -> void:
 
 func select(index: int) -> void:
 	selected = index; refresh()
+
+## item_icon_camera.gd took this item's picture.
+func icon_ready(_id: String) -> void:
+	refresh()
 
 func refresh() -> void:
 	for i in SLOTS:

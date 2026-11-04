@@ -27,8 +27,21 @@ const CANDIDATE_BUDGET := 16
 ## either side of the incoming lane.
 const GROUP_ROWS: Array[float] = [9.6, 11.0, 12.4, 13.8]
 const GROUP_COLUMNS: Array[float] = [-1.6, 1.6, -3.0, 3.0, -4.4, 4.4]
+## One-way doorway (thread reports 0.0.8-0.0.9.1: two customers wedged the one-pony door from
+## both sides and the rest turned round outside). A customer coming in waits this far (metres)
+## from the door point while one is walking out; a fed customer stays at the counter while one
+## is still on her way in, until she is this far inside (room-local z).
+const DOOR_APPROACH := 5.0
+const DOOR_INSIDE_Z := 2.0
+## Ponies are collision layer 2: a spot taken by a pony is waited out, not a reason to leave.
+const PONY_LAYER := 2
+const LEGACY := preload("res://world/mechanics/legacy.gd")
+const QUEUE := preload("res://world/mechanics/jobs/customer_queue.gd")
 
 var _game: Node
+## The jobs core's shared lease bookkeeping (world/mechanics/jobs/customer_queue.gd); `-- --old-jobs`
+## keeps the copied code below. It shares this node's cooldowns.
+var _leases: RefCounted
 var _restaurant: Node3D
 var _markers: Dictionary = {}
 var _visitors: Dictionary = {}
@@ -215,7 +228,12 @@ func _interrupted(actor: Node3D, visiting := false) -> bool:
 	if actor.get("sleeping") == true or actor.get("motion_paused") == true: return true
 	if actor.get_meta("active_follow", false) or actor.get_meta("seating", false): return true
 	if actor.has_method("is_held") and actor.is_held(): return true
-	if actor.has_method("action_interruption_reason") and not str(actor.action_interruption_reason()).is_empty(): return true
+	if actor.has_method("action_interruption_reason"):
+		var why := str(actor.action_interruption_reason())
+		# A hoof off the ground for a frame (the door sill) is no interaction: once a visit's 0.5 s
+		# check landed on that frame and sent the customer home (2026-10-31, test_doorway_traffic.gd).
+		# The navigator waits for support itself; the leg's deadline still bounds a real fall.
+		if not why.is_empty() and not (visiting and why == "Waiting for safe ground support"): return true
 	if not is_instance_valid(_game): return true
 	# _population_busy is mostly "in a chat with Anon" (director engaged()).
 	if not visiting and _game.has_method("_population_busy") and _game._population_busy(actor): return true
@@ -292,7 +310,8 @@ func _claim(candidate: String, actor: Node3D, self_service: bool) -> bool:
 		"previous_owner": nav.command_owner, "previous_wander": nav.wander_enabled,
 		"previous_speed": nav.command_speed_limit, "previous_pace": nav.command_pace_target,
 		"phase": "", "self_service": self_service, "order_id": "", "announced": false,
-		"goal": Vector3.INF, "deadline": _clock + TRAVEL_TIMEOUT, "sat": false, "meal": false}
+		"goal": Vector3.INF, "deadline": _clock + TRAVEL_TIMEOUT, "sat": false, "meal": false,
+		"pending": "", "pending_phase": "", "door_hold": false}
 	# Destination checks happen before claiming anything. No actor is instantiated.
 	var found_slot := false
 	for slot in MAX_VISITORS:
@@ -307,12 +326,18 @@ func _claim(candidate: String, actor: Node3D, self_service: bool) -> bool:
 		_last_recruit.result = _last_reason
 		return false
 	_visitors[candidate] = visit
-	nav.stay()
-	nav.command_owner = visit.owner
-	nav.command_speed_limit = INF
-	nav.command_pace_target = -1.0
-	if not self_service: nav.set_meta("player_waiting_route",visit.owner)
-	actor.set_meta("hayburger_customer", visit.owner)
+	if LEGACY.old_jobs():
+		nav.stay()
+		nav.command_owner = visit.owner
+		nav.command_speed_limit = INF
+		nav.command_pace_target = -1.0
+		if not self_service: nav.set_meta("player_waiting_route",visit.owner)
+		actor.set_meta("hayburger_customer", visit.owner)
+	else:
+		var opts := {"owner": visit.owner}
+		if not self_service: opts["nav_metas"] = {"player_waiting_route": visit.owner}
+		# A refused owner leaves the visit unowned; _route then releases it.
+		_lease_queue().claim(candidate, actor, {"hayburger_customer": visit.owner}, opts)
 	_route(visit, "entry", "EntrySpawn")
 	if not _last_recruit.is_empty(): _last_recruit.result = "recruited " + candidate if _visitors.has(candidate) else _last_reason
 	return _visitors.has(candidate)
@@ -366,7 +391,7 @@ func book_group(count: int) -> Array[String]:
 	_recruit_at = _clock + RECRUIT_SECONDS
 	return booked
 
-func _destination(visit: Dictionary, marker_name: String) -> Vector3:
+func _destination(visit: Dictionary, marker_name: String, ponies := true) -> Vector3:
 	var marker: Node3D = _markers.get(marker_name)
 	if not is_instance_valid(marker) or not marker.is_inside_tree(): return Vector3.INF
 	var actor: Node3D = visit.actor
@@ -380,17 +405,18 @@ func _destination(visit: Dictionary, marker_name: String) -> Vector3:
 		# spot on either side, always outside the central incoming lane.
 		for offset: float in [0.0, spacing, spacing * 2.0, -6.0, -6.0 - spacing]:
 			var candidate: Vector3 = marker.global_position + marker.global_basis.x.normalized() * offset
-			var supported: Vector3 = _supported(actor, candidate, .2)
+			var supported: Vector3 = _supported(actor, candidate, .2, ponies)
 			if supported.is_finite(): return supported
 		return Vector3.INF
-	var supported := _supported(actor, wanted)
+	var supported := _supported(actor, wanted, 0.0, ponies)
 	# The street beside the door is narrow: a group lines up through the doorway's centre
 	# instead (the navigator's peer passage handles the queue), each keeping its counter slot.
 	if marker_name == "EntrySpawn" and not supported.is_finite() and side != 0.0:
-		supported = _supported(actor, marker.global_position)
+		supported = _supported(actor, marker.global_position, 0.0, ponies)
 	return supported
 
-func _supported(actor: Node3D, wanted: Vector3, extra_radius := 0.0) -> Vector3:
+## `ponies` false ignores other ponies' bodies: only floor, walls and furniture count.
+func _supported(actor: Node3D, wanted: Vector3, extra_radius := 0.0, ponies := true) -> Vector3:
 	if not wanted.is_finite(): return Vector3.INF
 	var profile: Resource = actor.get("profile")
 	var space := actor.get_world_3d().direct_space_state
@@ -412,7 +438,7 @@ func _supported(actor: Node3D, wanted: Vector3, extra_radius := 0.0) -> Vector3:
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = shape
 	query.transform.origin = center + Vector3.UP * (shape.height * .5 + .06)
-	query.collision_mask = 1 | 2 | 2048
+	query.collision_mask = 1 | 2048 | (PONY_LAYER if ponies else 0)
 	query.exclude = excludes
 	if not space.intersect_shape(query, 1).is_empty(): return Vector3.INF
 	return center + Vector3.UP * .03
@@ -420,10 +446,32 @@ func _supported(actor: Node3D, wanted: Vector3, extra_radius := 0.0) -> Vector3:
 func _owned(visit: Dictionary) -> bool:
 	return is_instance_valid(visit.actor) and is_instance_valid(visit.nav) and visit.nav.command_owner == visit.owner
 
+## Chatting with a customer (board #307, thread 2026-11-01): her reply's [approach], [sit] or [stay]
+## tag took her navigator and the visit ended as if she had left, cancelling her order. The lease
+## takes it back (customer_queue.gd reclaim_from_model) and she resumes this leg; moved off the
+## counter or kiosk spot, she walks back to it and is served once she is there again.
+func _reclaim(visit: Dictionary) -> void:
+	if not is_instance_valid(visit.actor) or not QUEUE.reclaim_from_model(visit.nav, visit.owner): return
+	print("[hayburger] customer %s keeps her visit: a reply tag had taken her navigation" % visit.id)
+	if not str(visit.pending).is_empty() or visit.get("door_hold", false) or visit.phase == "eating": return
+	var via: Vector3 = visit.get("via", Vector3.INF)
+	var goal: Vector3 = via if via.is_finite() else visit.goal
+	if not goal.is_finite() or _at_position(visit, goal): return
+	if visit.phase in ["counter", "kiosk"]: visit.returning = true
+	if not visit.nav.command_destination(goal, "trot"): _release(visit.id, "Navigator refused destination")
+
 func _route(visit: Dictionary, phase: String, marker: String) -> void:
 	if not _owned(visit): _release(visit.id, "Navigation ownership changed"); return
+	# One way through the door at a time: walking out waits for whoever is still coming in.
+	if phase == "exiting" and _crossing(visit, true):
+		_wait(visit, phase, marker, true); return
 	var target: Vector3 = _destination(visit, marker)
-	if not target.is_finite(): _release(visit.id, "Destination is obstructed or unsupported"); return
+	if not target.is_finite():
+		# Only a pony stands there: wait for her to move on instead of turning round. Once
+		# outside, a crowded departure spot just ends the visit there (she is out of the lane).
+		if phase != "leaving" and _destination(visit, marker, false).is_finite(): _wait(visit, phase, marker, false); return
+		_release(visit.id, "Destination is obstructed or unsupported"); return
+	visit.pending = ""
 	visit.phase = phase
 	visit.goal = target
 	visit.deadline = _clock + TRAVEL_TIMEOUT
@@ -444,11 +492,46 @@ func _route(visit: Dictionary, phase: String, marker: String) -> void:
 		var actor_local: Vector3 = _restaurant.to_local(actor.global_position)
 		if (marker == "SelfServePoint" and actor_local.z > inside.z + .55) or phase == "exiting":
 			var via: Vector3 = _supported(actor, _restaurant.to_global(inside))
+			if not via.is_finite() and _supported(actor, _restaurant.to_global(inside), 0.0, false).is_finite():
+				_wait(visit, phase, marker, false); return
 			if not via.is_finite(): _release(visit.id, "Doorway aisle is obstructed or unsupported"); return
 			if not _at_position(visit, via): visit.via = via
 	var next_goal: Vector3 = visit.via if visit.via.is_finite() else target
 	if not visit.nav.command_destination(next_goal, "trot"):
 		_release(visit.id, "Navigator refused destination")
+
+## Stands still and retries this leg every check. A door wait is not a failure and never runs
+## out by itself (whoever she waits for has her own deadline); a pony on the spot gets one leg's time.
+func _wait(visit: Dictionary, phase: String, marker: String, door: bool) -> void:
+	if str(visit.get("pending", "")).is_empty() or door: visit.deadline = _clock + TRAVEL_TIMEOUT
+	visit.pending = marker
+	visit.pending_phase = phase
+	visit.phase = phase
+	visit.goal = Vector3.INF
+	visit.via = Vector3.INF
+	visit.nav.stay()
+
+## Another customer using the doorway the other way. `inward` asks about customers coming in:
+## walking from near the street door towards the counter or kiosk, until well inside. Otherwise
+## it asks about customers on their way out (a waiting one does not count).
+func _crossing(visit: Dictionary, inward: bool) -> bool:
+	for other: Dictionary in _visitors.values():
+		if other == visit or not is_instance_valid(other.actor) or not str(other.get("pending", "")).is_empty(): continue
+		if not inward:
+			if other.phase == "exiting": return true
+			continue
+		var local: Vector3 = _restaurant.to_local((other.actor as Node3D).global_position)
+		if other.phase == "service" and local.z > DOOR_INSIDE_Z: return true
+		if other.phase == "entry" and not other.get("door_hold", false) and other.goal.is_finite() and _near(other, other.goal, DOOR_APPROACH): return true
+	return false
+
+## The navigator stopped her short of this leg's spot because a pony stands on it (its arrival at
+## the nearest reachable spot). Nothing moves her on from there: before 2026-10-31 she parked in
+## the walkway until the visit timed out (tools/hayburger/test_doorway_traffic.gd). Callers ask
+## for the leg again, which picks a free spot or waits for this one (_route).
+func _stopped_short(visit: Dictionary) -> bool:
+	var nav: Node = visit.nav
+	return nav.state == nav.State.ARRIVED and bool(nav.arrival_alternative)
 
 func _at_goal(visit: Dictionary) -> bool:
 	return _at_position(visit, visit.goal)
@@ -467,6 +550,7 @@ func _advance(id: String) -> void:
 	if not _visitors.has(id): return
 	var visit: Dictionary = _visitors[id]
 	var population := _population()
+	_reclaim(visit)
 	if not _owned(visit) or not is_instance_valid(population) or population.live.get(id, {}).get("actor") != visit.actor:
 		_release(id, "Resident or navigation ownership changed"); return
 	if _interrupted(visit.actor, true): _release(id, "Player interaction or sleep took priority"); return
@@ -476,19 +560,37 @@ func _advance(id: String) -> void:
 		return
 	var nav: Node = visit.nav
 	if nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED]: _release(id, "No safe route: " + str(nav.reason)); return
+	# Waiting for the doorway or for a pony on her spot: try the leg again.
+	if not str(visit.pending).is_empty():
+		_route(visit, str(visit.pending_phase), str(visit.pending)); return
 	var via: Vector3 = visit.get("via", Vector3.INF)
 	if via.is_finite():
-		if not _at_position(visit, via): return
+		# The aisle point only lines the doorway up: stopped beside a pony standing on it (the
+		# navigator's arrival at the nearest reachable spot), she walks on to the leg's goal.
+		if not _at_position(visit, via) and not _stopped_short(visit): return
 		visit.via = Vector3.INF
 		if not nav.command_destination(visit.goal, "trot"):
 			_release(id, "Navigator refused destination")
 		return
 	match visit.phase:
 		"entry":
+			# Someone is walking out: wait short of the door instead of meeting her in it.
+			if _near(visit, visit.goal, DOOR_APPROACH) and _crossing(visit, false):
+				if not visit.door_hold:
+					visit.door_hold = true
+					nav.stay()
+				visit.deadline = _clock + TRAVEL_TIMEOUT
+				return
+			if visit.door_hold:
+				visit.door_hold = false
+				if not nav.command_destination(visit.goal, "trot"): _release(id, "Navigator refused destination"); return
 			# The doorway point only lines the approach up; another customer may stand on it.
 			if _at_goal(visit) or _near(visit, visit.goal, 1.2): _route(visit, "service", "SelfServePoint" if visit.self_service else "CustomerPoint")
+			elif _stopped_short(visit): _route(visit, "entry", "EntrySpawn")
 		"service":
-			if not _at_goal(visit): return
+			if not _at_goal(visit):
+				if _stopped_short(visit): _route(visit, "service", "SelfServePoint" if visit.self_service else "CustomerPoint")
+				return
 			nav.stay()
 			if visit.self_service:
 				visit.phase = "kiosk"
@@ -499,21 +601,34 @@ func _advance(id: String) -> void:
 				visit.announced = true
 				customer_arrived.emit(id, visit.display_name)
 		"counter":
-			if not _at_goal(visit): _release(id, "Left the counter")
+			# Walking back after a reply tag moved her (_reclaim): the counter deadline bounds it.
+			if _at_goal(visit): visit.returning = false
+			elif not visit.get("returning", false): _release(id, "Left the counter")
 		"kiosk":
-			if not _at_goal(visit): _release(id, "Left the kiosk"); return
+			if _at_goal(visit): visit.returning = false
+			elif not visit.get("returning", false): _release(id, "Left the kiosk"); return
+			else: return
 			if _clock >= float(visit.until): _eat(visit)
 		"eating":
 			if _clock >= float(visit.until):
+				# Stay seated while a customer is still on her way in through the door.
+				if _crossing(visit, true):
+					visit.until = _clock + CHECK_SECONDS
+					visit.deadline = float(visit.until) + 5.0
+					return
 				var self_service: bool = visit.self_service
 				_leave(visit, "Finished meal")
 				if self_service: self_serve_completed.emit(id, visit.display_name)
 		"exiting":
-			if _at_goal(visit):
+			# A metre from the clearance point is well outside the door: no need to squeeze
+			# onto the exact spot past ponies standing in front of the restaurant.
+			if _at_goal(visit) or _near(visit, visit.goal, 1.0):
 				if is_instance_valid(_markers.get("DeparturePoint")): _route(visit, "leaving", "DeparturePoint")
 				else: _release(id, "Back to the daily routine")
+			elif _stopped_short(visit): _route(visit, "exiting", "EntryClearance" if is_instance_valid(_markers.get("EntryClearance")) else "EntrySpawn")
 		"leaving":
-			if _at_goal(visit): _release(id, "Back to the daily routine")
+			if _at_goal(visit) or _near(visit, visit.goal, 1.2): _release(id, "Back to the daily routine")
+			elif _stopped_short(visit): _route(visit, "leaving", "DeparturePoint")
 
 func _eat(visit: Dictionary) -> void:
 	_clear_priority(visit)
@@ -550,7 +665,14 @@ func _release(id: String, reason: String) -> void:
 	# recover, without banning that resident for the rest of a three-minute shift.
 	_cooldowns[id] = _clock + (COOLDOWN_SECONDS if visit.get("meal", false) else FAILED_VISIT_COOLDOWN)
 	_last_reason = reason
-	if _owned(visit):
+	# One line per ended visit, so a player log shows why customers turned back at the door.
+	if not visit.get("meal", false): print("[hayburger] customer %s gave up in %s: %s" % [id, str(visit.get("phase", "")), reason])
+	if not LEGACY.old_jobs():
+		# The shared lease restores the four navigation fields, removes its metas and reissues the
+		# living world's goal while it still owns her; the cooldown was set above.
+		if _lease_queue().release(id, reason, -1.0) and visit.sat and visit.actor.get("sleeping") != true and not _interrupted(visit.actor, true):
+			visit.actor.request_posture("stand")
+	elif _owned(visit):
 		visit.nav.stay()
 		visit.nav.command_owner = visit.previous_owner
 		visit.nav.wander_enabled = visit.previous_wander
@@ -570,6 +692,19 @@ func _send_back(id: String, actor: Node3D, origin: Transform3D) -> void:
 	if actor.has_method("reset_motion"): actor.reset_motion(origin)
 	else: actor.global_transform = origin
 	_reissue_life_goal(id)
+
+func _lease_queue() -> RefCounted:
+	if _leases == null:
+		_leases = QUEUE.new()
+		_leases.owner_prefix = "leisure:hayburger:%d:" % get_instance_id()
+		_leases.max_customers = MAX_VISITORS
+		_leases.cooldown_s = COOLDOWN_SECONDS
+		_leases.radius = VISIT_RADIUS
+	_leases.cooldowns = _cooldowns
+	_leases.clock = _clock
+	_leases.population = _population()
+	_leases.life = _game.get("life") as Node if is_instance_valid(_game) else null
+	return _leases
 
 ## The living world caches each pony's goal; clearing it makes it reissue her paused outing's route.
 func _reissue_life_goal(id: String) -> void:

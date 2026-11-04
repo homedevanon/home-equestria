@@ -47,9 +47,23 @@ func run() -> void:
 	pack(mods_dir.path_join("d_off.pck"), {"res://mods/off_test/mod.json": JSON.stringify({"id": "off_test", "name": "Off"})})
 	pack(loose_dir.path_join("loose_override.pck"), {"res://mods/loose_marker.txt": "loose"})
 	pack(loose_dir.path_join("HomeEquestria-data.pck"), {"res://mods/game_pack_marker.txt": "game"})
+	# Old mods that replace game files stay off (thread 43671981, 2026-11-03); the rest load.
+	var now := LOADER.game_version()
+	pack(mods_dir.path_join("e_old.pck"), {
+		"res://mods/old_test/mod.json": JSON.stringify({"id": "old_test", "name": "Old menus", "game_version": "0.0.3", "author": "Home: Equestria"}),
+		"res://PROJECT_SPLIT.json": "OLD", "res://world/modding/mods.gd.remap": "[remap]", "res://.godot/imported/x.ctex": "x"})
+	pack(mods_dir.path_join("f_current.pck"), {
+		"res://mods/current_test/mod.json": JSON.stringify({"id": "current_test", "name": "Current", "game_version": now}),
+		"res://ai_config.example.json": "CURRENT"})
+	pack(mods_dir.path_join("g_new.pck"), {
+		"res://mods/new_files_test/mod.json": JSON.stringify({"id": "new_files_test", "name": "Adds only", "game_version": "0.0.1"})})
+	pack(mods_dir.path_join("h_stamped.pck"), {
+		"res://mods/stamped_test/mod.json": JSON.stringify({"id": "stamped_test", "name": "Stamped"}),
+		"res://mods/stamped_test/%s" % LOADER.BUILT: JSON.stringify({"id": "stamped_test", "game_version": "0.0.2"}),
+		"res://icon.png.import": "[remap]"})
 	LOADER.boot([mods_dir], [loose_dir], PackedStringArray(["d_off.pck"]))
 	var files: Array = LOADER.packs.map(func(row: Dictionary) -> String: return row.file)
-	check(files == ["b_merge.pck", "c_broken.pck", "d_off.pck", "dinnerbone.pck", "loose_override.pck"], "packs in name order, the game's own pack skipped (%s)" % str(files))
+	check(files == ["b_merge.pck", "c_broken.pck", "d_off.pck", "dinnerbone.pck", "e_old.pck", "f_current.pck", "g_new.pck", "h_stamped.pck", "loose_override.pck"], "packs in name order, the game's own pack skipped (%s)" % str(files))
 	var ids: Array = LOADER.mods.map(func(mod: Dictionary) -> String: return mod.id)
 	check("dinnerbone" in ids, "the built Dinnerbone pack is recognised although res://mods/dinnerbone exists in the source")
 	var active: Array = LOADER.active().map(func(mod: Dictionary) -> String: return mod.id)
@@ -58,6 +72,39 @@ func run() -> void:
 	check(broken.size() == 1 and not broken[0].errors.is_empty(), "the broken mod is listed with a reason")
 	check(not FileAccess.file_exists("res://mods/off_test/mod.json") and "off_test" not in ids, "a switched-off pack is not mounted")
 	check(FileAccess.get_file_as_string("res://mods/loose_marker.txt") == "loose", "a loose pack beside the executable still mounts")
+	var row_of := func(file: String) -> Dictionary:
+		for row: Dictionary in LOADER.packs:
+			if row.file == file: return row
+		return {}
+	var old: Dictionary = row_of.call("e_old.pck")
+	check(old.held and not old.mounted and old.game_version == "0.0.3" and old.title == "Old menus", "an old mod that replaces game files is held off (%s)" % str(old))
+	check(old.overrides == PackedStringArray(["res://PROJECT_SPLIT.json", "res://world/modding/mods.gd"]), "its replaced game files are listed, .remap shown as the script, imports cache skipped (%s)" % str(old.overrides))
+	check(FileAccess.get_file_as_string("res://PROJECT_SPLIT.json") != "OLD" and "old_test" not in ids, "and the game file stays the game's")
+	var stamped: Dictionary = row_of.call("h_stamped.pck")
+	check(stamped.held and stamped.game_version == "0.0.2" and stamped.overrides == PackedStringArray(["res://icon.png"]), "the build tool's version stamp counts when mod.json has none (%s)" % str(stamped))
+	var current: Dictionary = row_of.call("f_current.pck")
+	check(current.mounted and not current.held and FileAccess.get_file_as_string("res://ai_config.example.json") == "CURRENT" and active.has("current_test"), "a mod declaring this game version still replaces game files (%s)" % str(current))
+	var adds: Dictionary = row_of.call("g_new.pck")
+	check(adds.mounted and not adds.held and adds.overrides.is_empty() and active.has("new_files_test"), "an old mod that replaces nothing still loads")
+	var dinner: Dictionary = row_of.call("dinnerbone.pck")
+	check(dinner.overrides.is_empty() and not dinner.held, "the built Dinnerbone pack replaces no game file (%s)" % str(dinner.overrides))
+	check(not LOADER.switched_on("e_old.pck") and LOADER.switched_on("f_current.pck"), "the Mods screen shows the held mod as Off")
+	LOADER.set_enabled("e_old.pck", true)
+	check(LOADER.switched_on("e_old.pck"), "switching it on allows it for this game version")
+	ProjectSettings.set_setting("application/config/version", "99.0.0")
+	check(not LOADER.switched_on("e_old.pck"), "and the next game version asks again")
+	ProjectSettings.set_setting("application/config/version", now)
+	LOADER.set_enabled("e_old.pck", false)
+	check(not LOADER.switched_on("e_old.pck") and "e_old.pck" in LOADER.disabled_files(), "switching it off again sticks")
+	check(LOADER.version_older("0.1.0-maredev", "0.1.1.1") and LOADER.version_older("0.1.1", "0.1.1.1") and not LOADER.version_older("0.1.0", "0.1.0-maredev")
+		and not LOADER.version_older("", "0.1.1") and not LOADER.version_older("0.2.0", "0.1.9") and LOADER.version_older("0.9", "0.10"), "version order by numbers")
+	var page: Control = load("res://world/ui/settings_page.gd").new()
+	var held_text: String = page.call("_mod_text", old, LOADER.mods)
+	check(held_text.contains("Old menus") and held_text.contains("Made for game 0.0.3") and held_text.contains("Kept off") and held_text.contains("res://PROJECT_SPLIT.json"), "the Mods screen names the old mod, its version and the files it replaces (%s)" % held_text)
+	var fake_author := {"file": "x.pck", "name": "Anonfilly", "version": "1", "author": "Home: Equestria", "description": "", "errors": []}
+	check((page.call("_mod_text", {"file": "x.pck", "error": ""}, [fake_author]) as String).contains("Third-party mod"), "and flags a mod naming the game as its author")
+	page.free()
+	check(LOADER.claims_game_author("Home: Equestria") and LOADER.claims_game_author("home equestria") and not LOADER.claims_game_author("Anon") and not LOADER.claims_game_author(""), "a mod naming the game as its author is spotted")
 	var food: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://world/food/definitions.json"))
 	check(food.get("mod_cake", {}).get("name") == "Mod Cake" and int(food.hayburger.price_bits) == 99 and str(food.hayburger.name) == "Hayburger", "JSON merge adds and overrides keys, keeps the rest")
 	check(food.size() > 2, "merged data keeps the game's entries (%d)" % food.size())

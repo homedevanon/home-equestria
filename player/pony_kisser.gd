@@ -162,7 +162,7 @@ func _physics_step(_delta: float) -> void:
 				print("[bridal kiss] ended: %s at t=%.1fs lips-gap=%.1fcm miss=%.1fcm"%["looked away" if away else "out of reach",_cradle_time,lips*100.0,miss*100.0])
 				_end_contact()
 				return
-			_active.target=camera.global_position+face*(MOUTH_OFFSET+Vector3(0.0,0.0,-CRADLE_LIPS_OUT))
+			_active.target=camera.global_position+face*(MOUTH_OFFSET*preload("res://player/player_mouth.gd").human_scale(camera)+Vector3(0.0,0.0,-CRADLE_LIPS_OUT))
 			_active.eye=camera.global_position
 			_active.face=face
 		else:
@@ -200,7 +200,8 @@ func _notification(what: int) -> void:
 func mouth_world() -> Vector3:
 	var form: Node = PONY_FORM.find(get_tree()) if is_inside_tree() else null
 	if form != null and is_instance_valid(form.get("avatar")): return form.mouth_world()
-	var scale_m := XRServer.world_scale if camera is XRCamera3D else 1.0
+	# Desktop: his mouth below the eye follows Anon's chosen height (player_mouth.gd human_scale).
+	var scale_m: float = XRServer.world_scale if camera is XRCamera3D else preload("res://player/player_mouth.gd").human_scale(camera)
 	return camera.global_position + camera.global_basis.orthonormalized() * MOUTH_OFFSET * scale_m
 
 

@@ -5,24 +5,24 @@
 			"parts": [
 				{
 					"name": "quest-data.pck.part1",
-					"size": 1976452871
+					"size": 2034539981
 				},
 				{
 					"name": "quest-data.pck.part2",
-					"size": 1976452870
+					"size": 2034539980
 				}
 			],
-			"sha256": "a42cbf67cf6ffc118f198d672ac6b2ace71bc1e09dc5f3999bcdfcfaa62e70da"
+			"sha256": "7f5aae31c33fd749a389d38609c4cc7c349846a329c8e9308b27ac7b2372d845"
 		},
 		{
 			"name": "HomeEquestria-raw.pck",
 			"parts": [
 				{
 					"name": "quest-raw.pck",
-					"size": 309276792
+					"size": 285044792
 				}
 			],
-			"sha256": "7b334e98fade67f956937b4e1e74bf8cf6d85b3f6906149913b1b0185721fbc1"
+			"sha256": "465989af2edf9668b1227b6824525a48a83b8029a362eef6dd3fb65d3c1f77ba"
 		}
 	]
 }

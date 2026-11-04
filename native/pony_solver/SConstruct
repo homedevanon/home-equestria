@@ -6,11 +6,13 @@ import os
 
 godot_cpp = os.environ.get("GODOT_CPP", "/home/dev/tools/godot-cpp")
 env = SConscript(os.path.join(godot_cpp, "SConstruct"))
-env.Append(CPPPATH=["src/", "nav_air/"])
+env.Append(CPPPATH=["src/", "nav_air/", "world_vocoder/"])
 # Shipped binaries must not carry this machine's paths (assert/__FILE__ strings from headers).
 env.Append(CCFLAGS=["-ffile-prefix-map=" + os.path.expanduser("~") + "/=~/"])
 # The Godot-independent air navigation core (nav_air/), without its offline baker and test space.
 sources = Glob("src/*.cpp") + [f for f in Glob("nav_air/*.cpp") if f.name not in ("air_bake_main.cpp", "air_test_space.cpp")]
+# WORLD vocoder synthesis and codec (world_vocoder/README.md) for the ponese voice.
+sources += Glob("world_vocoder/*.cpp")
 library = env.SharedLibrary(
     "bin/libpony_solver{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
     source=sources,

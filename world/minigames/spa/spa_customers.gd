@@ -30,6 +30,11 @@ const FEATHERS := preload("res://world/minigames/spa/spa_feathers.gd")
 const WINGS := preload("res://world/characters/hybrid_mare/hybrid_open_wings.gd")
 const ROSTER := preload("res://world/navigation/roster_placement.gd")
 const KIT_SPOTS := preload("res://world/props/ponyville_kit/kit_spots.gd")
+const LEDGER := preload("res://world/mechanics/ledger.gd")
+const FACTS := preload("res://world/mechanics/facts.gd")
+const LEGACY := preload("res://world/mechanics/legacy.gd")
+const QUEUE := preload("res://world/mechanics/jobs/customer_queue.gd")
+const JOBS := preload("res://world/mechanics/jobs/jobs.gd")
 
 const OPEN_HOUR := 9.0
 const CLOSE_HOUR := 19.0
@@ -118,6 +123,9 @@ var _transition := false
 var _rng := RandomNumberGenerator.new()
 var _last_reason := ""
 var earned_bits := 0
+## The jobs core's shared lease bookkeeping (world/mechanics/jobs/customer_queue.gd); `-- --old-jobs`
+## keeps the copied code. It shares this node's cooldowns.
+var _leases: RefCounted
 
 
 static func marker_names() -> Array[String]:
@@ -470,6 +478,15 @@ func _claim(id: String, actor: Node3D, services: Array[String], slot: int, phase
 		"relaxed": 0.0, "seat": null, "seat_state": "", "stand_since": 0.0, "lie_after": -1.0}
 	if not is_instance_valid(nav) or not nav.has_method("command_destination"): return false
 	_visits[id] = visit
+	if not LEGACY.old_jobs():
+		# The shared lease: stay, take the owner (refused -> no visit), wander off, speed INF, pace -1,
+		# and the metas. The wave-2 romance firewall reads "spa_client" (plan section 3).
+		if not _lease_queue().claim(id, actor, {"spa_client": true, "spa_visit": visit.owner},
+				{"owner": visit.owner, "wander": false, "gate": "spa_visit", "clear": ["spa_company"]}):
+			_visits.erase(id)
+			_cooldowns[id] = _clock + FAILED_VISIT_COOLDOWN
+			return false
+		return true
 	nav.stay()
 	nav.command_owner = visit.owner
 	if nav.command_owner != visit.owner:
@@ -483,6 +500,27 @@ func _claim(id: String, actor: Node3D, services: Array[String], slot: int, phase
 	actor.set_meta("spa_client", true)
 	actor.set_meta("spa_visit", visit.owner)
 	return true
+
+
+func _lease_queue() -> RefCounted:
+	if _leases == null:
+		_leases = QUEUE.new()
+		_leases.owner_prefix = "leisure:spa:%d:" % get_instance_id()
+		_leases.max_customers = MAX_CLIENTS
+		_leases.cooldown_s = COOLDOWN_SECONDS
+		_leases.radius = VISIT_RADIUS
+		_leases.exclude = PackedStringArray(STAFF)
+	_leases.cooldowns = _cooldowns
+	_leases.clock = _clock
+	_leases.population = _population()
+	_leases.life = _game.get("life") as Node if is_instance_valid(_game) else null
+	return _leases
+
+
+## The running jobs core when it serves this game's world (none in fixtures without the hub).
+func _jobs() -> Node:
+	var jobs: Node = JOBS.of(get_tree()) if is_inside_tree() else null
+	return jobs if jobs != null and is_instance_valid(_game) and jobs.get("context") == _game.get("world_context") else null
 
 
 func _owned(visit: Dictionary) -> bool:
@@ -507,7 +545,13 @@ func _release(id: String, reason: String) -> void:
 		_end_body_work(visit)
 		var expressions: Variant = actor.get("expressions")
 		if expressions != null and expressions.has_method("release_touch"): expressions.release_touch("spa")
-	if _owned(visit):
+	if not LEGACY.old_jobs():
+		# The shared lease restores the navigation fields, reissues her goal and removes the spa
+		# metas while it still owns her; face and posture stay spa business.
+		if _lease_queue().release(id, reason, -1.0):
+			if visit.nav.get("face_point") is Vector3: visit.nav.face_point = visit.previous_face
+			if visit.sat and actor.get("sleeping") != true and _hard_interrupt(actor).is_empty(): actor.request_posture("stand")
+	elif _owned(visit):
 		visit.nav.stay()
 		visit.nav.command_owner = visit.previous_owner
 		visit.nav.wander_enabled = visit.previous_wander
@@ -739,6 +783,13 @@ func _advance(id: String) -> void:
 	if not _visits.has(id): return
 	var visit: Dictionary = _visits[id]
 	var population := _population()
+	# A client's own [approach], [sit] or [stay] reply tag while Anon chats with her took her
+	# navigator and ended the visit (board #307, thread 2026-11-01): the lease takes it back
+	# (customer_queue.gd reclaim_from_model) and a walk to a station carries on.
+	if is_instance_valid(visit.actor) and QUEUE.reclaim_from_model(visit.nav, visit.owner):
+		print("[spa] client %s keeps her visit: a reply tag had taken her navigation" % id)
+		if (_travelling(visit) or visit.phase in ["to_door_in", "to_door_out"]) and visit.goal is Vector3 and (visit.goal as Vector3).is_finite() and not _at_position(visit, visit.goal, 0.3):
+			if not visit.nav.command_destination(visit.goal, "walk"): _leave(visit, "Navigator refused destination"); return
 	if not _owned(visit) or not is_instance_valid(population) or population.live.get(id, {}).get("actor") != visit.actor:
 		_release(id, "Resident or navigation ownership changed"); return
 	var hard := _hard_interrupt(visit.actor)
@@ -869,7 +920,12 @@ func _leave(visit: Dictionary, reason: String) -> void:
 
 func _done(visit: Dictionary, service: String) -> void:
 	var bits: int = int(PAY.get(service, 0))
-	if _pay(visit, bits, service): service_finished.emit(visit.id, service, bits)
+	if _pay(visit, bits, service):
+		service_finished.emit(visit.id, service, bits)
+		# Facts stream (world/mechanics/facts.gd): counters only, no new memory. With the jobs core,
+		# pay_unit already added "worked" (ref "spa") with the payment.
+		if LEGACY.old_jobs() or _jobs() == null:
+			FACTS.note(self, "worked", {"actor": "player", "target": str(visit.id), "ref": "spa:" + service, "amount": bits})
 	visit.services.erase(service)
 	_next_station(visit)
 
@@ -881,7 +937,14 @@ func _pay(visit: Dictionary, amount: int, what: String) -> bool:
 	if not is_instance_valid(population) or population.live.get(visit.id, {}).get("actor") != visit.actor: return false
 	var inventory: Node = _game.get("inventory") as Node if is_instance_valid(_game) else null
 	var store: Variant = inventory.get("inventory") if is_instance_valid(inventory) else null
-	if store == null or not store.has_method("credit_bits") or not bool(store.credit_bits(amount)): return false
+	if store == null or not store.has_method("credit_bits"): return false
+	var jobs := _jobs()
+	if LEGACY.old_jobs() or jobs == null:
+		# One pay path (world/mechanics/ledger.gd); the town pays (`-- --old-jobs`, fixtures).
+		if not LEDGER.transfer(_game, "town", "player", amount, "service").is_empty(): return false
+	elif not jobs.pay_unit("spa", "player", "", str(visit.id), amount, {"kind": what, "reason": "service", "extra": what == "feather"}).is_empty():
+		# The jobs core's unit pay: the client pays from her purse, then Aloe, then the town.
+		return false
 	visit.paid = int(visit.paid) + amount
 	earned_bits += amount
 	bits_paid.emit(visit.id, amount, visit.actor.global_position + Vector3.UP * 0.9 * float(visit.size), what)

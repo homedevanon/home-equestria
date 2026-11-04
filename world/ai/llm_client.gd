@@ -1,6 +1,7 @@
 extends Node
 const CAPTURE := preload("res://world/ai/ai_capture.gd")
 const PROMPT_OVERRIDES := preload("res://world/ai/prompt_overrides.gd")
+const REPLY_FILTERS := preload("res://world/ai/reply_filters.gd")
 const OUTPUT_LIMIT_ERROR := "model output limit reached"
 ## The provider's safety filter declined this prompt. The bounded retry policy below applies;
 ## callers use a fallback if every attempt fails, without rewriting the player's prompt.
@@ -27,6 +28,9 @@ const LOCAL_TIMEOUT := 300.0
 const STATUS_PATH := "user://ai/llm_status.json"
 const STATUS_ROWS := 24
 const EMPTY_CUE := "(No new words were said. Continue naturally, or reply [silence].)"
+## Put in front of a sent transcript that opens with her own line (the Messages API wants a user
+## message first). Before 2026-11-03 those opening lines were dropped instead.
+const EARLIER_CUE := "(Earlier conversation.)"
 ## Prompt cache layout (docs/AI_TOKENS_AND_CACHING_2026_10_25.md). Prompt builders mark where the
 ## stable part of a system prompt ends (HEAD_END, may repeat) and where its live part begins
 ## (LIVE_START). build_request strips both: stable blocks stay in the system prompt (cache breakpoints
@@ -108,7 +112,10 @@ static func recent_messages(messages: Array) -> Array:
 		start -= 1
 		bytes += next_bytes
 	if start > 0: start = mini(messages.size() - 1, ceili(start / float(HISTORY_STEP)) * HISTORY_STEP)
-	while start < messages.size() - 1 and str(messages[start].get("role", "")) == "assistant": start += 1
+	# Her opening lines stay (build_request puts EARLIER_CUE in front). Skipping every leading
+	# assistant line here dropped a whole history of her own lines: a tester's Rainbow Dash had 13
+	# messages within budget, 12 of them hers (restored witnessed speech, greetings), and only the
+	# cue was sent (paste_SWa1FKZL, thread 43671981, "sent_history_messages":1).
 	return messages.slice(start).duplicate(true)
 
 
@@ -221,6 +228,8 @@ func build_request(system: String, messages: Array, limits: Dictionary = {}) -> 
 			earlier.append(("You" if str(message.get("role", "")) == "assistant" else "Anon") + ": " + str(message.get("content", "")))
 		system += "\nEarlier conversation transcript (memory, NOT response-format examples):\n" + "\n".join(earlier)
 		messages = messages.slice(messages.size()-1)
+	if not messages.is_empty() and str(messages[0].get("role", "")) == "assistant":
+		messages.push_front({"role": "user", "content": EARLIER_CUE})
 	# Never an empty cue: `claude -p` behind the local proxy rejects one ("Input must be provided",
 	# group path 2026-09-22) and the Messages API needs a non-empty user turn.
 	if messages.is_empty() or str(messages[-1].get("content", "")).strip_edges().is_empty():
@@ -509,6 +518,13 @@ func _on_completed(result: int, code: int, headers: PackedStringArray, body: Pac
 	last_finish_reason = finish_reason(parsed)
 	var reply := extract_text(parsed)
 	_report_usage(reply)
+	# An in-band refusal: provider boilerplate as ordinary text with a normal stop (Gemini, thread
+	# 43671981: "I cannot fulfill this request."). Retried unchanged like any refusal; boilerplate
+	# beside real lines is dropped later by the director (reply_filters.gd).
+	if REPLY_FILTERS.refusal_only(reply):
+		var declined := {"kind": "refusal", "error": REFUSAL_ERROR + " (in reply text)"}
+		if not _schedule_retry(declined): _finish("", REFUSAL_ERROR, "refusal")
+		return
 	if last_finish_reason in ["length", "max_tokens", "max_output_tokens", "model_context_window_exceeded"]:
 		_finish(reply, OUTPUT_LIMIT_ERROR, "output_limit")
 		return

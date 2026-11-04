@@ -4,7 +4,7 @@ extends RefCounted
 ## markers ("~~I hate rain.~~ I love rain."): the paper draws it struck through in ink and a
 ## reading pony sees it as crossed out. An unmatched "~~" is ignored. Shared by every letter
 ## builder: the paper, the scoring, the reader prompt and the fallback replies.
-const MAX_CHARS := 2400
+const MAX_CHARS := 6000
 const STRIKE := "~~"
 ## Closings that may end a letter, followed by a name on the same line ("Love, Anon") or the
 ## next one ("Love," / "Anon").

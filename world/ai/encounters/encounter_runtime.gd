@@ -172,7 +172,7 @@ func _navigator(pid: String) -> Node:
 	return nav if nav != null and nav.has_method("reserve") else null
 
 ## Model-chosen actions that would take a claimed participant away from the encounter.
-const LEAVING := ["resume_routine", "go_home", "go_to", "fly_to", "lead", "follow", "cancel",
+const LEAVING := ["resume_routine", "go_home", "go_to_bed", "go_to", "fly_to", "lead", "follow", "cancel",
 	"loop_de_loop", "barrel_roll", "circle_over", "sonic_rainboom", "air_show", "sit_on_seat", "stay", "approach",
 	"stand", "sit", "lie_down", "wake_up", "hover", "land", "cuddle", "buck_player"]
 ## Only the forest intro (until the teleport to Ponyville) and "hold" encounters hold them; in

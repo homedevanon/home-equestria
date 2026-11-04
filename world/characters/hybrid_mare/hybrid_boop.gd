@@ -1,6 +1,6 @@
 extends Node
-## Boop: a pointed finger pressed against her nose. She shuts her eyes, blushes, squees, and
-## hearts drift up from her head.
+## Boop: a pointed finger pressed against her nose makes a squee/honk. The World setting
+## "Boop Makes Mares Horny" restores the old flustered face, blush and floating hearts.
 ##
 ## Trigger rule (dev): ONLY when the finger is outstretched and the physics hand actually
 ## collides with and stops against her nose. So three gates, every physics tick, per hand:
@@ -63,6 +63,15 @@ var snoot: AnimatableBody3D
 var boops := 0
 var kisses := 0
 var blush_amount := 0.0
+## Dialogue owns this weight, independently of the physical blush envelope below.
+## Releasing a face must not start another several-second touch blush.
+var expression_blush := 0.0:
+	set(value):
+		value = clampf(value, 0.0, 1.0)
+		if is_equal_approx(expression_blush, value): return
+		expression_blush = value
+		_blush_idle = false
+		wake_tick()
 ## 0..1 from her flustered face: the blush spreads from the cheeks across the bridge of the nose.
 var nose_blush := 0.0
 var _nose_decal: Decal
@@ -435,13 +444,14 @@ func _unprofiled_process(delta: float) -> void:
 
 ## The reaction; the gates above or a desktop pet on the head call it.
 func boop() -> void:
+	_play_squee()
+	if not bool(Settings.get_value("ponies/boop_makes_mares_horny")): return
 	# A spa client is not booped: no count, blush, hearts or "boop" for her AI
 	# (SPA_PLAN_2026_10_29.md section 3).
 	# Her eyes still squeeze shut and she squeaks (dev 2026-10-29: "they keep their eyes open"):
 	# that face is not romance; blush, hearts, the count and the AI's "boop" stay off.
 	if mare.has_meta("spa_client"):
 		mare.expressions.boop()
-		_play_squee()
 		return
 	wake_tick()
 	boops += 1
@@ -450,7 +460,6 @@ func boop() -> void:
 	_blush_time = 0.0
 	_blush_level = 1.0
 	_full_until = Time.get_ticks_msec() + int((blush_rise + blush_hold + blush_fall) * 1000.0)
-	_play_squee()
 	_spawn_hearts()
 
 
@@ -505,7 +514,7 @@ func _sync_snoot() -> void:
 ## Across the top of the muzzle, between nose and eyes; wider as she gets more flustered.
 func _place_nose_blush() -> void:
 	if _nose_decal == null: return
-	var amount := blush_amount * _blush_level * nose_blush
+	var amount := maxf(expression_blush, blush_amount * _blush_level) * nose_blush
 	_nose_decal.visible = amount > .01
 	if not _nose_decal.visible: return
 	var head := head_skeleton.global_transform * head_skeleton.get_bone_global_pose(_head_bone)
@@ -608,11 +617,13 @@ func _advance_blush(delta: float) -> void:
 	if Time.get_ticks_msec() < _full_until: _level_request = 1.0
 	if _level_request > 0.0: _blush_level = move_toward(_blush_level, _level_request, delta * 1.5)
 	_level_request = 0.0
+	var color_weight := maxf(blush_amount * _blush_level * (1.0 if strong_blush_time > 0 else .75), expression_blush * .75)
+	blush_amount = maxf(blush_amount, expression_blush)
 	for decal in _decals:
-		decal.albedo_mix = blush_amount * _blush_level * (1.0 if strong_blush_time>0 else .75)
+		decal.albedo_mix = color_weight
 		decal.visible = blush_amount > 0.0
 	if blush_amount <= 0.0 and _nose_decal != null: _nose_decal.visible = false
-	_blush_idle = _blush_time < 0.0 and strong_blush_time <= 0.0 and Time.get_ticks_msec() >= _full_until
+	_blush_idle = _blush_time < 0.0 and strong_blush_time <= 0.0 and expression_blush <= 0.0 and Time.get_ticks_msec() >= _full_until
 
 
 func _play_squee() -> void:

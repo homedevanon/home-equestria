@@ -1,0 +1,25 @@
+{
+	"version": 1,
+	"owners": {
+		"ponyville:boutique:flight": "rarity",
+		"ponyville:boutique:outfits": "rarity",
+		"ponyville:boutique:accessories": "rarity",
+		"ponyville:trixie:stall": "trixie",
+		"sweet-apple-acres:farm:cider": "applejack",
+		"ponyville:sugarcube:bakery": "pinkie_pie",
+		"ponyville:sugarcube:pastries": "pinkie_pie",
+		"ponyville:sugarcube:drinks": "pinkie_pie",
+		"ponyville:sugarcube:cake": "pinkie_pie",
+		"ponyville:market:produce": "golden_harvest",
+		"ponyville:hayburger:meals": "business:hayburger",
+		"ponyville:fair:drinks": "business:fair",
+		"ponyville:fair:regional": "business:fair"
+	},
+	"default_owner": "business:market",
+	"landmarks": {
+		"landmark:rarityboutique_01": ["ponyville:boutique:accessories"],
+		"landmark:sugarcube_corner": ["ponyville:sugarcube:bakery", "ponyville:sugarcube:pastries"],
+		"landmark:kiosk_01_01": ["ponyville:fair:regional"],
+		"landmark:kiosk_02_01": ["ponyville:fair:drinks"]
+	}
+}

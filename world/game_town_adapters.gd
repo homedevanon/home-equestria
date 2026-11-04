@@ -46,7 +46,9 @@ static func attach(game: Node3D, town: Node) -> void:
 	var cloudominium: Node3D = town.get_node_or_null("RNLScenery/East/Sky/cloudominium_01") as Node3D
 	var cloud_home: Script = load("res://world/buildings/cloudominium/cloudominium.gd") as Script
 	if cloudominium != null and cloud_home != null and cloud_home.can_instantiate():
-		cloud_home.call("attach", cloudominium)
+		var cloud_runtime: Node3D = cloud_home.call("attach", cloudominium)
+		var cloud_drift: Node = cloud_runtime.get_node_or_null("CloudDrift")
+		if cloud_drift != null: cloud_drift.game = game
 	# The walk-in Day Spa (docs/SPA_PLAN_2026_10_29.md). Loaded, not preloaded: a broken spa
 	# script cannot stop boot. Before the render budget, which would batch the old ramp.
 	var spa_script: Script = load("res://world/minigames/spa/spa_venue.gd") as Script

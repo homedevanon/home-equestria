@@ -40,6 +40,13 @@ static func set_room(frame: Transform3D, layout: Dictionary) -> void:
 		if _materials.has(painted):
 			_paint(_materials[painted] as ShaderMaterial, painted)
 
+## The floating home moved (cloud_drift.gd): painted surfaces read the room frame in world space.
+static func move_room(frame: Transform3D) -> void:
+	_world_to_room = frame.affine_inverse()
+	for painted: String in PAINTED:
+		if _materials.has(painted):
+			(_materials[painted] as ShaderMaterial).set_shader_parameter("world_to_room", _world_to_room)
+
 ## The shared material for a contract name; unknown names get a pale default (also cached).
 static func get_material(name: String) -> Material:
 	if _materials.has(name):

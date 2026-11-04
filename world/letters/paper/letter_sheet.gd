@@ -14,10 +14,22 @@ const H := 0.21
 ## The folded letter: 0.22 x 0.14 m, a few millimetres thick (letter.glb), laid flat and centred.
 const FOLDED_SIZE := Vector3(0.22, 0.013, 0.14)
 const OPEN_SECONDS := 0.22
+## Desktop: how far before the eyes the open sheet is held; the wheel brings it closer (dev
+## 2026-11-03). At READ_NEAR the sheet fills the height of a 75 degree view.
+const READ_FAR := 0.33
+const READ_NEAR := 0.14
+const ZOOM_STEP := 0.03
+const ZOOM_EASE := 14.0
 @export var item_id := ""
 var opened := false
+## The side being read, counting from 0; two sides make one sheet of a long letter.
+var page := 0
 ## 0 the front faces the reader, 1 the sheet is turned over to its back.
 var side := 0
+## A letter being written shows its last side, where the words are going.
+var follow_end := false
+var _reading_at := READ_FAR
+var _reading_goal := READ_FAR
 var ink: Node
 var folded: Node3D
 var sheet: Node3D
@@ -48,16 +60,25 @@ func configure_body(_item: RigidBody3D, shape: CollisionShape3D) -> void:
 	shape.shape = box
 	shape.position = Vector3(0, FOLDED_SIZE.y * 0.5, 0)
 
+## Another page source with ink's interface (sides, texture(side), laid_out, show_text):
+## the photo journal's pictures (world/items/photo_journal_pages.gd).
+func use_ink(other: Node) -> void:
+	if is_instance_valid(ink):
+		remove_child(ink); ink.queue_free()
+	ink = other
+	add_child(ink)
+	ink.laid_out.connect(_show_pages)
+
 ## The handwriting to show (the open sheet updates as it is written).
 func refresh(text: String, stationery: String, pony_hand := false) -> void:
 	ink.show_text(text, stationery, pony_hand)
 
 func sides() -> int:
-	return int(ink.sides)
+	return int(ink.get("sides"))
 
 func open_sheet() -> void:
 	if opened: return
-	opened = true; side = 0
+	opened = true; page = 0; side = 0
 	_build()
 	SFX.play_at(self, "page")
 	if folded != null: folded.visible = false
@@ -74,12 +95,31 @@ func fold() -> void:
 			sheet.visible = false
 			if folded != null: folded.visible = true)
 
-## Turns the open sheet over to read its back (long letters), and back again.
-func turn_over() -> void:
-	if not opened: return
-	side = 1 - side
+func more_pages() -> bool:
+	return page < sides() - 1
+
+## On to the next side: over to the back of this sheet, or the front of the next one.
+func next_page() -> void:
+	_go_to(page + 1)
+
+func previous_page() -> void:
+	_go_to(page - 1)
+
+func _go_to(index: int) -> void:
+	if not opened or index < 0 or index >= sides() or index == page: return
+	page = index
 	SFX.play_at(self, "page")
 	_show_pages()
+
+## Desktop wheel: +1 brings the open sheet closer to the eyes, -1 back.
+func zoom(step: int) -> void:
+	_reading_goal = clampf(_reading_goal - step * ZOOM_STEP, READ_NEAR, READ_FAR)
+
+## `base` (letter_tool.gd READ_DESKTOP) moved in to the wheel's distance, centred as it nears.
+func reading_pose(base: Transform3D) -> Transform3D:
+	_reading_at = lerpf(_reading_at, _reading_goal, 1.0 - exp(-get_process_delta_time() * ZOOM_EASE))
+	var near := inverse_lerp(READ_FAR, READ_NEAR, _reading_at)
+	return Transform3D(base.basis, Vector3(0.0, base.origin.y * (1.0 - near), -_reading_at))
 
 ## Where the open sheet is: the reader's view or the holding hand (letter_tool.gd).
 func place(pose: Transform3D) -> void:
@@ -106,8 +146,10 @@ func _build() -> void:
 
 func _show_pages() -> void:
 	if sheet == null: return
-	_set_texture(_front, ink.texture(0))
-	_set_texture(_back, ink.texture(1) if sides() > 1 else null)
+	page = sides() - 1 if follow_end else clampi(page, 0, sides() - 1)
+	side = page % 2
+	_set_texture(_front, ink.texture(page - side))
+	_set_texture(_back, ink.texture(page - side + 1))
 
 static func _set_texture(quad: MeshInstance3D, texture: Texture2D) -> void:
 	var material := quad.material_override as StandardMaterial3D

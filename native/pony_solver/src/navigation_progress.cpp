@@ -205,6 +205,9 @@ void ProgressMonitor::evaluate() {
 	} else if (oscillating()) {
 		stalled_ = true;
 		cause_ = "oscillation";
+	} else if (heading_oscillating()) {
+		stalled_ = true;
+		cause_ = "heading oscillation";
 	}
 }
 
@@ -230,6 +233,57 @@ bool ProgressMonitor::circling() const {
 		}
 	}
 	return turned >= 2.0 * PI_VALUE && first_distance - best_distance < tuning.circling_progress;
+}
+
+bool ProgressMonitor::heading_oscillating() const {
+	if (count_ < 3) {
+		return false;
+	}
+	// Stepping and reversing turns count as TURNING for up to turning_limit, and a turn left then
+	// back right inside that limit reset it every half cycle: no other test saw a walker swinging
+	// 220 degrees each way in front of a pony (tools/navigation/probe_heading_flips.gd).
+	// A lobe ends once the heading has come back more than 10 degrees from its extreme (gait
+	// wobble inside a turn does not split it); alternating lobes of heading_lobe or more count.
+	constexpr double BACK = 10.0 * PI_VALUE / 180.0;
+	const double newest = sample(count_ - 1).t;
+	double gained = 0.0;
+	double lobe = 0.0;
+	double against = 0.0;
+	int lobes = 0;
+	int last_sign = 0;
+	bool started = false;
+	for (int i = 0; i < count_; ++i) {
+		const ProgressSample &value = sample(i);
+		if (newest - value.t > tuning.heading_window) {
+			continue;
+		}
+		if (!started) {
+			started = true;
+			continue;
+		}
+		gained += value.gained;
+		const double turn = wrap(value.yaw - sample(i - 1).yaw);
+		if (lobe == 0.0 || (turn > 0.0) == (lobe > 0.0)) {
+			lobe += turn + against;
+			against = 0.0;
+			continue;
+		}
+		against += turn;
+		if (std::fabs(against) > BACK) {
+			if (std::fabs(lobe) >= tuning.heading_lobe) {
+				const int sign = lobe > 0.0 ? 1 : -1;
+				lobes = sign != last_sign ? lobes + 1 : lobes;
+				last_sign = sign;
+			}
+			lobe = against;
+			against = 0.0;
+		}
+	}
+	if (std::fabs(lobe) >= tuning.heading_lobe) {
+		const int sign = lobe > 0.0 ? 1 : -1;
+		lobes = sign != last_sign ? lobes + 1 : lobes;
+	}
+	return lobes >= tuning.heading_lobes && gained < tuning.heading_progress;
 }
 
 bool ProgressMonitor::oscillating() const {

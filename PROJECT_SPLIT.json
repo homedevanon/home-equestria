@@ -1,0 +1,18 @@
+{
+  "variant": "public-development",
+  "entry_scene": "res://world/ui/title_screen.tscn",
+  "private_project": "../home-equestria",
+  "copied_file_count": 7800,
+  "excluded": [
+    "world/zones (scenes, bakes and proxies)",
+    "world/ui/title_scenery.scn",
+    "private credentials, saves and git history",
+    "native regional foliage scenes"
+  ],
+  "models_retained": true,
+  "published": false,
+  "sync": "Independent snapshot; transfer reviewed changes explicitly.",
+  "terrain_retained": true,
+  "region_scenes_retained": false,
+  "runtime_world": "res://world/main.tscn"
+}

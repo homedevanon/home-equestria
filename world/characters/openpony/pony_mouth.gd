@@ -22,6 +22,21 @@ const TONGUE := ["mFaceTongue"]
 ## Base shapes: source clip, time in seconds (-1 = last frame), bone prefixes.
 ## Picked from tools/probe_openpony_mouth.gd (which bones each clip moves).
 const SHAPES := {
+	# Authored on the same face bones through Blender MCP for the November 2 sheet.
+	"round": {"pose":"res://world/characters/openpony/face_sculpt/round_mouth.json"},
+	# Speech poses authored through Blender MCP (tools/face_rig/viseme_shapes_mcp.py, dev
+	# 2026-11-03: "oo" lips must stay on the muzzle; "ss" a slightly open mouth with real teeth).
+	"ss": {"pose":"res://world/characters/openpony/face_sculpt/ss_mouth.json"},
+	"oo": {"pose":"res://world/characters/openpony/face_sculpt/oo_mouth.json"},
+	"ao": {"pose":"res://world/characters/openpony/face_sculpt/ao_mouth.json"},
+	"press": {"pose":"res://world/characters/openpony/face_sculpt/press_mouth.json"},
+	"fv": {"pose":"res://world/characters/openpony/face_sculpt/fv_mouth.json"},
+	"tongue_up": {"pose":"res://world/characters/openpony/face_sculpt/tongue_up.json"},
+	"jaw_wide": {"pose":"res://world/characters/openpony/face_sculpt/jaw_wide.json"},
+	"lift": {"pose":"res://world/characters/openpony/face_sculpt/lift.json"},
+	# The talk clip's opening made left/right symmetric, for speech only (open_soft stays as the
+	# approved faces use it).
+	"talk": {"clip": "talk_2", "time": 1.13, "bones": MOUTH, "mirror": true},
 	"open": {"clip": "sneeze", "time": 0.33, "bones": MOUTH},
 	"open_soft": {"clip": "talk_2", "time": 1.13, "bones": MOUTH},
 	"open_lips": {"clip": "mouth_open_tongue", "time": 0.0, "bones": MOUTH},
@@ -44,25 +59,54 @@ const SHAPES := {
 ##   C open (EH AE)        D wide open (AA)        E rounded, slightly open (AO ER)
 ##   F puckered (UW OW W)  G upper teeth on lip (F V)   H tongue up (L)   X rest
 ## No smile_teeth in speech (dev 2026-10-14: its lopsided grin read as a creepy, confused mouth).
-## Open shapes come from the talk clip (open_soft): the sneeze "open" throws the jaw and
-## cheeks at a sneeze angle, which read as lips jutting out mid-sentence (dev).
+## No sneeze "open" or devkit "pout" either: they threw the lips forward off the muzzle (dev
+## 2026-11-03, "oo" lips came forward off the mesh). Round 1 (2026-11-03 viseme review): each
+## letter is its own readable shape; the authored poses keep every lip on the muzzle surface.
+## Round 2: F is a small near-round ring whose lips slide along the lip arch (no corner fold, no
+## gash in profile); E is its own wider ring (ao), not a half-weight oo whose corners would cut
+## inside the muzzle; B parts the lips over both rows of teeth with a dark gap between them.
 const VISEMES := {
 	"X": {},
-	"A": {},
-	"B": {"open_soft": 0.25},
-	"C": {"open_soft": 0.7},
-	"D": {"open_soft": 1.0, "open": 0.25},
-	"E": {"open_soft": 0.45, "pout": 0.5},
-	"F": {"pout": 0.9},
-	"G": {"open_soft": 0.15},
-	"H": {"open_soft": 0.45, "tongue": 0.3},
+	"A": {"press": 1.0},
+	"B": {"ss": 1.0},
+	"C": {"talk": 0.85, "lift": 1.0},
+	"D": {"talk": 1.0, "jaw_wide": 1.0},
+	"E": {"ao": 1.0},
+	"F": {"oo": 1.0},
+	"G": {"fv": 1.0},
+	"H": {"talk": 0.65, "tongue_up": 1.0},
 }
-## How far the expression layer (resting smile) yields while a viseme is active: both are
-## additive deltas on the same lip bones, stacked they overdrive the corners.
-const EXPRESSION_YIELD := 0.75
+## How far the expression layer (the speaking smile) yields per viseme. Consonants keep the
+## smile so the corners hold still through them; the wide vowel eases it; the rounded vowels
+## release it, since the smile pulls the corners out against the rounding. No viseme active
+## (X, or not speaking) yields nothing, so the resting faces are untouched.
+const VISEME_YIELD := {"D": 0.3, "E": 1.0, "F": 1.0}
+## Speech shapes that part the lips. While any is held above SPEECH_OPEN_AT, lip_open_changed
+## tells the head (hybrid_mare.set_lip_hull_open) to drop the lip-lining hull that otherwise
+## draws a stray ink line across the open mouth; expressions keep their approved ink.
+const SPEECH_OPEN := ["ss", "oo", "ao", "talk", "jaw_wide", "lift", "tongue_up", "fv"]
+const SPEECH_OPEN_AT := 0.05
+## Called with true when speech parts the lips and false when they close again.
+var lip_open_changed := Callable()
+var _lip_open := false
+## The pursed "oo" lights the dark lip colour toward the coat (viseme review round 3): pursed lips
+## are lit skin, and at full lip colour the rolled-out lips framed the small opening as a dark box
+## with bars. Per shape, the share of the lip-to-coat blend at full weight; lip_tone_changed gets
+## the summed blend in LIP_TONE_STEP steps (0 = the approved lip colour, as in every expression).
+const LIP_TONE := {"oo": 0.65}
+const LIP_TONE_STEP := 0.05
+var lip_tone_changed := Callable()
+var _lip_tone := 0.0
 
-## Seconds for a weight to travel 0 -> 1 (Rhubarb cues are 50-200 ms long).
+## Weight easing time scale in seconds (Rhubarb cues are 50-200 ms long). Weights approach their
+## targets exponentially: rising with a time constant of blend_time / OPEN_RATE (about 40 ms to
+## 90%), falling with blend_time / CLOSE_RATE (about 75 ms to 90%), so mouths open crisply and
+## close softly instead of flapping at one linear rate.
 @export var blend_time := 0.06
+const OPEN_RATE := 3.4
+const CLOSE_RATE := 1.8
+## A weight this close to its target snaps onto it (the mix cache then stops rebuilding).
+const SETTLE := 0.004
 
 var current_viseme := "X"
 
@@ -97,7 +141,7 @@ func build(player: AnimationPlayer) -> int:
 		rests.append(skel.get_bone_rest(i))
 	var clips := []
 	for shape_name in SHAPES:
-		var clip: String = SHAPES[shape_name]["clip"]
+		var clip: String = SHAPES[shape_name].get("clip", "")
 		clips.append(player.get_animation(clip) if player.has_animation(clip) else null)
 	var key := [names, rests, clips]
 	_mix_valid = false
@@ -110,6 +154,27 @@ func build(player: AnimationPlayer) -> int:
 	var bones := {}
 	for shape_name in SHAPES:
 		var def: Dictionary = SHAPES[shape_name]
+		if def.has("pose"):
+			var pose: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(def.pose))
+			var authored := {}
+			for bone_name: String in pose.positions:
+				var bone := skel.find_bone(bone_name)
+				if bone < 0: continue
+				var p: Array = pose.positions[bone_name]
+				authored[bone] = {"q":Quaternion.IDENTITY, "p":Vector3(p[0],p[1],p[2])}
+				bones[bone] = true
+			# Optional bone-local rotation deltas [x, y, z, w] (jaw_wide).
+			var rotations: Dictionary = pose.get("rotations", {})
+			for bone_name: String in rotations:
+				var bone := skel.find_bone(bone_name)
+				if bone < 0: continue
+				var r: Array = rotations[bone_name]
+				var entry: Dictionary = authored.get(bone, {"q":Quaternion.IDENTITY, "p":Vector3.ZERO})
+				entry["q"] = Quaternion(r[0], r[1], r[2], r[3]).normalized()
+				authored[bone] = entry
+				bones[bone] = true
+			_shapes[shape_name] = authored
+			continue
 		if not player.has_animation(def["clip"]):
 			continue
 		var anim := player.get_animation(def["clip"])
@@ -141,6 +206,9 @@ func build(player: AnimationPlayer) -> int:
 				deltas.erase(idx)
 			else:
 				bones[idx] = true
+		if def.get("mirror", false):
+			deltas = _symmetric(skel, deltas)
+			for idx in deltas: bones[idx] = true
 		if not deltas.is_empty():
 			_shapes[shape_name] = deltas
 	_bones.assign(bones.keys())
@@ -190,11 +258,9 @@ func weight_of(shape_name: String) -> float:
 
 func _retarget(blend: float) -> void:
 	_targets = {}
-	var activity := 0.0
 	for k in _viseme_targets:
 		_targets[k] = _viseme_targets[k]
-		activity += _viseme_targets[k]
-	var expression_scale := 1.0 - EXPRESSION_YIELD * clampf(activity, 0.0, 1.0)
+	var expression_scale := 1.0 - float(VISEME_YIELD.get(current_viseme, 0.0))
 	for k in _expression:
 		_targets[k] = minf(_targets.get(k, 0.0) + _expression[k] * expression_scale, 1.0)
 	if blend == 0.0:
@@ -203,6 +269,52 @@ func _retarget(blend: float) -> void:
 		for k in _weights.keys():
 			if _weights[k] <= 0.0:
 				_weights.erase(k)
+		_update_lip_open()
+
+
+func _update_lip_open() -> void:
+	if lip_tone_changed.is_valid():
+		var tone := 0.0
+		for shape: String in LIP_TONE:
+			tone += float(_weights.get(shape, 0.0)) * float(LIP_TONE[shape])
+		tone = snappedf(minf(tone, 1.0), LIP_TONE_STEP)
+		if tone != _lip_tone:
+			_lip_tone = tone
+			lip_tone_changed.call(tone)
+	if not lip_open_changed.is_valid():
+		return
+	var open := false
+	for shape: String in SPEECH_OPEN:
+		if float(_weights.get(shape, 0.0)) > SPEECH_OPEN_AT:
+			open = true
+			break
+	if open != _lip_open:
+		_lip_open = open
+		lip_open_changed.call(open)
+
+
+## Ease the weights toward their targets over `delta` seconds (see blend_time). Returns whether
+## any weight moved. Public so review tools replay speech with the mouth's own easing.
+func advance_weights(delta: float) -> bool:
+	var rise := 1.0 if blend_time <= 0.0 else 1.0 - exp(-delta * OPEN_RATE / blend_time)
+	var fall := 1.0 if blend_time <= 0.0 else 1.0 - exp(-delta * CLOSE_RATE / blend_time)
+	var changed := false
+	for k in _targets:
+		var before: float = _weights.get(k, 0.0)
+		var target: float = _targets[k]
+		var w := before + (target - before) * (rise if target > before else fall)
+		if absf(target - w) < SETTLE: w = target
+		if w != before or not _weights.has(k): changed = true
+		_weights[k] = w
+	for k in _weights.keys():
+		if not _targets.has(k):
+			var w: float = _weights[k] * (1.0 - fall)
+			changed = true
+			if w < SETTLE:
+				_weights.erase(k)
+			else:
+				_weights[k] = w
+	return changed
 
 
 func _unprofiled_process_modification() -> void:
@@ -215,22 +327,8 @@ func _unprofiled_process_modification() -> void:
 			skel.set_bone_pose_rotation(_written_bones[k], _written_rotations[k])
 			skel.set_bone_pose_position(_written_bones[k], _written_positions[k])
 		return
-	# Ease the weights toward their targets.
-	var step := 1.0 if blend_time <= 0.0 else get_process_delta_time() * rate_divisor / blend_time
-	var changed := false
-	for k in _targets:
-		var before: float = _weights.get(k, 0.0)
-		var w: float = move_toward(before, _targets[k], step)
-		if w != before or not _weights.has(k): changed = true
-		_weights[k] = w
-	for k in _weights.keys():
-		if not _targets.has(k):
-			var w: float = move_toward(_weights[k], 0.0, step)
-			changed = true
-			if w <= 0.0:
-				_weights.erase(k)
-			else:
-				_weights[k] = w
+	var changed := advance_weights(get_process_delta_time() * rate_divisor)
+	if changed: _update_lip_open()
 	if _weights.is_empty():
 		_written_bones.resize(0)
 		_written_rotations.clear()
@@ -290,6 +388,53 @@ func _build_mix() -> void:
 			_mix_bones.append(idx)
 			_mix_rotations.append(q)
 			_mix_offsets.append(p)
+
+
+## Left/right symmetric copy of a clip-sampled shape (the devkit clips are lopsided): each
+## Left/Right pair gets the average of itself and its mirrored twin, centre bones lose their
+## sideways offset and any turn that is not about the lateral axis. Mirrored in the parent's
+## frame (the face bones' parents keep x lateral), so it holds for any rest orientation.
+static func _symmetric(skel: Skeleton3D, deltas: Dictionary) -> Dictionary:
+	var out := {}
+	for idx: int in deltas:
+		var bone := skel.get_bone_name(idx)
+		var d: Dictionary = deltas[idx]
+		var p: Vector3 = d["p"]
+		var q := _to_parent(skel, idx, d["q"])
+		var twin_name := bone.replace("Left", "Right") if "Left" in bone else bone.replace("Right", "Left")
+		if twin_name == bone:
+			out[idx] = {"q": _from_parent(skel, idx, Quaternion(q.x, 0.0, 0.0, q.w).normalized()), "p": Vector3(0.0, p.y, p.z)}
+			continue
+		var twin := skel.find_bone(twin_name)
+		var twin_p := Vector3.ZERO
+		var twin_q := Quaternion.IDENTITY
+		if deltas.has(twin):
+			twin_p = deltas[twin]["p"]
+			twin_q = _to_parent(skel, twin, deltas[twin]["q"])
+		var mp := (p + _mirror_p(twin_p)) * 0.5
+		var mq := q.slerp(_mirror_q(twin_q), 0.5)
+		out[idx] = {"q": _from_parent(skel, idx, mq), "p": mp}
+		if twin >= 0 and not deltas.has(twin):
+			out[twin] = {"q": _from_parent(skel, twin, _mirror_q(mq)), "p": _mirror_p(mp)}
+	return out
+
+
+static func _to_parent(skel: Skeleton3D, idx: int, q: Quaternion) -> Quaternion:
+	var rest := skel.get_bone_rest(idx).basis.get_rotation_quaternion()
+	return rest * q * rest.inverse()
+
+
+static func _from_parent(skel: Skeleton3D, idx: int, q: Quaternion) -> Quaternion:
+	var rest := skel.get_bone_rest(idx).basis.get_rotation_quaternion()
+	return (rest.inverse() * q * rest).normalized()
+
+
+static func _mirror_p(p: Vector3) -> Vector3:
+	return Vector3(-p.x, p.y, p.z)
+
+
+static func _mirror_q(q: Quaternion) -> Quaternion:
+	return Quaternion(q.x, -q.y, -q.z, q.w)
 
 
 static func _matches(bone: String, prefixes: Array) -> bool:

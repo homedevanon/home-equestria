@@ -263,6 +263,17 @@ const HANDOFF := "handoff/crowd_handoff"
 const CLIP_HANDOFF_SECONDS := 0.35
 var _clip_from := Transform3D.IDENTITY
 var _clip_blend := 1.0
+## Hand-off back out of the clip tiers (pony_clip_tier.gd leave, dev 2026-11-03 "about 4 m away
+## ... for like 1 frame she'll zap away ... or her head will jitter"): the solver's pivot eases in
+## from the clip pivot she showed (`_hero_from`, physics frame `_hero_from_frame`), and a body
+## she walked into without collision is eased out of instead of thrown out (`_overlap_*`).
+## `_handoff_clip_head`: ClipHead was layering her head when she left.
+var _hero_from := Transform3D.IDENTITY
+var _hero_blend := 1.0
+var _hero_from_frame := -1
+var _overlap_age := -1.0
+var _overlap_exceptions: Array = []
+var _handoff_clip_head := false
 ## HERO's leading-leg phase when she entered the clip tier: the first gait clip starts there.
 var _clip_enter_phase := 0.0
 ## Seconds in the clip tier since the last hand-off; the hand-off clip is dropped from the
@@ -551,6 +562,23 @@ func lunge(world_velocity: Vector3, seconds: float) -> void:
 	_lunge_left = maxf(seconds, 0.0)
 
 
+## The wall the follower hears about (flattened normal, zero for none): a contact higher above her
+## hooves than her step height. The round foot of her 0.19 m capsule touches any edge over 3.4 cm
+## with a normal steeper than floor_max_angle, so is_on_wall() also reports a kerb, a door sill or
+## the 5 cm apron where the spa steps meet the street, which she rides straight over. Reported, the
+## follower marked that lip as an obstruction on the only way up and never climbed the steps
+## (tools/spa/test_spa_walk_in.gd, 2026-10-31). Walls, furniture and ponies touch higher.
+func _nav_wall_normal() -> Vector3:
+	if not is_on_wall(): return Vector3.ZERO
+	var lip: float = global_position.y + float(profile.step_height)
+	for index: int in get_slide_collision_count():
+		var hit := get_slide_collision(index)
+		var normal := hit.get_normal()
+		if normal.angle_to(up_direction) > floor_max_angle + 0.01 and hit.get_position().y > lip:
+			return Vector3(normal.x, 0.0, normal.z)
+	return Vector3.ZERO
+
+
 ## A kiss (pony_affection.gd) may still turn her and step her closer while his hands rest on her:
 ## petting alone then no longer freezes her heading and speed.
 var steer_through_touch := false
@@ -787,6 +815,7 @@ func reset_motion(world_transform: Transform3D) -> void:
 	phase = 0.0
 	actual_speed = 0.0
 	state = Motion.STANDING
+	_stance_root = Vector3.INF
 	_blend = 0.0
 	_stop_elapsed = 0.0
 	_body_height = 0.0
@@ -845,6 +874,7 @@ func _follow_moving_support() -> void:
 		foot.basis = motion.basis * Basis(foot.basis)
 	_previous_horizontal_velocity = motion.basis * _previous_horizontal_velocity
 	_hoof_plants.carry(motion)
+	if _stance_root.is_finite(): _stance_root = motion * _stance_root
 
 var water_escape := preload("res://world/characters/locomotion/pony_water_escape.gd").new()
 ## Potato tier (dev 2026-09-29, Quest: the physics tick was 41 mares' per-tick script): a FAR
@@ -964,6 +994,8 @@ func _physics_process(delta: float) -> void:
 		_far_tick(delta, motion_delta)
 		return
 	_tick += 1
+	# Just back from a clip tier inside something (pony_clip_tier.gd ease_overlap).
+	if _overlap_age >= 0.0: CLIP_TIER.ease_overlap(self, delta)
 	# Rays, support, contacts and the leg solve run every hero_divisor-th tick (30 Hz past
 	# PonyCrowd.close_distance) with a matching step; the previous corrected pose stays
 	# prepared in between. dev 2026-09-17: the solver need not run every tick for mares
@@ -1146,13 +1178,13 @@ func _physics_process(delta: float) -> void:
 	if nav_motion:
 		nav_executed_speed = horizontal_speed
 		nav_executed_yaw_rate = _yaw_rate
-		var wall := get_wall_normal() if is_on_wall() else Vector3.ZERO
-		nav_wall_normal = Vector3(wall.x, 0.0, wall.z)
+		nav_wall_normal = _nav_wall_normal()
 		if _blocked: nav_refusal = NAV_REFUSAL_SUPPORT
 		elif _touch_blocks(): nav_refusal = NAV_REFUSAL_TOUCH
 	actual_speed = displacement.length() / delta if is_on_floor() else 0.0
 	if Vector2(displacement.x, displacement.z).length() < 0.00001:
 		actual_speed = 0.0
+	_keep_stance(delta)
 	_update_state(delta, maxf(wanted_speed, _turn_step_speed))
 	if not _held and (state == Motion.MOVING or state == Motion.STARTING or (state == Motion.STOPPING and actual_speed > 0.02)):
 		step_timing.excluded_leg=hoof_hold.leg_index if hoof_hold.active() else -1
@@ -1183,6 +1215,8 @@ func _physics_process(delta: float) -> void:
 	if not solve_tick:
 		return
 	_update_body(solve_delta)
+	# Just back from a clip tier: the solver's pivot eases in from the clip's (pony_clip_tier.gd).
+	if _hero_blend < 1.0: CLIP_TIER.blend_pivot(self, solve_delta)
 	if activity_mouth_pose != null: activity_mouth_pose.apply_body_pivot(pivot)
 	if prof: lap = _cpu_lap("hero_update_body", lap)
 	if _initialized:
@@ -1325,6 +1359,7 @@ func set_sim_tier(tier: int, phase: int = 0) -> void:
 	refresh_hidden_clip()
 	transitions += 1
 	var was_clips := sim_tier != SimTier.HERO
+	_handoff_clip_head = sim_tier == SimTier.NEAR and _clip_head != null
 	sim_tier = tier as SimTier
 	_clip_refresh = true
 	_rig_cache_valid = false
@@ -1517,13 +1552,17 @@ func _clip_logic(dt: float) -> void:
 			at = animation.current_animation_position / animation.current_animation_length
 		var blend: float = CLIP_HANDOFF_SECONDS if from_handoff else profile.gait_blend_seconds
 		animation.play(clip, blend)
-		# The mixer's crossfade runs in clip time: at the slowest playback rate (0.25) it lasts 4x.
-		_clip_blend_end = _clip_age + blend / 0.25
+		# The mixer's crossfade runs in clip time: at the slowest playback rate (the walk's floor,
+		# also the stepping turn's 0.5) it lasts 2x.
+		_clip_blend_end = _clip_age + blend / CLIP_TIER.WALK_RATE_FLOOR
 		if moving:
 			animation.seek(fposmod(at, 1.0) * animation.current_animation_length, false)
 	_clip_static = not moving  # the stand clip is now current
 	var clip_speed := BAKED_GAITS.speed(_baked, _clip_gait) * profile.body_scale
-	animation.speed_scale = clampf(actual_speed / clip_speed, 0.25, 1.6) if moving and clip_speed > 0.0 else 1.0
+	# Each clip only near its own baked speed (pony_clip_tier.gd RATE): a slow pony slow-trots
+	# (trot_slow) instead of playing the everyday trot in slow motion.
+	animation.speed_scale = clampf(actual_speed / clip_speed, CLIP_TIER.rate_floor(_clip_gait), CLIP_TIER.RATE.y) \
+		if moving and clip_speed > 0.0 else 1.0
 	if stepping and actual_speed < 0.05: animation.speed_scale = 0.5
 	# Backing up plays the walk clip in reverse (the same poses, the other way round).
 	if backing and moving: animation.speed_scale = -absf(animation.speed_scale)
@@ -1989,6 +2028,33 @@ func _update_give(delta: float, world_acceleration: Vector3) -> void:
 		if _body_offset.length() > 0.04:
 			_body_offset = _body_offset.limit_length(0.04)
 			_body_offset_velocity *= 0.5
+
+
+## Standing hooves are world locks with no reach limit (_update_contacts), and the legs only start
+## above 0.05 m/s. A body moved more slowly than that, by a creeping command or a push, walked off
+## its own hooves until the legs ran out of reach (dev 2026-11-04, Bon Bon). Past STANCE_SLIP she
+## steps back under herself with the in-place walk a turn uses. Rollback: stance_step = false.
+const STANCE_SLIP := 0.08
+const STANCE_STEP_SPEED := 0.14
+const STANCE_STEP_SECONDS := 0.6
+var stance_step := true
+var _stance_step_left := 0.0
+var _stance_root := Vector3.INF
+
+## How far her body has moved over the ground since her hooves took this stance, in metres.
+func stance_slip() -> float:
+	if state != Motion.STANDING or not _stance_root.is_finite(): return 0.0
+	return Vector2(global_position.x - _stance_root.x, global_position.z - _stance_root.z).length()
+
+func _keep_stance(delta: float) -> void:
+	_stance_step_left = maxf(_stance_step_left - delta, 0.0)
+	if state != Motion.STANDING or _stance_step_left > 0.0 or _spawn_settle > 0.0 or not _stance_root.is_finite():
+		_stance_root = global_position
+	if not stance_step: return
+	if _stance_step_left == 0.0 and not _held and hoof_hold.leg_index < 0 and _interaction.is_empty() \
+			and (posture == null or not posture.active()) and stance_slip() > STANCE_SLIP * body_scale:
+		_stance_step_left = STANCE_STEP_SECONDS
+	if _stance_step_left > 0.0: _turn_step_speed = maxf(_turn_step_speed, STANCE_STEP_SPEED)
 
 
 func _update_state(delta: float, wanted_speed: float) -> void:

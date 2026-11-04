@@ -140,6 +140,8 @@ struct Neighbour {
 	double vz = 0.0;
 	double radius = 0.45;
 	uint64_t id = 0;
+	// She follows a route of her own (she keeps right too: no going round her on the other side).
+	bool walker = false;
 };
 
 // Validates arcs against one world snapshot for one movement profile, on the main thread.
@@ -212,6 +214,22 @@ struct SteeringInput {
 	// Yielding has lasted past its limit: treat avoidance as missing and rely on neighbours.
 	bool ignore_yield = false;
 	double neighbour_margin = 0.0;
+	// Committed pass round a pony in the way (2026-10-31): she walks round that pony on one side
+	// until it is abeam, with no reversal or pursuit arc pulling her back into it. `pass_side` 0
+	// means none; +1/-1 picks the tangent (see pass_heading in navigation_steering.cpp).
+	uint64_t pass_id = 0;
+	int32_t pass_side = 0;
+	// Seconds and metres spent in the current pass (bounded).
+	double pass_time = 0.0;
+	double pass_distance = 0.0;
+	// The side last committed round this neighbour (kept a few seconds): a re-trigger keeps it.
+	uint64_t side_memory_id = 0;
+	int32_t side_memory = 0;
+	// A step turn or turning arc went this way (+1 left, -1 right) less than the hold time ago:
+	// a new turn of more than 90 degrees keeps that direction (no left/right/left reversals).
+	int32_t turn_hold = 0;
+	// A pony that is not moving stands on her destination: she waits beside it, never walks round it.
+	bool goal_occupied = false;
 };
 
 struct SteeringOutput {
@@ -248,6 +266,12 @@ struct SteeringOutput {
 	int32_t refused_blocked = 0;
 	bool start_located = true;
 	int32_t neighbours = 0;
+	// The committed pass for the next tick (0 side: none), and the pass found shut this tick
+	// (0 side: none; the caller remembers the other side for that neighbour).
+	uint64_t pass_id = 0;
+	int32_t pass_side = 0;
+	uint64_t failed_pass_id = 0;
+	int32_t failed_pass_side = 0;
 };
 
 // One follower decision. `validator` may be null (no ground: every arc validates), `start` is

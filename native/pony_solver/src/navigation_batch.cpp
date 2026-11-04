@@ -52,6 +52,39 @@ void add_blocked(FollowState &follow, double x, double z, double radius) {
 	follow.blocked.push_back(disc);
 }
 
+// The native stall watchdog is blind to ponies otherwise: held by ponies (one held or refused
+// her within the last 3 s), the replan searches round the ones standing on her way ahead. The
+// radius covers the follower's hard separation (body radii + 0.1, + 0.1 without an avoidance
+// answer), a walk-grid cell (search discs test cell centres) and 0.1 m to spare
+// (peer_passage.gd PEER_DISC_PAD is the same).
+constexpr double PEER_DISC_PAD = 0.55;
+
+void peer_discs(const FollowState &follow, const std::vector<Neighbour> &neighbours, const Vec3f &p,
+		std::vector<BlockedDisc> &out) {
+	out.clear();
+	if (follow.neighbour_age > 3.0) {
+		return;
+	}
+	for (const Neighbour &other : neighbours) {
+		if (std::hypot(other.vx, other.vz) >= 0.25 || std::hypot(other.x - double(p.x), other.z - double(p.z)) > 4.5) {
+			continue;
+		}
+		const CorridorProjection near =
+				follow.corridor.project_window(other.x, double(p.y), other.z, follow.s, 0.5, 5.0, 3.0);
+		if (!near.found || near.lateral > 1.5) {
+			continue;
+		}
+		BlockedDisc disc;
+		disc.x = other.x;
+		disc.z = other.z;
+		disc.radius = follow.limits.body_radius + other.radius + PEER_DISC_PAD;
+		out.push_back(disc);
+		if (out.size() >= 6) {
+			break;
+		}
+	}
+}
+
 void write_command(std::vector<float> &commands, size_t row, bool valid, double speed, double yaw_rate, int32_t mode) {
 	float *out = commands.data() + row * size_t(COMMAND_STRIDE);
 	out[0] = valid ? 1.0f : 0.0f;
@@ -283,6 +316,16 @@ CorridorReply NavigationService::follow_set_corridor(const ActorHandle &handle, 
 		follow.yield_time = 0.0;
 		follow.frontal_contact = 0.0;
 		follow.refused = 0.0;
+		follow.pass_id = 0;
+		follow.pass_side = 0;
+		follow.pass_time = 0.0;
+		follow.pass_distance = 0.0;
+		follow.side_memory_id = 0;
+		follow.side_memory = 0;
+		follow.side_memory_age = 1e9;
+		follow.turn_sign = 0;
+		follow.turn_sign_age = 1e9;
+		follow.neighbour_age = 1e9;
 	} else {
 		follow.monitor.corridor_replaced(request.route);
 	}
@@ -330,6 +373,8 @@ bool NavigationService::follow_clear(const ActorHandle &handle) {
 	actor->follow.prev_v = 0.0;
 	actor->follow.prev_k = 0.0;
 	actor->follow.reversing = false;
+	actor->follow.pass_side = 0;
+	actor->follow.pass_id = 0;
 	return true;
 }
 
@@ -372,9 +417,13 @@ bool NavigationService::follow_step(const int64_t *keys, size_t key_count, const
 		if (row.usable) row.speed = std::hypot(double(velocities[i].x), double(velocities[i].z));
 		const int64_t slot = keys[i * 2];
 		const int64_t generation = keys[i * 2 + 1];
+		if (slot < 0 && generation > 0) {
+			row.identity = uint64_t(generation);
+		}
 		if (slot >= 0 && generation > 0 && slot <= 0xffffffffll && generation <= 0xffffffffll) {
 			row.handle.slot = uint32_t(slot);
 			row.handle.generation = uint32_t(generation);
+			row.identity = (uint64_t(slot) << 32) | uint64_t(generation);
 			Actor *actor = live_actor(row.handle);
 			if (actor != nullptr && actor->follow.active) {
 				row.actor = actor;
@@ -795,9 +844,41 @@ void NavigationService::follow_row(const FollowBatch &batch, size_t i, FollowSin
 		neighbour.vx = velocities[j].x;
 		neighbour.vz = velocities[j].z;
 		neighbour.radius = table[j].actor != nullptr ? table[j].actor->follow.limits.body_radius : lim.body_radius;
-		neighbour.id = j;
+		neighbour.walker = table[j].actor != nullptr;
+		// Stable across ticks (a committed pass and its remembered side name the pony): her
+		// identity (native_follow_driver.gd gives observer rows one too), else her row.
+		neighbour.id = table[j].identity != 0 ? table[j].identity : (uint64_t(1) << 63) | uint64_t(j);
 		neighbours.push_back(neighbour);
 	}
+	// A pony that is not moving stands on her destination, and she is about as close as the
+	// neighbour separation lets her come: she waits there, and arrives at the nearest reachable spot.
+	// "On" it means the separation round that pony covers the whole arrival circle: no spot within
+	// the arrival radius of the destination is a body's width from her. A pony merely beside the
+	// destination leaves it reachable, so the walker goes on and arrives for real (2026-10-31: with
+	// the test at separation PLUS the arrival radius, leaving Hayburger customers stopped 1.7 m
+	// short of a departure spot beside an earlier customer and parked in the walkway for 90 s).
+	bool goal_occupied = false;
+	if (follow.terminal) {
+		for (const Neighbour &other : neighbours) {
+			const double reach = lim.body_radius + other.radius + 0.2;
+			if (std::hypot(other.vx, other.vz) < 0.25 &&
+					std::hypot(other.x - double(end.x), other.z - double(end.z)) < reach - lim.arrival_radius &&
+					end_distance <= reach + 0.6) {
+				goal_occupied = true;
+				break;
+			}
+		}
+	}
+	steering.goal_occupied = goal_occupied;
+	steering.pass_id = follow.pass_id;
+	steering.pass_side = follow.pass_side;
+	steering.pass_time = follow.pass_time;
+	steering.pass_distance = follow.pass_distance;
+	if (follow.side_memory_age < 6.0) {
+		steering.side_memory_id = follow.side_memory_id;
+		steering.side_memory = follow.side_memory;
+	}
+	steering.turn_hold = follow.turn_sign_age < 1.5 ? follow.turn_sign : 0;
 	SteeringOutput out = steer(follow.corridor, follow.s, steering, lim, validator, start, follow.blocked, neighbours);
 	if (validator != nullptr) {
 		sink.stats.cells_checked += validator->cells_checked - cells_before;
@@ -805,14 +886,52 @@ void NavigationService::follow_row(const FollowBatch &batch, size_t i, FollowSin
 	sink.stats.candidates_validated += uint64_t(std::max(0, out.candidates_validated));
 	// The yield timer runs while avoidance keeps answering zero, whether she still obeys it.
 	follow.yield_time = out.zero_answer ? follow.yield_time + dt : 0.0;
+	// Pass bookkeeping: its time and distance, the side kept for that pony (a side found shut
+	// flips it), and the last in-place turn's direction.
+	if (out.failed_pass_side != 0) {
+		follow.side_memory_id = out.failed_pass_id;
+		follow.side_memory = -out.failed_pass_side;
+		follow.side_memory_age = 0.0;
+	}
+	if (out.pass_side != 0) {
+		if (out.pass_side == follow.pass_side && out.pass_id == follow.pass_id) {
+			follow.pass_time += dt;
+			follow.pass_distance += speed * dt;
+		} else {
+			follow.pass_time = 0.0;
+			follow.pass_distance = 0.0;
+		}
+		follow.side_memory_id = out.pass_id;
+		follow.side_memory = out.pass_side;
+		follow.side_memory_age = 0.0;
+	} else {
+		follow.pass_time = 0.0;
+		follow.pass_distance = 0.0;
+		if (out.failed_pass_side == 0) {
+			follow.side_memory_age += dt;
+		}
+	}
+	follow.pass_id = out.pass_id;
+	follow.pass_side = out.pass_side;
+	if (out.mode == MODE_STEP_TURN || out.reason == REASON_REVERSING) {
+		follow.turn_sign = out.w >= 0.0 ? 1 : -1;
+		follow.turn_sign_age = 0.0;
+	} else {
+		follow.turn_sign_age += dt;
+	}
+	follow.neighbour_age = (out.reason == REASON_NEIGHBOUR || out.refused_neighbour > 0 || out.yielding ||
+								   out.pass_side != 0)
+			? 0.0
+			: follow.neighbour_age + dt;
 	// Held within twice the arrival radius of a destination she cannot step any closer to
 	// (every arc refused by the ground, a wall or ponies standing at it): after half a second
 	// that is arrival at the nearest reachable spot, reported as a goal-region alternative,
 	// never a failure and never a plain arrival.
-	const bool held_short = follow.terminal && end_distance <= 2.0 * lim.arrival_radius &&
+	// A pony standing on the destination itself holds her a body's width short of it: the same.
+	const bool held_short = follow.terminal && (end_distance <= 2.0 * lim.arrival_radius || goal_occupied) &&
 			std::fabs(double(p.y) - double(end.y)) <= lim.floor_tolerance && speed < 0.05 && out.v < 0.05 &&
-			(out.reason == REASON_NO_SAFE_ARC || out.reason == REASON_WALL_CONTACT || out.reason == REASON_REPAIR ||
-					out.reason == REASON_NEIGHBOUR);
+			(goal_occupied || out.reason == REASON_NO_SAFE_ARC || out.reason == REASON_WALL_CONTACT ||
+					out.reason == REASON_REPAIR || out.reason == REASON_NEIGHBOUR);
 	follow.end_blocked = held_short ? follow.end_blocked + dt : 0.0;
 	if (follow.end_blocked > 0.5 && !follow.arrived) {
 		follow.arrived = true;
@@ -867,11 +986,13 @@ void NavigationService::follow_row(const FollowBatch &batch, size_t i, FollowSin
 			++sink.stats.replans;
 			sink_event(sink, row.handle, follow, EVENT_REPLAN,
 					std::string("No route progress after a local repair (") + follow.monitor.cause() + ")", p);
+			peer_discs(follow, neighbours, p, sink.events.back().peers);
 			break;
 		case Escalation::ALTERNATE:
 			++sink.stats.alternates;
 			sink_event(sink, row.handle, follow, EVENT_ALTERNATE,
 					std::string("Still blocked after a replan (") + follow.monitor.cause() + ")", p);
+			peer_discs(follow, neighbours, p, sink.events.back().peers);
 			break;
 		case Escalation::FAILED:
 			++sink.stats.failures;

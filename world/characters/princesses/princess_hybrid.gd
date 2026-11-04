@@ -20,7 +20,7 @@ func _ready() -> void:
 	for mi in head.model.find_children("Unicorn Horn", "MeshInstance3D", true, false): mi.hide()
 	var dock := find_child("OpenPonyDock", true, false)
 	if dock != null: dock.hide()
-	profile.clearance = 1.95 if identity.id == "celestia" else 1.45
+	profile.clearance = 1.95 if identity.character() == "celestia" else 1.45
 	_update_capsule()
 
 func _attach_devkit_hair() -> void:
@@ -54,7 +54,7 @@ func set_body_scale(value: float) -> void:
 func _update_capsule() -> void:
 	if _collision == null: return
 	var shape := _collision.shape.duplicate() as CapsuleShape3D
-	shape.height = (1.25 if identity.id == "celestia" else .95) * body_scale
+	shape.height = (1.25 if identity.character() == "celestia" else .95) * body_scale
 	shape.radius = .21 * body_scale
 	_collision.shape = shape
 	_collision.position.y = shape.height * .5

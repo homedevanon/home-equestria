@@ -10,6 +10,12 @@ enum Race { EARTH, PEGASUS, UNICORN, ALICORN }
 enum LashStyle { STANDARD, PINKIE, FLUTTERSHY, RARITY }
 
 @export var id := "rainbow_dash"
+## The character whose body and character-specific behaviour this pony has, when that is not her own
+## id: a mod's stand-in or copy of a canon pony ("pinkie_pie" for a mod's pinkie_pie_copy_3) gets
+## Pinkie's bounce, Celestia's size or Vinyl's glasses without pretending to be her. Empty: her own id.
+## Code that asks "is this Pinkie's body/behaviour?" reads character(); code about who she is (memory,
+## relationships, saves, prompts) keeps reading id.
+@export var character_id := ""
 @export var stallion := false
 ## A filly (dev 2026-09-23): the adult body at filly proportions (hybrid_mare.gd FILLY_*):
 ## smaller overall, bigger head, shorter neck, sturdier legs. No separate rig.
@@ -26,8 +32,11 @@ enum LashStyle { STANDARD, PINKIE, FLUTTERSHY, RARITY }
 @export var mane_line := Color("1B98D1")
 @export var iris_color := Color("C42B7B")
 @export var lash_style := LashStyle.STANDARD
-## Alpha 0 = no eyeshadow.
+## Alpha 0 = use the canonical palette, or ordinary coat shading if none is listed.
 @export var eyeshadow_color := Color(0.72, 0.88, 0.94, 0.0)
+## Alpha 0 = no freckles. Applejack's six cheek freckles (face_sculpt.gd FRECKLE_SPOTS).
+@export var freckle_color := Color(0.99, 0.87, 0.58, 0.0)
+static var _eyelid_palette: Dictionary = {}
 ## Swapped onto the native body's Cutie mark.L/.R patches; null keeps the export's texture.
 @export var cutie_mark: Texture2D
 ## Devkit mane + tail GLB (tools/extract_devkit_hair.py) and the node-name prefix inside it.
@@ -61,9 +70,25 @@ enum LashStyle { STANDARD, PINKIE, FLUTTERSHY, RARITY }
 @export var ai_profile := "res://world/ai/characters/rainbow_dash.json"
 
 
+## Explicit identity override, then the vector guide's named eyelid colour.
+## Transparent means ordinary coat with a light expressive-lid tint, not makeup.
+func eyeshadow() -> Color:
+	if eyeshadow_color.a > 0.0: return eyeshadow_color
+	if _eyelid_palette.is_empty():
+		var data: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://world/characters/eyelid_colors.json"))
+		_eyelid_palette = data.ponies
+	if not _eyelid_palette.has(id): return Color.TRANSPARENT
+	return Color(_eyelid_palette[id].color)
+
+
 func has_wings() -> bool:
 	return race in [Race.PEGASUS, Race.ALICORN]
 
 
 func has_horn() -> bool:
 	return race in [Race.UNICORN, Race.ALICORN]
+
+
+## The character whose body and behaviour she has: character_id when a mod set one, else her id.
+func character() -> String:
+	return character_id if not character_id.is_empty() else id

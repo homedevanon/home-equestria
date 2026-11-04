@@ -18,6 +18,7 @@ extends RefCounted
 ## sits in memory, which rules out ZIPReader.read_file.
 
 const KEY_PATH := "res://world/update/release_public_key.pem"
+const ROOTS_PATH := "res://world/update/tls_roots.pem"
 const PLATFORMS := ["linux", "windows", "android"]
 const CHUNK := 1 << 20
 ## Release names are plain; anything else (quotes, %, &, drive letters) is refused, which also
@@ -37,6 +38,21 @@ static func load_public_key(path: String = KEY_PATH) -> CryptoKey:
 	var key := CryptoKey.new()
 	if key.load_from_string(FileAccess.get_file_as_string(path), true) != OK: return null
 	return key
+
+
+## TLS options that trust only the root certificates shipped in ROOTS_PATH, or null without them.
+## On Windows Godot trusts only the system's root store, and Windows fills that store on demand
+## (Edge/CryptoAPI fetch a missing root; Godot's TLS library never asks). An LTSC or offline PC that
+## never met GitHub's roots then refuses github.com with a TLS handshake error on every network
+## (player report, Win10 LTSC, 2026-10-31). The updater and the setup retry with these roots after
+## exactly that error: the host name is still checked, and every download still has to match the
+## signed manifest. The file holds Mozilla's roots for GitHub's CAs (Sectigo/USERTrust/COMODO for
+## github.com and its API, Let's Encrypt ISRG for the file hosts, and DigiCert, which GitHub used before).
+static func fallback_tls(path: String = ROOTS_PATH) -> TLSOptions:
+	if not FileAccess.file_exists(path): return null
+	var roots := X509Certificate.new()
+	if roots.load_from_string(FileAccess.get_file_as_string(path)) != OK: return null
+	return TLSOptions.client(roots)
 
 
 ## True when sig_text (base64, line breaks allowed) is a valid signature over these exact bytes.
