@@ -44,6 +44,8 @@ const PIECE_REACH := 0.07
 ## She is on her cushion within this (flat); a navigator that stops within the second is close enough.
 const SEAT_REACH := 0.3
 const SEAT_FALLBACK := 0.7
+## And no more than this above or below it.
+const SEAT_HEIGHT := 0.6
 const VR_DROP_RANGE := 0.12
 signal changed
 
@@ -454,8 +456,10 @@ func _seated(row: Dictionary) -> bool:
 	var nav: Node = row.nav
 	var seat: Node3D = row.get("seat", pony_seat)
 	var off := _flat(actor.global_position, seat.global_position)
+	# Upstairs right over the cushion is not at it (any pony in the house may be asked).
+	if absf(actor.global_position.y - seat.global_position.y) > SEAT_HEIGHT: off = maxf(off, SEAT_FALLBACK + 0.01)
 	var walking: bool = nav.get("_has_target") == true
-	if off > SEAT_REACH and off < 1.1 and walking and not row.has("overshoot"):
+	if off > SEAT_REACH and off < 1.1 and walking and not row.has("overshoot") and absf(actor.global_position.y - seat.global_position.y) <= SEAT_HEIGHT:
 		# The navigator stops ~0.3 m short of its goal: on the last stretch aim a little past the
 		# cushion, so she ends up on it.
 		var on := seat.global_position - actor.global_position

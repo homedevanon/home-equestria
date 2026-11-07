@@ -402,6 +402,7 @@ func _stop_thinking() -> void:
 
 func close() -> void:
 	_stop_thinking()
+	_release_horn()
 	MAGIC.unglow_object(_glow)
 	_glow.clear()
 	_release_gaze()
@@ -410,7 +411,14 @@ func close() -> void:
 
 func _exit_tree() -> void:
 	_stop_thinking()
+	_release_horn()
 	MAGIC.unglow_object(_glow)
+
+## A unicorn's piece still in her magic when the game is put away mid-move: her horn lets go too
+## (_step_animation does it when the piece lands).
+func _release_horn() -> void:
+	if animating and not _glow.is_empty() and is_instance_valid(_anim_actor) and _anim_actor.get("magic") != null: _anim_actor.magic.hold(false)
+	_anim_actor = null
 
 func _look_at_board() -> void:
 	for side: int in [1, -1]:

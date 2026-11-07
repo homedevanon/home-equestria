@@ -246,13 +246,19 @@ func _full_hash() -> int:
 	if ep_hashed: h ^= _keys[849 + (ep & 7)]
 	return h
 
-## A pawn of the side to move stands beside the pawn that just went two squares.
+## A pawn of the side to move stands beside the pawn that just went two squares and may really take
+## it: a pinned one may not, and then the position repeats as if no pawn had gone two squares.
 func _ep_live() -> bool:
 	if ep < 0: return false
 	var pushed := ep - 8 * side
 	for df: int in [-1, 1]:
 		var file := (pushed & 7) + df
-		if file >= 0 and file < 8 and board[pushed + df] == PAWN * side: return true
+		if file < 0 or file >= 8 or board[pushed + df] != PAWN * side: continue
+		var from := pushed + df
+		board[from] = 0; board[pushed] = 0; board[ep] = PAWN * side
+		var legal := not attacked(kings[0 if side == 1 else 1], -side)
+		board[ep] = 0; board[pushed] = -PAWN * side; board[from] = PAWN * side
+		if legal: return true
 	return false
 
 ## Sets up a position from FEN (tests and puzzles).
