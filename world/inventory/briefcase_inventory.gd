@@ -20,6 +20,7 @@ const SHOP_PURCHASE := preload("res://world/shop/shop_purchase.gd")
 ## Loaded only when a folding easel is used (world/painting/).
 const EASEL_FOLD := "res://world/painting/easel_fold.gd"
 const PHOTO_CAMERA := preload("res://world/items/photo_camera.gd")
+const BOARD_FOLD := "res://world/minigames/board_games/board_fold.gd"
 ## Writing paper, letters and the quill (world/letters/, docs/LETTERS_PLAN_2026_10_29.md).
 const LETTER_TOOL := preload("res://world/letters/paper/letter_tool.gd")
 const QUILL_TOOL := preload("res://world/letters/paper/quill_tool.gd")
@@ -696,11 +697,14 @@ func _take_pick(side: String, pick: Dictionary, pose: Transform3D) -> bool:
 	var deployed: bool = inventory.loans.get(str(candidate.get_meta("token", "")), {}).get("picnic_deployed", false)
 	if deployed and (picnic == null or not picnic.can_pack(candidate)):
 		inventory.last_error = "Clear the blanket before packing it."; _error(); return false
+	if candidate.has_meta("board_table_root") and not load(BOARD_FOLD).can_pack(candidate):
+		inventory.last_error = "Finish or resign the game before packing the board."; _error(); return false
 	if not inventory.pick_up(String(candidate.get_meta("token"))): _error(); return false
 	preload("res://world/cooking/cooking_station.gd").presentation(candidate, false)
 	preload("res://world/housing/home_furnishing.gd").configure(candidate, false)
 	if deployed: picnic.fold_visual(candidate)
 	if candidate.has_meta("painting_easel_root"): load(EASEL_FOLD).fold_visual(candidate)
+	if candidate.has_meta("board_table_root"): load(BOARD_FOLD).fold_visual(candidate)
 	if candidate.has_meta("outside_drop"): candidate.remove_meta("outside_drop")
 	candidate.freeze=true;candidate.linear_velocity=Vector3.ZERO;candidate.angular_velocity=Vector3.ZERO
 	var grip:=hold_local(String(candidate.get_meta("item_id","")))
@@ -844,6 +848,9 @@ func _input(event: InputEvent):
 			var photo_camera: Node3D = PHOTO_CAMERA.on(held.desktop)
 			if event.button_index == MOUSE_BUTTON_RIGHT: photo_camera.set_looking(event.pressed, camera)
 			elif event.pressed: photo_camera.snap(self, camera)
+			get_viewport().set_input_as_handled(); return
+		if use_click and held.desktop.get_meta("item_id", "") == "goods:game-board":
+			if event.pressed: load(BOARD_FOLD).unfold(self, "desktop")
 			get_viewport().set_input_as_handled(); return
 		# A held print: a click looks at it, the wheel brings it closer; over a home wall the wheel
 		# picks its size (or turns floor furniture), green or red in the placement preview.
@@ -1081,6 +1088,8 @@ func interaction_hint() -> Dictionary:
 			return {"target": item, "text": "Click · Take photo   Hold right click · Look through" if side == "desktop" else "Eyepiece to your eye · Look through   Trigger · Take photo", "point": item.global_position + Vector3.UP * .12}
 		if is_instance_valid(item) and item.get_meta("item_id", "") == "goods:easel":
 			return {"target": item, "text": "Click · Unfold easel on flat ground" if side == "desktop" else "Trigger · Unfold easel on flat ground", "point": item.global_position + Vector3.UP * .15}
+		if is_instance_valid(item) and item.get_meta("item_id", "") == "goods:game-board":
+			return {"target": item, "text": "Click · Unfold the game board on flat ground" if side == "desktop" else "Trigger · Unfold the game board on flat ground", "point": item.global_position + Vector3.UP * .15}
 		if PHOTO_JOURNAL.handles(item):
 			return PHOTO_JOURNAL.on(item).hint(side)
 		if LETTER_TOOL.handles(item):

@@ -123,7 +123,9 @@ func _on_node_added(node: Node) -> void:
 	if node is GeometryInstance3D and town != null and town.is_ancestor_of(node):
 		_check_late.call_deferred(node)
 
-func _check_late(node: Node) -> void:
+## Untyped: a mesh freed in the frame it was added (a board's move marks redrawn twice in one
+## click) arrives here freed, and a typed argument failed before the validity check could run.
+func _check_late(node: Variant) -> void:
 	if is_instance_valid(node) and node.is_inside_tree() and not node.has_meta(BATCHED) and _trim(node as GeometryInstance3D, town, small_caster()):
 		statistics.late_trimmed += 1
 

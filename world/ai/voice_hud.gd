@@ -39,6 +39,12 @@ var _viewer: WeakRef
 ## Until when the "Speech off" hint shows after a talk press with speech turned off.
 var _off_hint_until := -1.0
 const OFF_HINT := "Speech off: Pause > AI & voice > Speech"
+## A desktop activity that shows the spoken words in its own panel (the board view,
+## world/minigames/board_games/board_view.gd): while it is set, no caption at the bottom and
+## no words over her head; each line arrives through words_shown as it is revealed instead.
+var words_owner: Object
+var _words_were_elsewhere := false
+signal words_shown(actor: Node, speaker: String, text: String, shown: int)
 
 func start_line(speaker:String,text:String,actor:Node,cues:Array=[]) -> void:
 	_clear_dialogue()
@@ -52,18 +58,21 @@ func start_line(speaker:String,text:String,actor:Node,cues:Array=[]) -> void:
 	_dialogue.set_fallback_labels(_caption, _label3d, speaker)
 	_dialogue.caption_full=text
 	add_child(_dialogue)
+	if is_instance_valid(words_owner): _dialogue.subtitle_enabled = false
 	var camera: Node3D = _viewer.get_ref() if _viewer != null else null
 	_dialogue.show_for(actor, camera)
 	if _word_cues.is_empty():
 		var progress:Dictionary=actor.speech_progress() if actor.has_method("speech_progress") else {}
 		_word_cues=preload("res://world/ai/speech_sentences.gd").timed_words(text,float(progress.get("duration",maxf(1.0,text.length()*.065))))
 	set_state("speaking",speaker+": ")
+	words_shown.emit(actor, speaker, text, 0)
 
 func finish_line() -> void:
 	if not _line_text.is_empty():
 		var page := preload("res://world/ai/speech_sentences.gd").display_page(_line_text,_line_text.length())
 		if is_instance_valid(_dialogue): _dialogue.text=page; _dialogue.caption_text=_line_text
 		set_state("speaking",_speaker+": "+page)
+		words_shown.emit(_voice.get_ref() if _voice != null else null, _speaker, _line_text, _line_text.length())
 	# Retain the weak actor anchor through the short completed-line pause.
 	_line_text="";_word_cues=[]
 
@@ -93,6 +102,7 @@ func _reveal_words() -> void:
 		var page := preload("res://world/ai/speech_sentences.gd").display_page(_line_text,end)
 		if is_instance_valid(_dialogue): _dialogue.text=page; _dialogue.caption_text=_line_text.left(end)
 		set_state("speaking",_speaker+": "+page)
+		words_shown.emit(actor, _speaker, _line_text, end)
 
 func _exit_tree() -> void:
 	_clear_dialogue()
@@ -190,6 +200,16 @@ func set_state(value: String, text := "") -> void:
 
 
 func _process(delta: float) -> void:
+	var elsewhere := is_instance_valid(words_owner)
+	# Hidden while the owner shows the words; afterwards back as the subtitle setting has it
+	# (Settings.apply_subtitles), never shown just because no owner is set.
+	if _label != null:
+		if elsewhere and _label.visible: _label.visible = false
+		elif not elsewhere and _words_were_elsewhere: _label.visible = _subtitles_on()
+	if is_instance_valid(_dialogue):
+		if elsewhere: _dialogue.subtitle_enabled = false
+		elif _words_were_elsewhere: _dialogue._apply_settings()
+	_words_were_elsewhere = elsewhere
 	_reveal_words()
 	if is_instance_valid(_dialogue): _dialogue._update_pose()
 	_time += delta
@@ -216,6 +236,12 @@ func _process(delta: float) -> void:
 		if state != "speaking":
 			_label3d.modulate = color
 			_label3d.visible = state in ["thinking", "error", "feedback"]
+
+
+func _subtitles_on() -> bool:
+	var settings := get_node_or_null("/root/Settings")
+	var value: Variant = settings.call("get_value", "access/subtitles") if settings != null and settings.has_method("get_value") else null
+	return value == null or bool(value)
 
 
 ## A microphone glyph drawn into an image: capsule head, cradle arc, stem and base.

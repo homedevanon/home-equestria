@@ -32,6 +32,8 @@ static func hold_local(id:String)->Transform3D:
 	# The folded easel: one hand at the strap, mid-stick (world/painting/). A finished painting
 	# is carried by the top of its frame (centred, it filled the desktop view in the review run).
 	if id=="goods:easel":return Transform3D(Basis.IDENTITY,Vector3(0,-.05,-.04))
+	# The folded game board: held by its long edge like a case.
+	if id=="goods:game-board":return Transform3D(Basis.IDENTITY,Vector3(0,-.03,-.06))
 	if id.begins_with("art:"):return Transform3D(Basis.IDENTITY,Vector3(0,-.40,-.06))
 	return Transform3D(Basis.IDENTITY,Vector3(0,0,-.012))
 

@@ -99,6 +99,8 @@ func capabilities() -> Array:
 		var id := str(actor.identity.id)
 		if not wardrobe.wanted(id, wardrobe._season()).is_empty(): result.append("take_off")
 		if not (wardrobe.taken_off().get(id, []) as Array).is_empty(): result.append("put_on")
+	var table := _board_table()
+	if table != null and table.available_to(actor): result.append("board_game")
 	if not result.is_empty(): result.append("cancel")
 	if actor.has_meta("relationship_runtime"): result.append_array(["relationship_offer","relationship_answer","agreed","request_space","buck_player","cuddle"])
 	if actor.has_meta("relationship_runtime"):
@@ -172,6 +174,10 @@ func submit(actions: Array, targets: Dictionary, turn: int, ai_origin := false) 
 				# [cancel] in a tag reply names no action: it stops whatever she is doing.
 				if movement.get("id") == action.action_id or (action.action_id == "current" and not movement.is_empty()): _end_move("cancelled", "Cancelled by request"); found = true
 				_report(action, "completed" if found else "failed", "Cancellation applied" if found else "That action is not active")
+			"board_game":
+				var table := _board_table()
+				if table == null: _report(action, "failed", "No game table nearby")
+				else: table.model_action(self, action)
 			"meet", "meet_cancel":
 				# Commits at once and moves nopony: her day plan walks her there on the day.
 				var appointments := _appointments()
@@ -722,6 +728,16 @@ func _end_gaze(status: String, reason: String) -> void:
 	_report(gaze, status, reason)
 	gaze = {}
 	if is_instance_valid(actor): actor.set_action_gaze(null)
+
+## The game table nearest her (world/minigames/board_games/board_table.gd), or null.
+func _board_table() -> Node3D:
+	if not is_inside_tree() or not is_instance_valid(actor): return null
+	var best: Node3D = null
+	for table: Node in get_tree().get_nodes_in_group("board_tables"):
+		# The board that asked her, or where she sits, before the nearest.
+		if (table.get("invite") as Dictionary).get("actor") == actor or (table.get("opponent") as Dictionary).get("actor") == actor: return table as Node3D
+		if best == null or (table as Node3D).global_position.distance_squared_to(actor.global_position) < best.global_position.distance_squared_to(actor.global_position): best = table as Node3D
+	return best
 
 ## NightRest when this pony's home is up in the sky (NightRest.SKY_HOMES) with no walk-in
 ## house of her own there yet, else null.

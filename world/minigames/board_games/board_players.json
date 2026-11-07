@@ -1,0 +1,104 @@
+{
+	"_why": "How well each pony plays chess and checkers at the library game table (dev 2026-10-26: 'ponies that will be AI controlled to play and give comments with each move'). Levels 1-5 set the engine's depth and thinking time, how far from the best move she may stray, how often she overlooks something and how long she plays from the opening book (board_engine.gd LEVELS). Anypony not listed plays at 'default'. A 'style' (dev 2026-10-28: 'keep them at high level but personalize them a bit') names one of 'styles': her favourite openings (board_engine.gd BOOK_LINES names, chess), her taste among nearly equal moves (board_engine.gd TASTES), how she feels about a draw (centipawns: above 0 she plays on, below she welcomes one), her thinking-time factor ('pace'), and 'about', what the AI is told of how she plays.",
+	"default": {"chess": 2, "checkers": 2},
+	"styles": {
+		"scholar": {
+			"about": "You play by the book: deep main-line theory, quiet improving moves and a sound pawn structure. A draw in an equal position is perfectly respectable to you.",
+			"openings": ["ruy_lopez", "queens_gambit", "nimzo_indian", "caro_kann", "slav"],
+			"taste": "position",
+			"draws": -10,
+			"pace": 1.15
+		},
+		"sovereign": {
+			"about": "You play calmly and classically, like someone who has watched a thousand years of games: simple, sound moves, trades once you are ahead, and patient endgames. You do not settle for a draw.",
+			"openings": ["italian", "queens_gambit", "four_knights", "queens_indian"],
+			"taste": "patient",
+			"draws": 15,
+			"pace": 0.9
+		},
+		"night": {
+			"about": "You play sharp, dark lines and go after the king; quiet draws bore you.",
+			"openings": ["sicilian", "kings_indian", "benoni", "dutch", "grunfeld"],
+			"taste": "attack",
+			"draws": 15,
+			"pace": 1.0
+		},
+		"showpony": {
+			"about": "You play for show: gambits, flashy captures, checks and crownings that make an audience gasp.",
+			"openings": ["kings_gambit", "evans_gambit", "scotch", "vienna"],
+			"taste": "flashy",
+			"draws": 10,
+			"pace": 0.9
+		},
+		"daring": {
+			"about": "You play fast and aggressive, always going forward, and you hate a draw.",
+			"openings": ["kings_gambit", "sicilian", "scotch", "scandinavian"],
+			"taste": "attack",
+			"draws": 20,
+			"pace": 0.85
+		},
+		"steady": {
+			"about": "You play solid and simple: a safe king, your back row kept, no needless risks; slow and steady wins.",
+			"openings": ["london", "caro_kann", "italian", "petrov"],
+			"taste": "solid",
+			"draws": 0,
+			"pace": 1.0
+		},
+		"elegant": {
+			"about": "You play elegant, positional chess: harmonious pieces, the centre controlled with style, nothing crude.",
+			"openings": ["english", "catalan", "kings_indian", "reti", "nimzo_indian"],
+			"taste": "position",
+			"draws": 5,
+			"pace": 1.05
+		},
+		"gentle": {
+			"about": "You play gently and carefully: you keep your pieces safe and are glad of a peaceful draw.",
+			"openings": ["caro_kann", "london", "petrov", "slav"],
+			"taste": "solid",
+			"draws": -15,
+			"pace": 1.1
+		},
+		"playful": {
+			"about": "You play for fun: surprising, offbeat moves just to see what happens.",
+			"openings": ["vienna", "scandinavian", "alekhine", "dutch", "evans_gambit"],
+			"taste": "wild",
+			"draws": 5,
+			"pace": 0.85
+		}
+	},
+	"ponies": {
+		"twilight_sparkle": {"chess": 5, "checkers": 4, "style": "scholar"},
+		"starlight_glimmer": {"chess": 4, "checkers": 4, "style": "night"},
+		"sunset_shimmer": {"chess": 4, "checkers": 3, "style": "daring"},
+		"princess_celestia": {"chess": 5, "checkers": 5, "style": "sovereign"},
+		"princess_luna": {"chess": 5, "checkers": 4, "style": "night"},
+		"celestia": {"chess": 5, "checkers": 5, "style": "sovereign"},
+		"luna": {"chess": 5, "checkers": 4, "style": "night"},
+		"rarity": {"chess": 3, "checkers": 2, "style": "elegant"},
+		"applejack": {"chess": 2, "checkers": 4, "style": "steady"},
+		"big_mcintosh": {"chess": 2, "checkers": 4, "style": "steady"},
+		"apple_bloom": {"chess": 1, "checkers": 3, "style": "daring"},
+		"rainbow_dash": {"chess": 2, "checkers": 2, "style": "daring"},
+		"pinkie_pie": {"chess": 2, "checkers": 2, "style": "playful"},
+		"fluttershy": {"chess": 2, "checkers": 2, "style": "gentle"},
+		"spike": {"chess": 2, "checkers": 3, "style": "steady"},
+		"maud_pie": {"chess": 4, "checkers": 4, "style": "steady"},
+		"trixie": {"chess": 3, "checkers": 3, "style": "showpony"},
+		"cheerilee": {"chess": 3, "checkers": 3, "style": "scholar"},
+		"sunburst": {"chess": 4, "checkers": 3, "style": "scholar"},
+		"moon_dancer": {"chess": 4, "checkers": 3, "style": "scholar"},
+		"luster_dawn": {"chess": 4, "checkers": 3, "style": "scholar"},
+		"twilight_velvet": {"chess": 4, "checkers": 3, "style": "elegant"},
+		"night_light": {"chess": 4, "checkers": 3, "style": "scholar"},
+		"shining_armor": {"chess": 3, "checkers": 3, "style": "steady"},
+		"granny_smith": {"chess": 2, "checkers": 5, "style": "steady"},
+		"sweetie_belle": {"chess": 1, "checkers": 2, "style": "playful"},
+		"scootaloo": {"chess": 1, "checkers": 2, "style": "daring"},
+		"diamond_tiara": {"chess": 2, "checkers": 2, "style": "showpony"},
+		"octavia_melody": {"chess": 4, "checkers": 3, "style": "elegant"},
+		"lyra_heartstrings": {"chess": 2, "checkers": 2, "style": "playful"},
+		"zecora": {"chess": 3, "checkers": 4, "style": "elegant"},
+		"king_sombra": {"chess": 4, "checkers": 3, "style": "night"},
+		"tempest_shadow": {"chess": 4, "checkers": 3, "style": "daring"}
+	}
+}

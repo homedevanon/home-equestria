@@ -361,6 +361,7 @@ func _item_hint(item: Node3D, control: String, point: Vector3) -> Dictionary:
 	var word := "Pick up"
 	if item.is_in_group("banana_boxes"): word = "Take banana"
 	elif item.has_meta("shelf_book"): word = "Take book"
+	elif item.has_meta("board_table_root"): word = "Pack up board"
 	elif item.is_in_group("world_food") and bool(item.get_meta("food_for_sale", false)):
 		var price := FOOD_CATALOG.price_bits(str(item.get_meta("item_id", "")))
 		# A keeper's live [sell] offer (world/mechanics/market/market.gd) is the price shown.

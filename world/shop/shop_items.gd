@@ -31,6 +31,8 @@ const GOODS := {
 	"easel": ["Folding easel", 1.55, 60, "Unfold it on flat ground to paint. Brush, pencil, scraper and paints come with it."],
 	# The photo camera (world/items/photo_camera.gd, dev 2026-10-25; the price is a proposal for dev).
 	"camera": ["Photo camera", 0.145, 80, "Hold the eyepiece to your eye to frame a shot (right click on desktop). Trigger or click takes the photo, and it prints."],
+	# The folding chess and checkers board (world/minigames/board_games/board_fold.gd, 2026-10-26).
+	"game-board": ["Folding game board", 0.5, 35, "Chess and checkers in a folding case. Unfold it on flat ground and ask a pony to play."],
 	# Letter writing (world/letters/, docs/LETTERS_PLAN_2026_10_29.md; prices are proposals for dev and
 	# match world/letters/stationery.gd PRICES). Fancier paper makes a letter a little nicer.
 	"paper-plain": ["Plain writing paper", 0.22, 2, "A sheet for a letter. Click or trigger to start writing; start with Dear and her name."],

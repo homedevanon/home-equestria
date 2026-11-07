@@ -1007,11 +1007,13 @@ func _commit_actions() -> bool:
 	if _pending_actions.is_empty(): return true
 	situation_block(_current)
 	var immediate: Array = []
+	var later: Array = []
+	# Transport and sitting down to a board game happen only once all her sentences are said.
 	for action: Dictionary in _pending_actions:
 		if _farewell.has(_current) and _holds.stays(action): _farewell_staying[_current] = true
-		if action.type == "teleport_to_ponyville":
-			_after_speech_actions[_current] = {"action":action.duplicate(true), "turn":_turn_id, "epoch":_intent_epoch}
+		if action.type in ACTION_SCHEMA.AFTER_SPEECH: later.append(action.duplicate(true))
 		else: immediate.append(action)
+	if not later.is_empty(): _after_speech_actions[_current] = {"actions":later, "turn":_turn_id, "epoch":_intent_epoch}
 	var error: String = actions.commit(_current, immediate, _action_targets(_current), _turn_id)
 	_pending_actions = []
 	if error != "": _fail("action unavailable: " + error); return false
@@ -1206,7 +1208,7 @@ func _on_speech_finished(id: String = "") -> void:
 		else: authored_done.call_deferred()
 	if transport_ready:
 		if int(transport.epoch) == _intent_epoch and int(transport.turn) == _turn_id:
-			var error: String = actions.commit(_current, [transport.action], _action_targets(_current), _turn_id)
+			var error: String = actions.commit(_current, transport.actions, _action_targets(_current), _turn_id)
 			if error != "": _fail("action unavailable after speech: " + error); return
 			# The story may cancel this now-completed turn as its flash begins.
 			if state != "speaking": return

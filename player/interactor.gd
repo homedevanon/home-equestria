@@ -206,8 +206,19 @@ func _interact() -> bool:
 	if _ray.is_colliding() and _ray.get_collider() != null and _ray.get_collider().has_meta("painting_easel"):
 		var easel: Variant = _ray.get_collider().get_meta("painting_easel")
 		if is_instance_valid(easel): return bool((easel as Node).call("desktop_begin"))
+	# The box beside an open folding game board: E packs it up, before the board or the seat beside
+	# it can take the key (world/minigames/board_games/board_fold.gd).
+	if not is_instance_valid(held):
+		var in_front := _ray.global_position.distance_to(_ray.get_collision_point()) if _ray.is_colliding() else REACH
+		var board: RigidBody3D = preload("res://world/minigames/board_games/board_fold.gd").box_in_view(get_tree(), _ray.global_position, -_ray.global_basis.z, minf(in_front, REACH))
+		if board != null: return preload("res://world/minigames/board_games/board_fold.gd").pack_desktop(board)
 	# Carrying a pony (busy below), the door in view still opens: past her, world only.
 	if is_instance_valid(held) and _toggle_door_past_held(): return true
+	# The game table in Golden Oak: the board view (world/minigames/board_games/board_table.gd);
+	# not while carrying a pony.
+	if not is_instance_valid(held) and _ray.is_colliding() and _ray.get_collider() != null and _ray.get_collider().has_meta("board_table"):
+		var table: Variant = _ray.get_collider().get_meta("board_table")
+		if is_instance_valid(table) and bool((table as Node).call("desktop_begin")): return true
 	if is_instance_valid(desktop_actions) and desktop_actions.busy(): return false
 	if _try_seat(): return true
 	if _ray.is_colliding() and _ray.get_collider().has_method("toggle_door"):

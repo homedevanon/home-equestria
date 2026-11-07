@@ -57,6 +57,10 @@ static func attach(game: Node3D, town: Node) -> void:
 	# preloaded: it costs a static prop until someone paints, and a broken script cannot stop boot.
 	var painting: Script = load("res://world/painting/station_install.gd") as Script
 	if painting != null and painting.can_instantiate(): painting.call("attach", town)
+	# The public game table by the Plaza fountain (world/minigames/board_games/plaza_table.gd,
+	# 2026-10-29), loaded the same way.
+	var plaza_table: Script = load("res://world/minigames/board_games/plaza_table.gd") as Script
+	if plaza_table != null and plaza_table.can_instantiate(): plaza_table.call("attach", town)
 	game.balloon=preload("res://world/vehicles/balloon/balloon.gd").attach(town)
 	# Small parts stop casting shadows; houses become occluders (world/performance/).
 	var budget: Node = preload("res://world/performance/town_render_budget.gd").new()

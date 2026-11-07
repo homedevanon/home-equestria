@@ -13,6 +13,8 @@ const COOKING := preload("res://world/cooking/cooking_input.gd")
 const SHOP_ITEMS := preload("res://world/shop/shop_items.gd")
 ## Loaded only where an open owned easel exists (world/painting/).
 const EASEL_FOLD := "res://world/painting/easel_fold.gd"
+## Likewise an open folding game board (world/minigames/board_games/).
+const BOARD_FOLD := "res://world/minigames/board_games/board_fold.gd"
 
 var host: Node3D
 
@@ -54,6 +56,9 @@ func _make_item(token: String, id: String, visual: Node3D) -> RigidBody3D:
 	if host.inventory.loans.get(token, {}).get("easel_open", false):
 		item.call_deferred("set", "freeze", true)
 		Callable(load(EASEL_FOLD), "configure").call_deferred(item, token)
+	if host.inventory.loans.get(token, {}).get("board_open", false):
+		item.call_deferred("set", "freeze", true)
+		Callable(load(BOARD_FOLD), "configure").call_deferred(item, token)
 	if host.inventory.loans.get(token, {}).has("furnishing_home"):
 		item.set_meta("furnishing_size", float(host.inventory.loans[token].get("furnishing_size", 1.0)))
 		FURNISHING.configure(item, true)

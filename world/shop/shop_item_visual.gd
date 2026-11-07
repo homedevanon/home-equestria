@@ -22,6 +22,8 @@ func _ready() -> void:
 func _goods() -> void:
 	if ITEMS.CIDER.is_keg(item_id):
 		bounds = ITEMS.CIDER.build_visual(self); return
+	if item_id == "goods:game-board":
+		bounds = load("res://world/minigames/board_games/board_fold.gd").build_visual(self); return
 	if ITEMS.SAPLING.is_sapling(item_id):
 		bounds = ITEMS.SAPLING.build_visual(self); return
 	var model := item_id.substr(6)

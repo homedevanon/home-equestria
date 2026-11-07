@@ -6,12 +6,21 @@ const ITEM_CATALOG := preload("res://world/inventory/item_catalog.gd")
 const ASK_RULES := preload("res://world/mechanics/asks/ask_rules.gd")
 ## Data only. Never turn model text into method names, code, paths or coordinates.
 const AGREED_KINDS := ["dating", "date", "outing", "move_in", "engagement", "marriage"]
-const TYPES := ["look_at", "approach", "call_pony", "send_pony", "follow", "go_to", "step", "lead", "stay", "cancel", "resume_routine", "sit", "stand", "lie_down", "fly_to", "hover", "land", "loop_de_loop", "barrel_roll", "circle_over", "sonic_rainboom", "sit_on_seat", "go_home", "go_to_bed", "air_show", "relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle", "kiss_player", "wake_up", "teleport_to_ponyville", "send_letter", "give_house", "magic_show", "take_off", "put_on", "meet", "meet_cancel", "pay_player", "give", "offer_job", "use", "ask", "invite", "sell", "buy"]
+const TYPES := ["look_at", "approach", "call_pony", "send_pony", "follow", "go_to", "step", "lead", "stay", "cancel", "resume_routine", "sit", "stand", "lie_down", "fly_to", "hover", "land", "loop_de_loop", "barrel_roll", "circle_over", "sonic_rainboom", "sit_on_seat", "go_home", "go_to_bed", "air_show", "relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle", "kiss_player", "wake_up", "teleport_to_ponyville", "send_letter", "give_house", "magic_show", "take_off", "put_on", "meet", "meet_cancel", "pay_player", "give", "offer_job", "use", "ask", "invite", "sell", "buy",
+	"board_game"]
 ## Actions that need spoken words in the same reply (docs/MECHANICS_ARCHITECTURE_2026_11_01.md 4.6).
 const SPEECH_REQUIRED := ["relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle",
 	"teleport_to_ponyville", "give_house", "meet", "meet_cancel", "pay_player", "give", "ask", "offer_job", "invite", "sell", "buy"]
-## One intention per channel per reply; everything not listed is "movement".
-const CHANNELS := {"look_at": "gaze", "give_house": "grant", "magic_show": "grant", "pay_player": "money",
+## These happen only when her line has finished (conversation_director.gd).
+const AFTER_SPEECH := ["teleport_to_ponyville", "board_game"]
+## The game table (world/minigames/board_games/board_table.gd): start a game, give one up, put it
+## away, or turn down Anon's invitation.
+const BOARD_GAMES := ["chess", "checkers", "resign", "stop", "no"]
+const BOARD_SPELLINGS := {"draughts": "checkers", "checker": "checkers", "concede": "resign", "give_up": "resign", "forfeit": "resign",
+	"quit": "stop", "end": "stop", "put_away": "stop", "decline": "no", "not_now": "no", "nope": "no", "later": "no"}
+## One intention per channel per reply; everything not listed is "movement". A board game moves
+## nopony now: it may come with her walk or follow.
+const CHANNELS := {"look_at": "gaze", "board_game": "board", "give_house": "grant", "magic_show": "grant", "pay_player": "money",
 	"take_off": "wardrobe", "put_on": "wardrobe", "meet": "plan", "meet_cancel": "plan",
 	"give": "trade", "sell": "trade", "buy": "trade", "ask": "plan", "offer_job": "plan", "invite": "plan"}
 const SPEECH_LIMIT := 2880
@@ -28,7 +37,8 @@ const FIELDS := {
 	"follow": ["target_id", "formation", "distance_m"], "go_to": ["location_id", "pace"],
 	"step": ["direction", "distance_m"],
 	"lead": ["target_id", "location_id", "wait_distance_m"],
-	"stay": ["duration_s", "until_cancel"], "cancel": ["action_id"], "resume_routine": [], "sit": [], "stand": [], "lie_down": [], "fly_to": ["location_id"], "hover": ["duration_s"], "land": [], "loop_de_loop": [], "barrel_roll": [], "circle_over": ["target_id"], "sonic_rainboom": [], "sit_on_seat": [], "go_home": [], "go_to_bed": ["bed"], "air_show": ["moves", "target_id"]}
+	"stay": ["duration_s", "until_cancel"], "cancel": ["action_id"], "resume_routine": [], "sit": [], "stand": [], "lie_down": [], "fly_to": ["location_id"], "hover": ["duration_s"], "land": [], "loop_de_loop": [], "barrel_roll": [], "circle_over": ["target_id"], "sonic_rainboom": [], "sit_on_seat": [], "go_home": [], "go_to_bed": ["bed"], "air_show": ["moves", "target_id"],
+	"board_game": ["game"]}
 ## Air show figures (pony_flight.gd SHOW_MOVES) and the tag spellings that name one. A reply with
 ## [air_show: loop, dive, ...] or with several trick tags ([loop_de_loop] [dive] [barrel_roll])
 ## becomes one air_show action: one takeoff, the figures in order, one landing.
@@ -61,7 +71,7 @@ const SIGNATURES := {
 	"take_off": [["kind", null]], "put_on": [["kind", null]],
 	"meet": [["location_id", null], ["day", "today"], ["time", null]], "pay_player": [["amount", null]], "give": [["item", null]], "use": [["station_id", null]], "offer_job": [["job_id", null]],
 	"ask": [["want", null], ["reward", "thanks"]], "invite": [["event_id", null]], "sell": [["item", null], ["price", null]], "buy": [["item", null], ["price", null]],
-	"go_to_bed": [["bed", "own"]]}
+	"go_to_bed": [["bed", "own"]], "board_game": [["game", "chess"]]}
 ## [go_to_bed: here] spellings: the bed in the house where Anon is; anything else is her own bed.
 const BED_HERE := ["here", "this", "this_bed", "that", "that_bed", "there", "player", "anon", "his", "his_bed", "your", "yours", "your_bed", "anons_bed", "anon's_bed"]
 const PLAYER_NAMES := ["me", "you", "anon", "him", "the player", "anonymous"]
@@ -94,7 +104,9 @@ const ALIASES := {"lookat": "look_at", "look": "look_at", "goto": "go_to", "walk
 	"favor": "ask", "favour": "ask", "ask_favor": "ask", "ask_favour": "ask", "quest": "ask",
 	"invite_player": "invite", "invite_to": "invite", "invite_event": "invite",
 	"offer_price": "sell", "sell_to_player": "sell", "price": "sell", "haggle": "sell",
-	"buy_from_player": "buy", "purchase": "buy", "offer_to_buy": "buy"}
+	"buy_from_player": "buy", "purchase": "buy", "offer_to_buy": "buy",
+	"chess": "board_game", "play_chess": "board_game", "checkers": "board_game", "play_checkers": "board_game", "draughts": "board_game",
+	"boardgame": "board_game", "board": "board_game", "play_board_game": "board_game", "game_table": "board_game", "resign": "board_game", "concede": "board_game"}
 ## One line per command for the prompt: the exact tag and what it does.
 const TAG_HELP := {
 	"teleport_to_ponyville": "[teleport_to_ponyville] Twilight takes you both out of the Everfree to Ponyville for shelter at Golden Oak; only available during the active forest rescue; finish explaining first, then regroup beside the newcomer before casting if separated",
@@ -126,6 +138,7 @@ const TAG_HELP := {
 	"request_space": "[request_space] ask Anon to give you some space", "buck_player": "[buck_player] buck Anon away (only real, lasting anger at unwelcome contact)",
 	"cuddle": "[cuddle] cuddle up to Anon", "kiss_player": "[kiss_player] kiss Anon",
 	"send_letter": "[send_letter] write a quick note on a scroll and send it to Princess Celestia with your green fire",
+	"board_game": "[board_game: chess] or [board_game: checkers] go to the game board nearby (the table by the fireplace in Golden Oak library, the stone table by the Plaza fountain, or a folding board Anon has set out) and sit down to play with Anon (he joins you there), or to take up a game you left unfinished with him; while you play, [board_game: resign] gives up and [board_game: stop] puts it away to finish another time; [board_game: no] turns down his invitation to play",
 	"give_house": "[give_house] officially make a free Ponyville house Anon's own home, for good (the empty one he is in or beside, else the nearest free one); only when you give it, never just to talk about houses; works alongside one other action",
 	"magic_show": "[magic_show] start your Great and Powerful stage show at the schoolhouse stage: fireworks call the town, the curtain rises in about three minutes; only when Anon paid for one or you truly want an audience; works alongside one other action",
 	"take_off": "[take_off: ITEM] take off something you are wearing (e.g. socks, scarf, hat, glasses), when asked or when you want to; you keep it and can [put_on] it again; works alongside one other action",
@@ -216,12 +229,16 @@ static func decode_tags(text: String, actor: String, turn: int, context: Diction
 		if name == "thought": impression.thought = value; continue
 		if type == "teleport_to_ponyville" and not value.is_empty():
 			dropped.append("teleport_to_ponyville takes no arguments"); continue
+		# [checkers] and [resign] name the game (or what to do with it) themselves.
+		if type == "board_game" and value.is_empty():
+			if name.contains("checker") or name.contains("draught"): value = "checkers"
+			elif name in ["resign", "concede"]: value = "resign"
 		var action := _tag_action(type, value, turn, actions.size())
 		# A house grant or Trixie's stage show moves nopony now: either may come with her walk or follow.
 		# An agreed meeting (appointments.gd) moves nopony now: it may come with a walk and a look.
 		var lane := channel(type)
 		var error := validate(action, context)
-		if error == "" and lane in channels: error = "Only one %s per reply" % ("look_at" if lane == "gaze" else "movement")
+		if error == "" and lane in channels: error = "Only one %s per reply" % ({"gaze": "look_at", "board": "board_game"}.get(lane, "movement"))
 		if error == "" and actions.size() >= 2: error = "At most two actions per reply"
 		if error != "":
 			dropped.append("%s (%s)" % [found.get_string(0), error]); continue
@@ -289,6 +306,9 @@ static func _tag_action(type: String, value: String, turn: int, index: int) -> D
 		var digits := RegEx.create_from_string("\\d+").search(str(action.amount))
 		if digits != null: action.amount = int(digits.get_string())
 		else: action.erase("amount")
+	if type == "board_game":
+		var game := str(action.get("game", "chess")).to_lower().replace(" ", "_")
+		action.game = BOARD_SPELLINGS.get(game, game)
 	return action
 
 ## "Walk with me" to a place she is going (thread report 2026-10-31: Rarity said she was going to
@@ -556,6 +576,8 @@ static func validate(action: Variant, context: Dictionary) -> String:
 			if action.has("until_cancel") or not _number(action.get("duration_s"), .5, 600): return "Stay duration must be 0.5–600 seconds"
 		"cancel":
 			if not _id(action.get("action_id")): return "Invalid cancellation target"
+		"board_game":
+			if action.get("game") not in BOARD_GAMES: return "Say chess, checkers, resign, stop or no"
 	return ""
 
 ## The game clock for meeting times: context "clock" ({"day", "hours"}, tests and letters) or TimeOfDay.

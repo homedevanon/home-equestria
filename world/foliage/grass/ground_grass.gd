@@ -471,6 +471,13 @@ func _restore_deployed_footprints() -> void:
 		if not item is Node3D or not ("loan_token" in item): continue
 		var token := str(item.get("loan_token"))
 		if token != "": set_footprint("picnic:" + token,(item as Node3D).global_transform,Vector2(1.2,1.0))
+	# Fixed things that sit in the grass (the plaza game table, plaza_table.gd): meta "grass_key"
+	# and "grass_half", the local half-size of their patch.
+	for fixed: Node in get_tree().get_nodes_in_group("grass_patches"):
+		if fixed is Node3D and fixed.has_meta("grass_key"): set_footprint(str(fixed.get_meta("grass_key")), (fixed as Node3D).global_transform, fixed.get_meta("grass_half"))
+	# Open folding game boards (world/minigames/board_games/board_fold.gd) clear their patch too.
+	for board: Node in get_tree().get_nodes_in_group("open_game_boards"):
+		if board is Node3D: load("res://world/minigames/board_games/board_fold.gd").clear_grass(board, true)
 
 ## Token ownership is session-local; restored deployed items register from their saved pose.
 ## Project the local X/Z rectangle onto ground X/Z, keeping yaw, scale and slope exact.
