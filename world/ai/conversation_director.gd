@@ -860,7 +860,7 @@ func _on_reply(text: String, error: String, turn_id := -1) -> void:
 		if decoded.get("control_only", false) and _repair_response(text, "The draft contains only control syntax and no spoken answer. Answer the player's words with fresh dialogue; do not emit unfinished tags.", false): return
 		if not _authored_active.is_empty():
 			_finish_silence(); return
-		if not _commit_actions(): return
+		if not _commit_actions(true): return
 		var runtime: Node = get_tree().get_first_node_in_group("player_relationships")
 		if runtime != null: runtime.finish_silent(_current, _turn_id)
 		_finish_silence()
@@ -1001,17 +1001,24 @@ func _place_lines(id: String, local_limit := 30) -> String:
 	return _prompts._place_lines(id, local_limit)
 
 
-func _commit_actions() -> bool:
+## `silent`: a reply with no words left to wait for (a lone [board_game: resign]): actions held for
+## after her line run now, except those that need her words (the teleport), which are dropped as
+## before; the schema cannot tell a "*nods*" that clean_reply() strips from real words.
+func _commit_actions(silent := false) -> bool:
 	if not _authored_active.is_empty() and (not _authored_lines.has(_authored_active) or not _authored_valid(_authored_lines[_authored_active])):
 		_finish_silence(); return false
 	if _pending_actions.is_empty(): return true
 	situation_block(_current)
 	var immediate: Array = []
+	var later: Array = []
+	# Transport and sitting down to a board game happen only once all her sentences are said.
 	for action: Dictionary in _pending_actions:
 		if _farewell.has(_current) and _holds.stays(action): _farewell_staying[_current] = true
-		if action.type == "teleport_to_ponyville":
-			_after_speech_actions[_current] = {"action":action.duplicate(true), "turn":_turn_id, "epoch":_intent_epoch}
+		if action.type in ACTION_SCHEMA.AFTER_SPEECH:
+			if not silent: later.append(action.duplicate(true))
+			elif action.type not in ACTION_SCHEMA.SPEECH_REQUIRED: immediate.append(action)
 		else: immediate.append(action)
+	if not later.is_empty(): _after_speech_actions[_current] = {"actions":later, "turn":_turn_id, "epoch":_intent_epoch}
 	var error: String = actions.commit(_current, immediate, _action_targets(_current), _turn_id)
 	_pending_actions = []
 	if error != "": _fail("action unavailable: " + error); return false
@@ -1206,7 +1213,7 @@ func _on_speech_finished(id: String = "") -> void:
 		else: authored_done.call_deferred()
 	if transport_ready:
 		if int(transport.epoch) == _intent_epoch and int(transport.turn) == _turn_id:
-			var error: String = actions.commit(_current, [transport.action], _action_targets(_current), _turn_id)
+			var error: String = actions.commit(_current, transport.actions, _action_targets(_current), _turn_id)
 			if error != "": _fail("action unavailable after speech: " + error); return
 			# The story may cancel this now-completed turn as its flash begins.
 			if state != "speaking": return

@@ -24,6 +24,8 @@ const JOBS=preload("res://world/mechanics/jobs/jobs.gd")
 const BOOKS = preload("res://world/books/book_library.gd")
 ## Easel work-in-progress pointers and painting labels (additive "paintings" key, no format bump).
 const REGISTRY = preload("res://world/painting/painting_registry.gd")
+## Board games left unfinished with a pony (additive "board_games" key, no format bump).
+const BOARD_GAMES = preload("res://world/minigames/board_games/board_adjourned.gd")
 ## What menus show about each checkpoint (sidecar headers) and its screenshot.
 const CATALOGUE := preload("res://world/saves/save_catalogue.gd")
 const PREVIEW := preload("res://world/saves/save_preview.gd")
@@ -304,7 +306,7 @@ func snapshot()->Dictionary:
 		"clock":clock.snapshot(),"life":life_state,"population":roster,
 		"position":vector(at),"yaw":yaw,"hours":clock.hours,"day":clock.day,
 		"residents":residents,"context":host.world_context.snapshot_state(),"story_through":_story_through(),
-		"inventory":inv.document(),"books":BOOKS.snapshot(),"paintings":REGISTRY.snapshot(),
+		"inventory":inv.document(),"books":BOOKS.snapshot(),"paintings":REGISTRY.snapshot(),"board_games":BOARD_GAMES.snapshot(),
 		"clothes":host.inventory.clothing.saved.duplicate(true)}
 	# Additive geometry revision. A blocked legacy placement at the original feet
 	# remains eligible next load; ordinary movement or successful repair stamps it.
@@ -729,6 +731,9 @@ func _restore(doc:Dictionary)->bool:
 	if not clothes.save():return false
 	if not BOOKS.restore(doc.get("books", {})):return false
 	if not REGISTRY.restore(doc.get("paintings", {})):return false
+	# Older saves have none; a bad entry costs only the unfinished games, not the load.
+	if not BOARD_GAMES.restore(doc.get("board_games", {})):
+		BOARD_GAMES.restore({});notes.append("Unfinished board games were reset.")
 	var clock:=get_node("/root/TimeOfDay")
 	clock.restore_state(doc.clock)
 	if not doc.life.is_empty() and "life" in host and is_instance_valid(host.life):

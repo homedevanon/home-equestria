@@ -13,6 +13,7 @@ const MEMORY := preload("res://world/ai/memory/story_memory.gd")
 const TOWN_TALK := preload("res://world/ai/memory/town_talk.gd")
 const IMPRESSIONS := preload("res://world/ai/impressions/pony_impressions.gd")
 const PLACES := preload("res://world/navigation/place_directory.gd")
+const BOARD_GAMES := preload("res://world/minigames/board_games/board_adjourned.gd")
 const HEARD_TRANSCRIPT_BYTES := 8192
 ## Cache layout markers, stripped by llm_client.build_request (docs/AI_TOKENS_AND_CACHING_2026_10_25.md).
 const LLM := preload("res://world/ai/llm_client.gd")
@@ -74,6 +75,12 @@ func situation_block(id: String) -> String:
 	if outcomes != "": lines.append("Your action outcomes (not dialogue):\n" + outcomes)
 	if node.has_meta("hayburger_order_context"): lines.append(str(node.get_meta("hayburger_order_context")))
 	if node.has_meta("show_watching"): lines.append(str(node.get_meta("show_watching")))
+	# A game of chess or checkers with Anon at a game table (world/minigames/board_games/board_session.gd),
+	# else the ones they left unfinished (board_adjourned.gd).
+	if node.has_meta("board_game_context"): lines.append(str(node.get_meta("board_game_context")))
+	else:
+		var unfinished := _unfinished_games(node)
+		if unfinished != "": lines.append(unfinished)
 	# Pinned letters and agreed meetings (docs/LETTERS_PLAN_2026_10_29.md); "" costs nothing.
 	for provider: Node in host.get_tree().get_nodes_in_group("pony_prompt_notes"):
 		if provider.has_method("prompt_note"):
@@ -92,6 +99,13 @@ func _company_line(group: Variant) -> String:
 	if not group is Dictionary: return "Out with company (not proof of arrival or private knowledge)."
 	var names: Array = (group.get("members", []) as Array).map(func(m): return _name(str(m)))
 	return "Out with %s: %s, %s (an intention, not proof of arrival or private knowledge)." % [", ".join(names), str(group.get("intention", "")), str(group.get("state", ""))]
+
+## Her chess or checkers games with Anon left unfinished ("" when none).
+func _unfinished_games(node: Node) -> String:
+	var identity: Variant = node.get("identity")
+	var tod: Node = host.get_node_or_null("/root/TimeOfDay")
+	if not identity is Resource or tod == null: return ""
+	return BOARD_GAMES.prompt_line(str(identity.get("id")), int(tod.get("day")))
 
 
 ## AnonPony: what Anon is and which pronouns fit. It covers princess visits, the Luna dream,
@@ -503,6 +517,10 @@ func _player_group_prompt(scale := 1.0) -> String:
 		observation.erase("boops")
 		observation.erase("kisses")
 		if node.has_meta("hayburger_order_context"): observation["your_active_order"] = str(node.get_meta("hayburger_order_context"))
+		# Her game of chess or checkers with Anon (board_session.gd), as in situation_block: with Spike
+		# beside the table, his words mid-game reach her through this group prompt.
+		var board_game := str(node.get_meta("board_game_context")) if node.has_meta("board_game_context") else _unfinished_games(node)
+		if board_game != "": observation["your_board_game"] = board_game
 		if node.has_meta("relationship_runtime"): observation["your_relationship"] = node.get_meta("relationship_runtime").prompt_for(id)
 		if node.has_meta("social_group"): observation["walking_company_intention"] = node.get_meta("social_group")
 		var context: Dictionary = host.actions.context(id, host._action_targets(id))
@@ -515,7 +533,7 @@ func _player_group_prompt(scale := 1.0) -> String:
 		var seen: String = JSON.stringify(observation)
 		if _story() != null:
 			var described := Array(host.awareness.describe(observation, str(host.config.get_value("player_name", "Anon")), host._now()))
-			for key in ["your_current_clothing", "your_active_order", "your_relationship"]:
+			for key in ["your_current_clothing", "your_active_order", "your_board_game", "your_relationship"]:
 				if observation.has(key): described.append("- " + str(observation[key]).trim_prefix("- "))
 			if observation.has("walking_company_intention"): described.append("- Out with: " + ", ".join(observation.walking_company_intention.get("members", []).map(func(m): return _name(str(m)))))
 			seen = "\n" + "\n".join(described)

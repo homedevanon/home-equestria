@@ -158,6 +158,7 @@ func _ready() -> void:
 	preload("res://world/props/ponyville_kit/kit_state.gd").install(self)
 	preload("res://world/books/book_library.gd").open_world(world_context.path.get_base_dir())
 	preload("res://world/painting/painting_registry.gd").open_world(world_context.path.get_base_dir())
+	preload("res://world/minigames/board_games/board_adjourned.gd").open_world(world_context.path.get_base_dir())
 	if OS.has_feature("android") or "--perf-ticker" in preload("res://world/dev_tools.gd").user_args():
 		var ticker := preload("res://world/debug/perf_ticker.gd").new(); ticker.name = "PerfTicker"; get_tree().root.add_child.call_deferred(ticker)
 	WorldTerrain.ensure(zones)

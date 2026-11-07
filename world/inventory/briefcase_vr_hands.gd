@@ -289,6 +289,12 @@ func _update_hand_step(side: String, sample: Dictionary, _delta: float):
 			var shutter: bool = float(sample.trigger) > .7
 			if shutter and not host._pressed.get(side + "_shutter", false): photo_camera.snap(host, null)
 			host._pressed[side + "_shutter"] = shutter
+		if item.get_meta("item_id", "") == "goods:game-board":
+			var board_pull: bool = float(sample.trigger) > .7
+			if board_pull and not host._pressed.get(side + "_board", false):
+				host._pressed[side + "_board"] = true
+				if load(host.BOARD_FOLD).unfold(host, side): host._pressed[side] = grip; return
+			host._pressed[side + "_board"] = board_pull
 		# Paper and letters: trigger starts, opens, folds or reads; held a second it sends a draft
 		# with Derpy. The quill writes by voice over open paper in the other hand (world/letters/paper/).
 		if host.LETTER_TOOL.handles(item):

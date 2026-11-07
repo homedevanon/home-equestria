@@ -240,6 +240,18 @@ func set_easel_open(token: String, pose: Transform3D) -> bool:
 	checked[token].easel_open = true
 	return _commit(next, checked)
 
+## A held folding game board becomes one loose, open unit (world/minigames/board_games/board_fold.gd).
+func set_board_open(token: String, pose: Transform3D) -> bool:
+	if not loans.has(token) or CATALOG.canonical(str(loans[token].id)) != "goods:game-board": return false
+	var next: Array = slots.duplicate(true)
+	var checked: Dictionary = loans.duplicate(true)
+	if checked[token].get("equipped", false):
+		_remove_unit(next, int(checked[token].slot))
+		checked[token].erase("equipped")
+	checked[token].world_transform = encode_pose(pose)
+	checked[token].board_open = true
+	return _commit(next, checked)
+
 func pick_up(token: String) -> bool:
 	if not loans.has(token): return false
 	var checked := loans.duplicate(true)
@@ -247,6 +259,7 @@ func pick_up(token: String) -> bool:
 	checked[token].erase("world_transform")
 	checked[token].erase("picnic_deployed")
 	checked[token].erase("easel_open")
+	checked[token].erase("board_open")
 	checked[token].erase("picnic_heights")
 	checked[token].erase("furnishing_home")
 	checked[token].erase("furnishing_size")
@@ -276,6 +289,7 @@ static func valid_document(doc: Variant) -> bool:
 		if loan.has("picnic_heights") and (not loan.get("picnic_deployed", false) or not valid_picnic_heights(loan.picnic_heights)): return false
 		if loan.has("picnic_deployed") and (loan.picnic_deployed != true or not loan.picnic_deployed is bool or CATALOG.canonical(str(loan.get("id"))) != "goods:folded-blanket" or not loan.has("world_transform") or loan.get("equipped", false)): return false
 		if loan.has("easel_open") and (not loan.easel_open is bool or loan.easel_open != true or CATALOG.canonical(str(loan.get("id"))) != "goods:easel" or not loan.has("world_transform") or loan.get("equipped", false)): return false
+		if loan.has("board_open") and (not loan.board_open is bool or loan.board_open != true or CATALOG.canonical(str(loan.get("id"))) != "goods:game-board" or not loan.has("world_transform") or loan.get("equipped", false)): return false
 		var i := int(loan.slot)
 		if loan.slot != i or i < 0 or i >= SLOT_COUNT or not (CATALOG.has(str(loan.get("id"))) or loan.get("id") == "house-key"): return false
 	for i in SLOT_COUNT:

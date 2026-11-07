@@ -31,8 +31,10 @@ const PLACEMENTS: Array[Dictionary] = [
 		"items": ["wear:wizard_hat:4", "wear:cape:4", "wear:wizard_hat:1", "wear:cape:1"], "spacing": Vector2(0.7, 0.62)},
 	# Trimmed to things with a use (dev 2026-10-14: "do we NEED 100 little things"): the picnic
 	# blanket and a pillow. The rest of the old stock is listed in world/shop/archived_stock.json.
-	{"id": "ponyville:market:goods", "anchor": "RNLScenery/Town/Market/tent_friagram_lightbrown_01", "at": Vector3(-0.8, 0.95, 6.45), "counter": true, "columns": 1,
-		"items": ["goods:folded-blanket", "goods:pillow", "goods:camera"], "spacing": Vector2(0.7, 0.62)},
+	# The folding game board joined them (2026-10-26): two by two, the right column at x -0.55 so it
+	# keeps 0.4 m from the stationery column below (x -0.15).
+	{"id": "ponyville:market:goods", "anchor": "RNLScenery/Town/Market/tent_friagram_lightbrown_01", "at": Vector3(-0.85, 0.95, 6.45), "counter": true, "columns": 2,
+		"items": ["goods:folded-blanket", "goods:pillow", "goods:camera", "goods:game-board"], "spacing": Vector2(0.6, 0.62)},
 	# Writing paper and the quill (world/letters/, docs/LETTERS_PLAN_2026_10_29.md): a narrow column on
 	# the same goods counter, between the goods above and the cooking stall's food (x 0.35 and up).
 	# Placed from the layout numbers only; it still wants a look in a render.

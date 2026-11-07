@@ -36,7 +36,7 @@ const SUMMARY_STALE_SECONDS := 300.0
 const SUMMARY_TEXT_CHARS := 900
 ## Command bookkeeping worth remembering once finished; movement and gaze never are.
 const MEMORABLE_ACTIONS := ["relationship_offer", "relationship_answer", "request_space", "buck_player", "cuddle",
-	"kiss_player", "give_house", "send_letter", "air_show", "sonic_rainboom", "wake_up", "magic_show", "take_off", "put_on",
+	"kiss_player", "give_house", "send_letter", "air_show", "sonic_rainboom", "wake_up", "magic_show", "board_game", "take_off", "put_on",
 	"give", "ask", "offer_job", "sell", "buy", "invite"]
 ## Journal kinds the summary skips: routine bookkeeping (today's routine still reaches prompts
 ## through day_events), command intentions and private director notes.

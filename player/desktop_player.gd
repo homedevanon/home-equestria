@@ -429,7 +429,11 @@ func _physics_process(delta: float) -> void:
 						if sleeper != null: sleeper.sleep()
 				else:
 					_space_hold = 0.0; _slept_hold = false
-			var q_pressed := InputMap.has_action("stand_up") and Input.is_action_pressed("stand_up")
+			# Typing (the chat box, the game board's talk line) is not getting up: the key is a
+			# physical one, so on AZERTY a message with an "a" in it stood Anon up (dev 2026-10-26).
+			var focus := get_viewport().gui_get_focus_owner()
+			var typing := focus is LineEdit or focus is TextEdit
+			var q_pressed := not typing and InputMap.has_action("stand_up") and Input.is_action_pressed("stand_up")
 			# Q in the wake picker means "stay awake" (world/life/wake_picker.gd), not "get up".
 			var force_up := q_pressed and not _q_held and not has_meta("sleep_picking")
 			_q_held = q_pressed

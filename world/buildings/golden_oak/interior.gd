@@ -42,6 +42,7 @@ func build(layout: Dictionary = {}) -> void:
 	_build_reading_circle()
 	_build_bedrooms()
 	_build_breakfast()
+	_build_game_nook()
 	_build_lamps()
 	REFERENCE.telescope(self, Vector3(3.55, loft_y, -2.85))
 	REFERENCE.fireplace(self, ARCHITECTURE.polar(4.1, deg_to_rad(-125.0), 0), deg_to_rad(55.0))
@@ -56,6 +57,9 @@ func build(layout: Dictionary = {}) -> void:
 		Vector3(2.95, 0, -0.65), Vector3(2.75, 0, 0.65), Vector3(1.2, 0, 3.8),
 		# Full-size princess clearance: skirt the cafe table and sideboard corner.
 		Vector3(1.4, 0, 1.5), Vector3(2.75, 0, -0.75),
+		# Round the game table to its fireplace-side cushion (_build_game_nook): the straight
+		# line from the aisle grazes the table.
+		Vector3(-2.5, 0, -2.0),
 	])
 	# The aisle between the foot of Twilight's bed (z -1.95) and the balcony rail (z -0.74) is
 	# only 1.2 m: its points sit on the aisle's centre line, and one past the bed's foot corner
@@ -207,6 +211,65 @@ func _build_breakfast() -> void:
 	for x: float in [3.45, 4.05]:
 		KIT.disc(self, "BreakfastSideboardLeg", 0.07, 0.78, Vector3(x, 0.39, 0.1), wood, true)
 	KIT.marker(self, "Breakfast", Vector3(2.85, 0, 0.85), "cook")
+
+## The game table by the fireplace (dev 2026-10-26: chess and checkers at Twilight's,
+## world/minigames/board_games/board_table.gd): a low table for two on floor cushions, Anon's on
+## the room side and the other with the fire at her back, off the ground walk lines, under a
+## lantern of its own. The players face each other along X; the table's long side runs along Z
+## (the taken pieces line up there). Each cushion keeps a pony's half-width (0.45 m, the
+## gait profile's radius) clear of the table, so a pony walking to it fits.
+const BOARD_TABLE := preload("res://world/minigames/board_games/board_table.gd")
+const GAME_TABLE_AT := Vector3(-1.3, 0, -2.75)
+const GAME_TABLE_TOP := 0.4
+const GAME_SEAT_REACH := 0.9
+func _build_game_nook() -> void:
+	var wood := KIT.material("b94f4b")
+	var edge := KIT.material("efac6c")
+	var at := GAME_TABLE_AT
+	KIT.box(self, "GameTableTop", Vector3(0.66, 0.04, 0.82), at + Vector3.UP * (GAME_TABLE_TOP - 0.02), wood, true)
+	KIT.box(self, "GameTableApron", Vector3(0.58, 0.05, 0.74), at + Vector3.UP * (GAME_TABLE_TOP - 0.065), edge)
+	for corner: Vector2 in [Vector2(-0.26, -0.34), Vector2(0.26, -0.34), Vector2(-0.26, 0.34), Vector2(0.26, 0.34)]:
+		KIT.disc(self, "GameTableLeg", 0.03, GAME_TABLE_TOP - 0.04, at + Vector3(corner.x, (GAME_TABLE_TOP - 0.04) * 0.5, corner.y), wood)
+	var seats: Array[Node3D] = []
+	for side: float in [1.0, -1.0]:
+		var cushion := _kit.prop("floor-cushion", at + Vector3(GAME_SEAT_REACH * side, 0, 0), -PI * 0.5 * side)
+		# Its bench-style seat would have a pony hop on from the table side, and its solid block
+		# would stop her walking onto it: a floor seat, soft underfoot.
+		var unwanted: Array = cushion.find_children("*", "Node3D", true, false).filter(func(old: Node) -> bool:
+			return old.get_script() == KIT.SEAT or (old is StaticBody3D and str(old.name).begins_with("Seat")))
+		for old: Node in unwanted:
+			old.get_parent().remove_child(old)
+			old.free()
+		var seat := Node3D.new()
+		seat.set_script(KIT.SEAT)
+		seat.name = "GameSeat"
+		seat.set("floor_sit", true)
+		seat.set("for_ponies", false)
+		seat.set("depth", 0.5)
+		# A seat faces its -Z, the cushion's front: the table.
+		seat.transform = Transform3D(Basis(Vector3.UP, PI), Vector3(0, 0.06, 0))
+		cushion.add_child(seat)
+		add_child(cushion)
+		seats.append(seat)
+	REFERENCE.lantern(self, at + Vector3.UP * 2.3, loft_y)
+	var light := OmniLight3D.new()
+	light.name = "GameTableLamp"
+	light.position = at + Vector3.UP * 2.1
+	light.light_color = Color("ffddb0")
+	light.light_energy = 0.9
+	light.omni_range = 3.6
+	light.omni_attenuation = 0.8
+	light.shadow_enabled = false
+	light.distance_fade_enabled = true
+	light.distance_fade_begin = 25.0
+	light.distance_fade_length = 10.0
+	add_child(light)
+	var table := BOARD_TABLE.new()
+	table.name = "GameTable"
+	# Its +Z faces Anon's cushion.
+	table.transform = Transform3D(Basis(Vector3.UP, PI * 0.5), at + Vector3.UP * GAME_TABLE_TOP)
+	add_child(table)
+	table.setup(self, seats[0], seats[1])
 
 func _build_lamps() -> void:
 	for at: Vector3 in [Vector3(0.0, 2.85, 0.8), Vector3(1.0, 6.15, -2.3), Vector3(3.3, 2.4, 2.2)]:
