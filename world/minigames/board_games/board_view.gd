@@ -101,8 +101,8 @@ func open(p_table: Node3D, ui: Node) -> bool:
 	_previous_camera = inventory.get("camera") as Camera3D
 	# Sit down on Anon's cushion first: a locked body cannot sit. Not when two ponies play: one of
 	# them sits there, and he watches standing.
-	_spectating = bool(table.call("is_match"))
-	if not _spectating and is_instance_valid(_body) and _body.has_method("sit_on") and not is_instance_valid(_body.get("seat")) and is_instance_valid(table.get("player_seat")):
+	var watching := bool(table.call("is_match"))
+	if not watching and is_instance_valid(_body) and _body.has_method("sit_on") and not is_instance_valid(_body.get("seat")) and is_instance_valid(table.get("player_seat")):
 		_body.call("sit_on", table.get("player_seat"))
 	var sat: Variant = _body.get("seat") if is_instance_valid(_body) else null
 	_seat = sat as Node3D if is_instance_valid(sat) else null
@@ -121,7 +121,8 @@ func open(p_table: Node3D, ui: Node) -> bool:
 		camera.cull_mask = _previous_camera.cull_mask
 	camera.top_level = true
 	add_child(camera)
-	if _spectating: _yaw = _side_yaw()
+	# Already on his cushion when a match is forming: he gets up for the pony who is to sit there.
+	if watching: _become_spectator()
 	_place_camera()
 	camera.make_current()
 	_marks = Node3D.new(); _marks.name = "BoardMarks"
@@ -218,7 +219,8 @@ func _side_yaw() -> float:
 	var feet: Variant = _body.get("global_position") if is_instance_valid(_body) else null
 	if not feet is Vector3: return 90.0
 	var side: Vector3 = table.global_basis.x
-	return -90.0 if ((feet as Vector3) - table.global_position).dot(side) > 0.0 else 90.0
+	# _toward_player turns +Z by the yaw about +Y: +90 degrees looks out along +X.
+	return 90.0 if ((feet as Vector3) - table.global_position).dot(side) > 0.0 else -90.0
 
 ## He stops playing himself: off the cushion (a pony needs it), out of the camera's way.
 func _become_spectator() -> void:

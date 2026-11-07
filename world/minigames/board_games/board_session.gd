@@ -624,9 +624,12 @@ func _match_move_request(side: int, swing: int) -> String:
 	var said: Dictionary = _last_by[side]
 	var mover := str(who(side).get("name", ""))
 	var other := str(who(-side).get("name", ""))
+	# The swing is her view of the board from her last turn to this one: what the move in between,
+	# the other's, did to her (as with Anon's move in his own games).
+	var between: Dictionary = _last_by[-side]
 	var verdict := ""
-	if _ply > 2 and swing > 180: verdict = " It was a strong move that hurt %s's position." % other
-	elif _ply > 2 and swing < -180: verdict = " It was a mistake %s could take advantage of." % other
+	if _ply > 2 and not between.is_empty() and swing > 180: verdict = " Before it, %s's move %s was a mistake %s could take advantage of." % [other, str(between.get("san", "")), mover]
+	elif _ply > 2 and not between.is_empty() and swing < -180: verdict = " Before it, %s's move %s was a strong one that hurt %s's position." % [other, str(between.get("san", "")), mover]
 	return ("%s and %s are in the middle of a game of %s %s. %s (%s) just played %s (%s).%s As %s sees it, %s. Moves so far: %s. 1 to 3 short lines between the two of them: a reaction to the move, banter, a tease, a groan, a question, or something else on their minds; it need not be about the game every time." + _TALK_FORM) % [
 		mover, other, game, _match_place(), mover, side_name(side), str(said.get("words", "")), str(said.get("san", "")), verdict, mover, _standing(int(said.get("score", 0))).replace("you are", mover + " is").replace("you can", mover + " can"), moves_text(10)]
 
