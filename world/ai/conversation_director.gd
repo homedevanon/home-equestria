@@ -1001,8 +1001,9 @@ func _place_lines(id: String, local_limit := 30) -> String:
 	return _prompts._place_lines(id, local_limit)
 
 
-## `silent`: a reply with no words to wait for, so actions held for after her line run now
-## (a lone [board_game: resign]; transport always needs words, pony_action_schema.gd).
+## `silent`: a reply with no words left to wait for (a lone [board_game: resign]): actions held for
+## after her line run now, except those that need her words (the teleport), which are dropped as
+## before; the schema cannot tell a "*nods*" that clean_reply() strips from real words.
 func _commit_actions(silent := false) -> bool:
 	if not _authored_active.is_empty() and (not _authored_lines.has(_authored_active) or not _authored_valid(_authored_lines[_authored_active])):
 		_finish_silence(); return false
@@ -1013,7 +1014,9 @@ func _commit_actions(silent := false) -> bool:
 	# Transport and sitting down to a board game happen only once all her sentences are said.
 	for action: Dictionary in _pending_actions:
 		if _farewell.has(_current) and _holds.stays(action): _farewell_staying[_current] = true
-		if action.type in ACTION_SCHEMA.AFTER_SPEECH and not silent: later.append(action.duplicate(true))
+		if action.type in ACTION_SCHEMA.AFTER_SPEECH:
+			if not silent: later.append(action.duplicate(true))
+			elif action.type not in ACTION_SCHEMA.SPEECH_REQUIRED: immediate.append(action)
 		else: immediate.append(action)
 	if not later.is_empty(): _after_speech_actions[_current] = {"actions":later, "turn":_turn_id, "epoch":_intent_epoch}
 	var error: String = actions.commit(_current, immediate, _action_targets(_current), _turn_id)
