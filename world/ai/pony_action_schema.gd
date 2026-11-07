@@ -38,7 +38,7 @@ const FIELDS := {
 	"step": ["direction", "distance_m"],
 	"lead": ["target_id", "location_id", "wait_distance_m"],
 	"stay": ["duration_s", "until_cancel"], "cancel": ["action_id"], "resume_routine": [], "sit": [], "stand": [], "lie_down": [], "fly_to": ["location_id"], "hover": ["duration_s"], "land": [], "loop_de_loop": [], "barrel_roll": [], "circle_over": ["target_id"], "sonic_rainboom": [], "sit_on_seat": [], "go_home": [], "go_to_bed": ["bed"], "air_show": ["moves", "target_id"],
-	"board_game": ["game"]}
+	"board_game": ["game", "with"]}
 ## Air show figures (pony_flight.gd SHOW_MOVES) and the tag spellings that name one. A reply with
 ## [air_show: loop, dive, ...] or with several trick tags ([loop_de_loop] [dive] [barrel_roll])
 ## becomes one air_show action: one takeoff, the figures in order, one landing.
@@ -71,7 +71,7 @@ const SIGNATURES := {
 	"take_off": [["kind", null]], "put_on": [["kind", null]],
 	"meet": [["location_id", null], ["day", "today"], ["time", null]], "pay_player": [["amount", null]], "give": [["item", null]], "use": [["station_id", null]], "offer_job": [["job_id", null]],
 	"ask": [["want", null], ["reward", "thanks"]], "invite": [["event_id", null]], "sell": [["item", null], ["price", null]], "buy": [["item", null], ["price", null]],
-	"go_to_bed": [["bed", "own"]], "board_game": [["game", "chess"]]}
+	"go_to_bed": [["bed", "own"]], "board_game": [["game", "chess"], ["with", ""]]}
 ## [go_to_bed: here] spellings: the bed in the house where Anon is; anything else is her own bed.
 const BED_HERE := ["here", "this", "this_bed", "that", "that_bed", "there", "player", "anon", "his", "his_bed", "your", "yours", "your_bed", "anons_bed", "anon's_bed"]
 const PLAYER_NAMES := ["me", "you", "anon", "him", "the player", "anonymous"]
@@ -138,7 +138,7 @@ const TAG_HELP := {
 	"request_space": "[request_space] ask Anon to give you some space", "buck_player": "[buck_player] buck Anon away (only real, lasting anger at unwelcome contact)",
 	"cuddle": "[cuddle] cuddle up to Anon", "kiss_player": "[kiss_player] kiss Anon",
 	"send_letter": "[send_letter] write a quick note on a scroll and send it to Princess Celestia with your green fire",
-	"board_game": "[board_game: chess] or [board_game: checkers] go to the game board nearby (the table by the fireplace in Golden Oak library, the stone table by the Plaza fountain, or a folding board Anon has set out) and sit down to play with Anon (he joins you there), or to take up a game you left unfinished with him; while you play, [board_game: resign] gives up and [board_game: stop] puts it away to finish another time; [board_game: no] turns down his invitation to play",
+	"board_game": "[board_game: chess] or [board_game: checkers] go to the game board nearby (the table by the fireplace in Golden Oak library, the stone table by the Plaza fountain, or a folding board Anon has set out) and sit down to play with Anon (he joins you there), or to take up a game you left unfinished with him; while you play, [board_game: resign] gives up and [board_game: stop] puts it away to finish another time; [board_game: no] turns down his invitation to play; [board_game: chess, PONY_ID] (or checkers) instead sets up a game between you and that pony nearby, Anon watching: she is asked and answers for herself",
 	"give_house": "[give_house] officially make a free Ponyville house Anon's own home, for good (the empty one he is in or beside, else the nearest free one); only when you give it, never just to talk about houses; works alongside one other action",
 	"magic_show": "[magic_show] start your Great and Powerful stage show at the schoolhouse stage: fireworks call the town, the curtain rises in about three minutes; only when Anon paid for one or you truly want an audience; works alongside one other action",
 	"take_off": "[take_off: ITEM] take off something you are wearing (e.g. socks, scarf, hat, glasses), when asked or when you want to; you keep it and can [put_on] it again; works alongside one other action",
@@ -309,6 +309,10 @@ static func _tag_action(type: String, value: String, turn: int, index: int) -> D
 	if type == "board_game":
 		var game := str(action.get("game", "chess")).to_lower().replace(" ", "_")
 		action.game = BOARD_SPELLINGS.get(game, game)
+		# [board_game: chess, spike]: a game between her and that pony (board_table.gd _match_action).
+		var rival := str(action.get("with", "")).strip_edges().to_lower().replace(" ", "_")
+		if rival == "" or rival in PLAYER_NAMES or rival == "player": action.erase("with")
+		else: action.with = rival
 	return action
 
 ## "Walk with me" to a place she is going (thread report 2026-10-31: Rarity said she was going to
@@ -578,6 +582,9 @@ static func validate(action: Variant, context: Dictionary) -> String:
 			if not _id(action.get("action_id")): return "Invalid cancellation target"
 		"board_game":
 			if action.get("game") not in BOARD_GAMES: return "Say chess, checkers, resign, stop or no"
+			if action.has("with"):
+				if action.get("game") not in ["chess", "checkers"]: return "Name chess or checkers to play with another pony"
+				if not _id(action.get("with")) or (context.get("targets", {}) is Dictionary and not (context.get("targets", {}) as Dictionary).is_empty() and not (context.targets as Dictionary).has(action.with)): return "Unknown pony to play with"
 	return ""
 
 ## The game clock for meeting times: context "clock" ({"day", "hours"}, tests and letters) or TimeOfDay.

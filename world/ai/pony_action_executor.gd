@@ -735,7 +735,7 @@ func _board_table() -> Node3D:
 	var best: Node3D = null
 	for table: Node in get_tree().get_nodes_in_group("board_tables"):
 		# The board that asked her, or where she sits, before the nearest.
-		if (table.get("invite") as Dictionary).get("actor") == actor or (table.get("opponent") as Dictionary).get("actor") == actor: return table as Node3D
+		if (table.has_method("involves") and bool(table.call("involves", actor))) or (table.get("invite") as Dictionary).get("actor") == actor or (table.get("opponent") as Dictionary).get("actor") == actor: return table as Node3D
 		if best == null or (table as Node3D).global_position.distance_squared_to(actor.global_position) < best.global_position.distance_squared_to(actor.global_position): best = table as Node3D
 	return best
 

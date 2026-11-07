@@ -10,6 +10,11 @@ extends Node
 ## the view is open (dev 2026-10-26: subtitles ran off the bottom of the screen over the bar).
 ## Escape leaves; the game waits while he stays near. The view is the desktop activity owner,
 ## so menus close it before they open.
+##
+## Watching two ponies play (board_table.gd ask_match): he picks two in the game card, stands by
+## the table (the second pony takes his cushion) and the camera starts from the side, so both faces
+## are in view; right-drag goes all the way round. He cannot move pieces then, but the talk box
+## works as ever, and their talk between themselves shows there too.
 const MODELS := preload("res://world/minigames/board_games/board_models.gd")
 const DESKTOP_OWNER := preload("res://player/desktop_action_owner.gd")
 const READABLE := preload("res://world/ui/readable_text_theme.gd")
@@ -82,6 +87,10 @@ var _game_choice := "chess"
 var _closing := false
 var _hidden_hud: Array[CanvasLayer] = []
 var _hud_was_hidden := false
+## Ponies picked in the game card for a match, in order (the first sits across).
+var _watch_pick: Array = []
+var _spectating := false
+var _help: Label
 
 ## True when the view took over (the table frees it otherwise).
 func open(p_table: Node3D, ui: Node) -> bool:
@@ -90,8 +99,10 @@ func open(p_table: Node3D, ui: Node) -> bool:
 	if not DESKTOP_OWNER.claim(inventory, self): return false
 	_body = inventory.get("player_body") as Node
 	_previous_camera = inventory.get("camera") as Camera3D
-	# Sit down on Anon's cushion first: a locked body cannot sit.
-	if is_instance_valid(_body) and _body.has_method("sit_on") and not is_instance_valid(_body.get("seat")) and is_instance_valid(table.get("player_seat")):
+	# Sit down on Anon's cushion first: a locked body cannot sit. Not when two ponies play: one of
+	# them sits there, and he watches standing.
+	_spectating = bool(table.call("is_match"))
+	if not _spectating and is_instance_valid(_body) and _body.has_method("sit_on") and not is_instance_valid(_body.get("seat")) and is_instance_valid(table.get("player_seat")):
 		_body.call("sit_on", table.get("player_seat"))
 	var sat: Variant = _body.get("seat") if is_instance_valid(_body) else null
 	_seat = sat as Node3D if is_instance_valid(sat) else null
@@ -110,6 +121,7 @@ func open(p_table: Node3D, ui: Node) -> bool:
 		camera.cull_mask = _previous_camera.cull_mask
 	camera.top_level = true
 	add_child(camera)
+	if _spectating: _yaw = _side_yaw()
 	_place_camera()
 	camera.make_current()
 	_marks = Node3D.new(); _marks.name = "BoardMarks"
@@ -200,6 +212,29 @@ func _place_camera() -> void:
 	var aim := clampf(minf((low + high) * 0.5, low + deg_to_rad(FOV * 0.5 - 3.0)), deg_to_rad(-88.0), deg_to_rad(60.0))
 	camera.look_at(camera.global_position - toward_player * cos(aim) + Vector3.UP * sin(aim), Vector3.UP)
 
+## Watching: the camera starts beside the table, on whichever side Anon stands nearer to (a wall
+## is less likely there), so both players' faces are in view.
+func _side_yaw() -> float:
+	var feet: Variant = _body.get("global_position") if is_instance_valid(_body) else null
+	if not feet is Vector3: return 90.0
+	var side: Vector3 = table.global_basis.x
+	return -90.0 if ((feet as Vector3) - table.global_position).dot(side) > 0.0 else 90.0
+
+## He stops playing himself: off the cushion (a pony needs it), out of the camera's way.
+func _become_spectator() -> void:
+	if _spectating: return
+	_spectating = true
+	if _seat != null:
+		_seat = null
+		if is_instance_valid(_body) and _body.has_method("stand_up"):
+			_body.set("controls_locked", false)
+			_body.call("stand_up")
+			_body.set("controls_locked", true)
+	_show_body(false)
+	_yaw = _side_yaw()
+	_face = Vector3.INF
+	_place_camera()
+
 ## Flat, from the board towards Anon's side, turned by the orbit.
 func _toward_player() -> Vector3:
 	var toward: Vector3 = table.global_basis.z
@@ -211,8 +246,13 @@ func _elevation(point: Vector3, forward: Vector3) -> float:
 	var offset := point - camera.global_position
 	return atan2(offset.y, offset.dot(forward))
 
-## Her face once she is seated at the board, otherwise where it will be on her cushion.
+## Her face once she is seated at the board, otherwise where it will be on her cushion. Watching
+## two ponies: halfway between their faces.
 func _face_point(toward_player: Vector3) -> Vector3:
+	if _spectating:
+		var far := _face_of(table.get("opponent"), table.get("pony_seat"))
+		var near := _face_of(table.get("rival"), table.get("player_seat"))
+		return far.lerp(near, 0.5)
 	var opponent: Dictionary = table.get("opponent")
 	var actor: Variant = opponent.get("actor")
 	if str(opponent.get("state", "")) == "seated" and is_instance_valid(actor) and (actor as Node).has_method("listen_point"):
@@ -222,6 +262,14 @@ func _face_point(toward_player: Vector3) -> Vector3:
 	var board_at: Vector3 = (table.get("board") as Node3D).global_position
 	var floor_at: Vector3 = (seat as Node3D).global_position if is_instance_valid(seat) else board_at - toward_player * 0.8
 	return floor_at + Vector3.UP * SEATED_FACE
+
+func _face_of(row: Dictionary, seat: Variant) -> Vector3:
+	var actor: Variant = row.get("actor")
+	if str(row.get("state", "")) == "seated" and is_instance_valid(actor) and (actor as Node).has_method("listen_point"):
+		var nose: Variant = (actor as Node).call("listen_point")
+		if nose is Vector3 and (nose as Vector3).is_finite(): return nose
+	var board_at: Vector3 = (table.get("board") as Node3D).global_position
+	return ((seat as Node3D).global_position if is_instance_valid(seat) else board_at) + Vector3.UP * SEATED_FACE
 
 # ------------------------------------------------------------------ input
 
@@ -258,7 +306,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion:
 		var motion := event as InputEventMouseMotion
 		if _orbiting:
-			_yaw = clampf(_yaw - motion.relative.x * 0.25, -YAW_LIMIT, YAW_LIMIT)
+			_yaw = clampf(_yaw - motion.relative.x * 0.25, -YAW_LIMIT, YAW_LIMIT) if not _spectating else wrapf(_yaw - motion.relative.x * 0.25, -180.0, 180.0)
 			_pitch = clampf(_pitch + motion.relative.y * 0.2, PITCH.x, PITCH.y)
 			_place_camera()
 		var sq := _square_under(motion.position)
@@ -434,6 +482,7 @@ func _build_hud() -> void:
 	help.add_theme_font_size_override("font_size", 13); help.modulate = Color(1, 1, 1, 0.55)
 	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(help)
+	_help = help
 	# The talk card, top right: the conversation, newest at the bottom, and a line to type in.
 	_talk_card = _card_at(root, true)
 	var talk := VBoxContainer.new(); talk.add_theme_constant_override("separation", 10)
@@ -508,13 +557,24 @@ func _refresh() -> void:
 	var opponent: Dictionary = table.get("opponent")
 	var game_name := str(session.get("game")) if session != null else _game_choice
 	var who := str(session.get("opponent").get("name", "")) if session != null else str(opponent.get("name", ""))
+	var watching := bool(table.call("is_match"))
+	if watching: _become_spectator()
+	elif _spectating:
+		# The match is over and they left: back to the view from his side (he stays standing).
+		_spectating = false
+		_yaw = 0.0
+		_face = Vector3.INF
+		_place_camera()
 	_title.text = game_name.capitalize() + (" with " + who if who != "" else "")
+	if watching: _title.text = game_name.capitalize() + ": " + _match_names(session)
+	_help.text = "Right-drag to look around · wheel to zoom · Enter to talk" if watching else "Click a piece, then a square · right-drag to look around · wheel to zoom"
 	_status.text = str(table.call("status_text"))
 	_moves.text = str(session.call("moves_text")) if session != null else ""
 	_moves.visible = _moves.text != ""
 	var playing: bool = session != null and not bool(session.call("is_over"))
-	_resign.visible = playing
+	_resign.visible = playing and not watching
 	_aside.visible = playing
+	_aside.text = "Stop the game" if watching else "Finish later"
 	if not playing: _cancel_promotion()
 	if session == null or not playing:
 		_lift(_selected, false); _selected = -1
@@ -528,6 +588,15 @@ func _rebuild_setup(session: Node, playing: bool) -> void:
 	var opponent: Dictionary = table.get("opponent")
 	var invite: Dictionary = table.get("invite")
 	if not invite.is_empty(): return
+	if bool(table.call("is_match")):
+		# Two ponies: while they come over, calling it off; after a game, another or letting them go.
+		var rival: Dictionary = table.get("rival")
+		var seated: bool = str(opponent.get("state", "")) == "seated" and str(rival.get("state", "")) == "seated"
+		if seated and session != null:
+			for game_name: String in ["chess", "checkers"]:
+				_button(_setup, ("Another game of %s" if str(session.get("game")) == game_name else "Now %s") % game_name, _start.bind(game_name))
+		_button(_setup, "Let them go" if seated and session != null else "Call it off", _let_go)
+		return
 	if not opponent.is_empty():
 		if str(opponent.get("state", "")) != "seated": return
 		for game_name: String in ["chess", "checkers"]:
@@ -554,6 +623,20 @@ func _rebuild_setup(session: Node, playing: bool) -> void:
 	for row: Dictionary in who.slice(0, 6):
 		var unfinished: bool = table.call("has_unfinished", _game_choice, str(row.id))
 		_button(_setup, str(row.name) + (" (unfinished game)" if unfinished else ""), _ask.bind(row.actor))
+	if who.size() < 2: return
+	# Or two of them play each other, Anon watching.
+	_watch_pick = _watch_pick.filter(func(actor: Variant) -> bool: return is_instance_valid(actor) and who.any(func(row: Dictionary) -> bool: return row.actor == actor))
+	_setup.add_child(_rule())
+	var watch_label := Label.new(); watch_label.text = "Or watch two of them play:"
+	_setup.add_child(watch_label)
+	var grid := HFlowContainer.new(); grid.add_theme_constant_override("h_separation", 6); grid.add_theme_constant_override("v_separation", 6)
+	_setup.add_child(grid)
+	for row: Dictionary in who.slice(0, 6):
+		var b := _button(grid, str(row.name), _toggle_pick.bind(row.actor))
+		b.toggle_mode = true
+		b.button_pressed = row.actor in _watch_pick
+	if _watch_pick.size() == 2:
+		_button(_setup, "Watch %s and %s play %s" % [table.call("pony_name", _watch_pick[0]), table.call("pony_name", _watch_pick[1]), _game_choice], _watch)
 
 func _start(game_name: String, fresh := false) -> void:
 	table.call("start_game", game_name, fresh)
@@ -569,6 +652,40 @@ func _ask(actor: Node3D) -> void:
 	if why != "": table.set("notice", why)
 	_refresh()
 
+func _toggle_pick(actor: Node3D) -> void:
+	if actor in _watch_pick: _watch_pick.erase(actor)
+	else:
+		_watch_pick.append(actor)
+		if _watch_pick.size() > 2: _watch_pick.pop_front()
+	_refresh.call_deferred()
+
+## Asks the two picked ponies to play each other; he gets up off his cushion for one of them.
+func _watch() -> void:
+	if _watch_pick.size() != 2: return
+	var why := str(table.call("ask_match", _watch_pick[0], _watch_pick[1], _game_choice))
+	if why != "": table.set("notice", why)
+	else:
+		_watch_pick.clear()
+		_become_spectator()
+	_refresh()
+
+func _let_go() -> void:
+	var session := _session()
+	if session != null and not bool(session.call("is_over")): session.call("abandon", "Anon called the game off")
+	table.call("release_opponent", "")
+	_refresh()
+
+## "Twilight vs Spike", white (or red) first.
+func _match_names(session: Node) -> String:
+	if session != null and bool(session.call("is_match")):
+		return "%s vs %s" % [str(session.call("who", 1).get("name", "")), str(session.call("who", -1).get("name", ""))]
+	var names: PackedStringArray = []
+	for row: Dictionary in [table.get("opponent"), table.get("rival")]:
+		if not row.is_empty(): names.append(str(row.name))
+	for row: Dictionary in (table.get("match_invite") as Dictionary).get("rows", []):
+		if str(row.name) not in names: names.append(str(row.name))
+	return " vs ".join(names)
+
 func _button(parent: Node, text: String, action: Callable) -> Button:
 	var b := Button.new(); b.text = text; b.custom_minimum_size.y = 36
 	b.pressed.connect(action)
@@ -581,7 +698,9 @@ func _on_resign() -> void:
 
 func _on_set_aside() -> void:
 	var session := _session()
-	if session != null: session.call("set_aside")
+	if session == null: return
+	if bool(session.call("is_match")): _let_go()
+	else: session.call("set_aside")
 
 ## Typed words go to whoever he is facing across the table, like the chat box does; the talk
 ## card shows them once the director has heard them (_on_heard), spoken or typed.

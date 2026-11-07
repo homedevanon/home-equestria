@@ -7,6 +7,15 @@ extends Node
 ## every move); she also speaks when the game starts and when it ends. A unicorn moves her
 ## pieces in her magic, glowing in her colour. Every move is kept (board_adjourned.gd) until the
 ## game ends with a result, so one left unfinished is taken up again later, replayed move by move.
+##
+## A match (setup_match, dev 2026-11-07: "make two ponies play and have us as a spectator that can
+## still talk in the chat; the two adversaries can also talk between them"): both sides are ponies,
+## each with her own level and style, thinking a little longer than against Anon so he can follow.
+## They talk between themselves in short pony-to-pony exchanges (the director's ambient group, one
+## model call for the whole exchange) as the game starts, after a move worth a word and at the end;
+## the next move waits while its pony is still speaking. What Anon says or types reaches them as
+## any conversation does, their prompts knowing the game and that he is watching. A match is not
+## kept to finish later and is not one of Anon's shared activities.
 signal finished
 const MODELS := preload("res://world/minigames/board_games/board_models.gd")
 const ENGINE := preload("res://world/minigames/board_games/board_engine.gd")
@@ -21,13 +30,27 @@ const STEP_SECONDS := 0.32
 const MAGIC_STEP_SECONDS := 0.55
 const ARC := 0.05
 const MAGIC_ARC := 0.12
+## A match: each pony's think, the least time between two of their exchanges, how long a start or
+## end exchange keeps trying for a free moment, and the longest a move waits for their talk.
+const MATCH_THINK := Vector2(3.5, 8.0)
+const TALK_GAP := 22.0
+const TALK_TRY := 20.0
+const TALK_HOLD := 25.0
 
 var table: Node3D
 var game := "chess"
 var rules: RefCounted
-## Anon's side: 1 moves first (white / red), -1 second.
+## Anon's side: 1 moves first (white / red), -1 second; 0 in a match, where he only watches.
 var player_side := 1
 var opponent: Dictionary = {}
+## Who plays each side: {1: who, -1: who}, {} for Anon. In a match both are ponies.
+var players: Dictionary = {1: {}, -1: {}}
+## Each side's last move as rules.describe gives it (plus "score" for a pony's).
+var _last_by := {1: {}, -1: {}}
+## A match: an exchange waiting for a free moment {request, first, until}, and when they last talked.
+var _talk_pending: Dictionary = {}
+var _talk_at := -1e9
+var _held_since := -1
 ## {"over": true, "winner": 1/-1/0, "reason"} once the game has ended, else {}.
 var result: Dictionary = {}
 var notation: PackedStringArray = []
@@ -59,6 +82,7 @@ func setup(p_table: Node3D, p_game: String, side: int, who: Dictionary, earlier:
 	game = p_game
 	player_side = side
 	opponent = who
+	players = {side: {}, -side: who}
 	rules = load("res://world/minigames/board_games/%s_rules.gd" % game).new()
 	var keys: Array = earlier.get("moves", [])
 	if not keys.is_empty():
@@ -75,6 +99,28 @@ func setup(p_table: Node3D, p_game: String, side: int, who: Dictionary, earlier:
 	set_process(true)
 	if not player_to_move(): _start_thinking()
 	else: _changed()
+
+## Two ponies play each other, Anon watching: `p_players` {1: who, -1: who}, each like setup's
+## `who` ({id, key, name, actor, level, style}). A match always starts new.
+func setup_match(p_table: Node3D, p_game: String, p_players: Dictionary) -> void:
+	table = p_table
+	game = p_game
+	player_side = 0
+	players = p_players
+	opponent = players[-1]
+	rules = load("res://world/minigames/board_games/%s_rules.gd" % game).new()
+	refresh()
+	_look_at_board()
+	_queue_talk(_match_start_request(), 1)
+	set_process(true)
+	_start_thinking()
+
+func is_match() -> bool:
+	return player_side == 0
+
+## Who plays `side`: {} for Anon.
+func who(side: int) -> Dictionary:
+	return players.get(side, {})
 
 func is_over() -> bool:
 	return not result.is_empty()
@@ -104,6 +150,7 @@ func player_move(from: int, to: int, promo := 0) -> String:
 	var move: Variant = rules.find_move(from, to, promo)
 	if move == null or (move is int and int(move) < 0) or (move is Dictionary and (move as Dictionary).is_empty()): return "That move isn't allowed"
 	_his_last = rules.describe(move)
+	_last_by[player_side] = _his_last
 	_play(move, false)
 	return ""
 
@@ -111,17 +158,19 @@ func player_move(from: int, to: int, promo := 0) -> String:
 
 func _start_thinking() -> void:
 	thinking = true
-	_score_before = int(_her_last.get("score", _score))
-	_engine = ENGINE.new(rules, game, int(opponent.get("level", 2)), opponent.get("style", {}))
+	var mover := who(int(rules.side))
+	_score_before = int((_last_by[int(rules.side)] as Dictionary).get("score", _score if not is_match() else 0))
+	_engine = ENGINE.new(rules, game, int(mover.get("level", 2)), mover.get("style", {}))
 	_task = WorkerThreadPool.add_task(_engine.think, false, "board game move")
-	var pause := randf_range(MIN_THINK.x, MIN_THINK.y)
+	var pause := randf_range(MIN_THINK.x, MIN_THINK.y) if not is_match() else randf_range(MATCH_THINK.x, MATCH_THINK.y)
 	if game == "chess" and _ply < 4: pause *= 0.6
 	_think_until = Time.get_ticks_msec() + int(pause * 1000.0)
 	_look_at_board()
 	_changed()
 
 func _process(delta: float) -> void:
-	if thinking and _task >= 0 and WorkerThreadPool.is_task_completed(_task) and Time.get_ticks_msec() >= _think_until:
+	if is_match(): _try_talk()
+	if thinking and _task >= 0 and WorkerThreadPool.is_task_completed(_task) and Time.get_ticks_msec() >= _think_until and not _talk_holds():
 		WorkerThreadPool.wait_for_task_completion(_task)
 		_task = -1
 		thinking = false
@@ -129,12 +178,32 @@ func _process(delta: float) -> void:
 		var info: Dictionary = _engine.info
 		_engine = null
 		if move == null: _end_if_over(); return
-		_her_last = rules.describe(move)
-		_her_last["score"] = int(info.get("score", 0))
-		_score = int(_her_last.score)
-		_her_last["best_score"] = int(info.get("best_score", 0))
+		var said: Dictionary = rules.describe(move)
+		said["score"] = int(info.get("score", 0))
+		said["best_score"] = int(info.get("best_score", 0))
+		_last_by[int(rules.side)] = said
+		if not is_match():
+			_her_last = said
+			_score = int(said.score)
 		_play(move, true)
 	if animating: _step_animation(delta)
+
+## A match: her move waits while she is still speaking, or while the two of them are in the
+## middle of an exchange (at most TALK_HOLD past her think).
+func _talk_holds() -> bool:
+	if not is_match(): return false
+	var mover: Variant = who(int(rules.side)).get("actor")
+	if is_instance_valid(mover) and (mover as Node).has_method("is_speaking") and bool((mover as Node).call("is_speaking")):
+		if _held_since < 0: _held_since = Time.get_ticks_msec()
+		return Time.get_ticks_msec() - _held_since < int(TALK_HOLD * 1000.0)
+	var director := _director()
+	var group: Variant = director.get("group") if director != null else null
+	var talking: bool = group is Object and bool((group as Object).call("active")) and str(who(int(rules.side)).get("key", "")) in (group as Object).get("members")
+	if not talking:
+		_held_since = -1
+		return false
+	if _held_since < 0: _held_since = Time.get_ticks_msec()
+	return Time.get_ticks_msec() - _held_since < int(TALK_HOLD * 1000.0)
 
 ## Plays `move` on the rules and starts the pieces moving.
 func _play(move: Variant, hers: bool) -> void:
@@ -146,17 +215,18 @@ func _play(move: Variant, hers: bool) -> void:
 	if game == "chess" and CHESS.flags(move) & CHESS.CASTLE:
 		var to: int = rules.to_sq(move)
 		castle_rook = [to + 1 if to & 7 == 6 else to - 2, to - 1 if to & 7 == 6 else to + 1]
-	notation.append(str((_her_last if hers else _his_last).get("san", "")))
+	notation.append(str((_last_by[mover] as Dictionary).get("san", "")))
 	last_move = move
 	_ply += 1
 	for row: Array in removed: (taken[mover] as Array).append(int(row[1]))
-	_animate(path, removed, castle_rook, hers)
+	_animate(path, removed, castle_rook, who(mover).get("actor") if hers else null)
 	moves_made.append(move_key(game, move))
 	rules.make(move)
 	# A move that ends the game leaves nothing to take up later, even while it is still moving
-	# (a save or a walk away then); _end_if_over() gives the result once it lands.
+	# (a save or a walk away then); _end_if_over() gives the result once it lands. A match is never kept.
 	var clock := get_node_or_null("/root/TimeOfDay")
-	if bool(rules.status().get("over", false)): ADJOURNED.drop(str(opponent.get("id", "")), game)
+	if is_match(): pass
+	elif bool(rules.status().get("over", false)): ADJOURNED.drop(str(opponent.get("id", "")), game)
 	else: ADJOURNED.keep(str(opponent.get("id", "")), game, player_side, moves_made, _score, int(clock.get("day")) if clock != null else 0)
 	# Her prompt: the board after this move, like the move list (the pieces are still on their way).
 	_update_context()
@@ -205,9 +275,12 @@ static func replay(game_name: String, keys: Array) -> Dictionary:
 		last = move
 	return {"rules": rules_now, "notation": moves_said, "taken": lost, "last": last}
 
-func _animate(path: PackedInt32Array, removed: Array, castle_rook: Array, hers: bool) -> void:
+## `mover`: the pony moving the piece (a unicorn lifts it in her magic), null for Anon.
+var _anim_actor: Node = null
+func _animate(path: PackedInt32Array, removed: Array, castle_rook: Array, mover: Variant) -> void:
 	_anim.clear()
-	var magic := hers and opponent.get("actor") != null and is_instance_valid(opponent.actor) and opponent.actor.get("magic") != null
+	_anim_actor = mover as Node if is_instance_valid(mover) else null
+	var magic := _anim_actor != null and _anim_actor.get("magic") != null
 	var node: Node3D = table.call("piece_node", path[0])
 	if node != null:
 		node.top_level = false
@@ -215,8 +288,8 @@ func _animate(path: PackedInt32Array, removed: Array, castle_rook: Array, hers: 
 		for sq in path: points.append(MODELS.square_position(sq))
 		_anim.append({"node": node, "points": points, "t": 0.0, "step": MAGIC_STEP_SECONDS if magic else STEP_SECONDS, "arc": MAGIC_ARC if magic else ARC})
 		if magic:
-			_glow.append_array(opponent.actor.magic.glow_object(node, 0.8))
-			opponent.actor.magic.hold(true)
+			_glow.append_array(_anim_actor.magic.glow_object(node, 0.8))
+			_anim_actor.magic.hold(true)
 	if not castle_rook.is_empty():
 		var rook: Node3D = table.call("piece_node", int(castle_rook[0]))
 		if rook != null:
@@ -254,7 +327,8 @@ func _step_animation(delta: float) -> void:
 	animating = false
 	MAGIC.unglow_object(_glow)
 	_glow.clear()
-	if is_instance_valid(opponent.get("actor")) and opponent.actor.get("magic") != null: opponent.actor.magic.hold(false)
+	if is_instance_valid(_anim_actor) and _anim_actor.get("magic") != null: _anim_actor.magic.hold(false)
+	_anim_actor = null
 	SOUNDS.play_at(table, "prop_contact_wood")
 	refresh()
 	# Resigned or abandoned while the piece was moving: the game is over, nopony moves again.
@@ -263,7 +337,10 @@ func _step_animation(delta: float) -> void:
 		return
 	var just_hers := int(rules.side) == player_side
 	if _end_if_over(): return
-	if just_hers: _say_move()
+	if is_match():
+		_after_match_move(-int(rules.side))
+		_start_thinking()
+	elif just_hers: _say_move()
 	else: _start_thinking()
 	_changed()
 
@@ -279,7 +356,7 @@ func _end_if_over() -> bool:
 func resign(side: int) -> void:
 	if not result.is_empty(): return
 	_stop_thinking()
-	_finish({"over": true, "winner": -side, "reason": "%s resigned" % ("Anon" if side == player_side else str(opponent.get("name", "she")))})
+	_finish({"over": true, "winner": -side, "reason": "%s resigned" % ("Anon" if side == player_side else str(who(side).get("name", "she")))})
 
 ## Anon stops here to finish another time: she hears it, and the game is kept like any left unfinished.
 func set_aside() -> void:
@@ -292,17 +369,23 @@ func set_aside() -> void:
 func abandon(why: String) -> void:
 	if not result.is_empty(): return
 	_stop_thinking()
-	if moves_made.is_empty(): ADJOURNED.drop(str(opponent.get("id", "")), game)
-	result = {"over": true, "winner": 0, "reason": why, "abandoned": true, "kept": not moves_made.is_empty()}
+	if moves_made.is_empty() and not is_match(): ADJOURNED.drop(str(opponent.get("id", "")), game)
+	result = {"over": true, "winner": 0, "reason": why, "abandoned": true, "kept": not moves_made.is_empty() and not is_match()}
 	_release_gaze()
 	finished.emit()
 	_changed()
 
 func _finish(state: Dictionary) -> void:
 	result = state
-	ADJOURNED.drop(str(opponent.get("id", "")), game)
 	_release_gaze()
 	var winner := int(state.get("winner", 0))
+	if is_match():
+		_talk_pending = {}
+		_queue_talk(_match_end_request(winner, str(state.get("reason", ""))), winner if winner != 0 else 1)
+		finished.emit()
+		_changed()
+		return
+	ADJOURNED.drop(str(opponent.get("id", "")), game)
 	var memory: Node = get_tree().current_scene.get("relationship_runtime") as Node if get_tree().current_scene != null else null
 	if is_instance_valid(memory) and memory.has_method("shared_activity"):
 		memory.shared_activity(game, table.global_position, "board_%d_%d" % [get_instance_id(), _ply], [str(opponent.get("id", ""))])
@@ -330,12 +413,14 @@ func _exit_tree() -> void:
 	MAGIC.unglow_object(_glow)
 
 func _look_at_board() -> void:
-	var actor: Variant = opponent.get("actor")
-	if is_instance_valid(actor) and actor.has_method("set_action_gaze"): actor.set_action_gaze(table.get("gaze_point"))
+	for side: int in [1, -1]:
+		var actor: Variant = who(side).get("actor")
+		if is_instance_valid(actor) and actor.has_method("set_action_gaze"): actor.set_action_gaze(table.get("gaze_point"))
 
 func _release_gaze() -> void:
-	var actor: Variant = opponent.get("actor")
-	if is_instance_valid(actor) and actor.get("action_gaze_target") == table.get("gaze_point") and actor.has_method("set_action_gaze"): actor.set_action_gaze(null)
+	for side: int in [1, -1]:
+		var actor: Variant = who(side).get("actor")
+		if is_instance_valid(actor) and actor.get("action_gaze_target") == table.get("gaze_point") and actor.has_method("set_action_gaze"): actor.set_action_gaze(null)
 
 func _changed() -> void:
 	if is_instance_valid(table):
@@ -345,6 +430,7 @@ func _changed() -> void:
 # ------------------------------------------------------------------ what it looks like in words
 
 func status_text() -> String:
+	if is_match(): return _match_status()
 	var her := str(opponent.get("name", "She"))
 	if not result.is_empty():
 		if bool(result.get("abandoned", false)):
@@ -408,6 +494,9 @@ func _position_line() -> String:
 
 ## The game in her prompt while it lasts (director_prompts.gd situation_block reads the meta).
 func _update_context() -> void:
+	if is_match():
+		for side: int in [1, -1]: _update_match_context(side)
+		return
 	var actor: Variant = opponent.get("actor")
 	if not is_instance_valid(actor): return
 	if not result.is_empty():
@@ -465,3 +554,118 @@ func _say_end(winner: int, how: String) -> void:
 	var last := ""
 	if not _his_last.is_empty() and winner == player_side: last = " His last move was %s." % _his_last.words
 	_say(_game_frame() + " " + outcome + last + " Stay in character.", "end", _ply)
+
+# ------------------------------------------------------------------ a match: two ponies, Anon watching
+
+func _match_status() -> String:
+	if not result.is_empty():
+		if bool(result.get("abandoned", false)): return str(result.reason) if str(result.reason) != "" else "Game over"
+		var winner := int(result.get("winner", 0))
+		var how := str(result.get("reason", ""))
+		if winner == 0: return "Draw: %s" % how
+		return "%s wins" % str(who(winner).get("name", "")) + (": %s" % how if how != "" else "")
+	var mover := str(who(int(rules.side)).get("name", ""))
+	if thinking or animating: return "%s is thinking… (%s)" % [mover, side_name(int(rules.side))] if thinking else "%s moves…" % mover
+	return "%s to move (%s)" % [mover, side_name(int(rules.side))]
+
+## "You are playing chess against Spike at ...; you have white, he has black."
+func _match_frame(side: int) -> String:
+	return "You are playing %s against %s %s; you have %s, %s has %s. Anon is watching the game." % [game, str(who(-side).get("name", "")),
+		str(table.get("place_words")), side_name(side), str(who(-side).get("name", "")), side_name(-side)]
+
+func _match_material(side: int) -> String:
+	var rival := str(who(-side).get("name", ""))
+	if game == "chess":
+		var mine: String = rules.losses(side)
+		var hers: String = rules.losses(-side)
+		return "Taken so far: from you %s; from %s %s." % [mine if mine != "" else "nothing", rival, hers if hers != "" else "nothing"]
+	var count: Dictionary = rules.material()
+	return "Pieces left: you %d (%d kings), %s %d (%d kings)." % [int(count[side].men) + int(count[side].kings), int(count[side].kings),
+		rival, int(count[-side].men) + int(count[-side].kings), int(count[-side].kings)]
+
+func _update_match_context(side: int) -> void:
+	var actor: Variant = who(side).get("actor")
+	if not is_instance_valid(actor): return
+	if not result.is_empty():
+		if (actor as Node).has_meta("board_game_context"): (actor as Node).remove_meta("board_game_context")
+		return
+	var rival := str(who(-side).get("name", ""))
+	var turn := "It is your turn; you are thinking about your move." if int(rules.side) == side else "It is %s's turn." % rival
+	var way := " (your men move toward rank %d)" % (8 if side == 1 else 1) if game == "checkers" else ""
+	var about := str((who(side).get("style", {}) as Dictionary).get("about", ""))
+	var line := "- " + _match_frame(side) + (" Your style at the board: " + about if about != "" else "") + " Moves so far: %s. %s Board now%s. Your pieces: %s; %s's pieces: %s. %s If you want, [board_game: resign] gives up the game and [board_game: stop] puts it away." % [
+		moves_text(16) if not notation.is_empty() else "none yet", turn, way, rules.position_words(side), rival, rules.position_words(-side), _match_material(side)]
+	(actor as Node).set_meta("board_game_context", line)
+
+## After a move in a match: a word between them when it was worth one (a capture, a check, a
+## blunder or a strong move) or now and then, never sooner than TALK_GAP after the last.
+func _after_match_move(side: int) -> void:
+	var said: Dictionary = _last_by[side]
+	var swing := int(said.get("best_score", said.get("score", 0))) - _score_before
+	var notable := str(said.get("captured", "")) != "" or bool(said.get("check", false)) or str(said.get("promotion", "")) != "" or absi(swing) > 180
+	if not notable and randf() > 0.3: return
+	if (Time.get_ticks_msec() - _talk_at) < int(TALK_GAP * 1000.0): return
+	_queue_talk(_match_move_request(side, swing), -side if randf() < 0.5 else side)
+
+func _names(first: int) -> Array[String]:
+	var out: Array[String] = [str(who(first).get("key", "")), str(who(-first).get("key", ""))]
+	return out
+
+func _match_place() -> String:
+	return "%s, with Anon standing by the table watching" % str(table.get("place_words"))
+
+const _TALK_FORM := " Write the whole exchange now, all at once, each line marked [to: listener_id] (the other player). Whoever is spoken to answers. Only the moves named here happened; never invent moves, pieces or results. Stay in character."
+
+func _match_start_request() -> String:
+	return ("%s and %s are sitting down across a %s board %s, to play each other: %s has %s and moves first, %s has %s. A short, natural exchange between the two of them as the game starts (2 to 4 short lines): greetings across the board, a friendly challenge, nerves or confidence, whatever fits them." + _TALK_FORM) % [
+		str(who(1).get("name", "")), str(who(-1).get("name", "")), game, _match_place(), str(who(1).get("name", "")), side_name(1), str(who(-1).get("name", "")), side_name(-1)]
+
+func _match_move_request(side: int, swing: int) -> String:
+	var said: Dictionary = _last_by[side]
+	var mover := str(who(side).get("name", ""))
+	var other := str(who(-side).get("name", ""))
+	var verdict := ""
+	if _ply > 2 and swing > 180: verdict = " It was a strong move that hurt %s's position." % other
+	elif _ply > 2 and swing < -180: verdict = " It was a mistake %s could take advantage of." % other
+	return ("%s and %s are in the middle of a game of %s %s. %s (%s) just played %s (%s).%s As %s sees it, %s. Moves so far: %s. 1 to 3 short lines between the two of them: a reaction to the move, banter, a tease, a groan, a question, or something else on their minds; it need not be about the game every time." + _TALK_FORM) % [
+		mover, other, game, _match_place(), mover, side_name(side), str(said.get("words", "")), str(said.get("san", "")), verdict, mover, _standing(int(said.get("score", 0))).replace("you are", mover + " is").replace("you can", mover + " can"), moves_text(10)]
+
+func _match_end_request(winner: int, how: String) -> String:
+	var outcome := "The game is a draw (%s)." % how
+	if winner != 0: outcome = "%s won the game against %s (%s)." % [str(who(winner).get("name", "")), str(who(-winner).get("name", "")), how]
+	return ("%s and %s just finished their game of %s %s. %s 2 to 4 short lines between the two of them reacting to it in character: the winner and the loser as they really feel, a good game, maybe a rematch." + _TALK_FORM) % [
+		str(who(1).get("name", "")), str(who(-1).get("name", "")), game, _match_place(), outcome]
+
+## Keeps the exchange until the director is free (at most TALK_TRY); a newer one replaces it.
+func _queue_talk(request: String, first: int) -> void:
+	_talk_pending = {"request": request, "first": first, "until": Time.get_ticks_msec() + int(TALK_TRY * 1000.0)}
+	_try_talk()
+
+## The two of them talk (conversation_director's ambient group, as friends settling in do,
+## director_company.gd): only while the director is idle, nopony else is talking and the daily
+## background budget allows it; Anon's own words always come first.
+func _try_talk() -> void:
+	if _talk_pending.is_empty(): return
+	if Time.get_ticks_msec() > int(_talk_pending.until): _talk_pending = {}; return
+	var director := _director()
+	if director == null or not director.has_method("_begin_group") or str(director.get("state")) != "idle": return
+	var group: Variant = director.get("group")
+	if not group is Object or bool((group as Object).call("active")): return
+	var budget: Variant = director.get("ambient_budget")
+	if budget is Object and (budget as Object).has_method("available") and not bool((budget as Object).call("available")): return
+	var cast: Variant = director.get("characters")
+	var ids := _names(int(_talk_pending.first))
+	for id: String in ids:
+		if id == "" or not (cast is Dictionary and (cast as Dictionary).has(id)): _talk_pending = {}; return
+		# One of them still has a line of her own to say (an answer, a story beat): wait for it.
+		if director.has_method("_authored_holds") and bool(director.call("_authored_holds", id)): return
+	var speech: Variant = director.get("speech")
+	if speech is Object and str((speech as Object).get("state")) == "hearing": return
+	director.set("_current", ids[0])
+	director.set("_turn_id", int(director.get("_turn_id")) + 1)
+	director.set("_player_text", "")
+	director.set("_rewrite_used", false)
+	director.set("_group_request", str(_talk_pending.request))
+	_talk_pending = {}
+	_talk_at = Time.get_ticks_msec()
+	director.call("_begin_group", ids, true)

@@ -12,6 +12,11 @@ extends Node3D
 ## progress is board_session.gd, loaded by path when one starts. A game left unfinished with her
 ## (board_adjourned.gd) waits on the board when she sits down: it goes on where it stood, or, in
 ## the board view, Anon chooses between it and a new one.
+##
+## Two ponies can also play each other while Anon watches (a match, board_session.gd setup_match):
+## he picks them in the board view, or a pony asks another ([board_game: chess, spike]). Each is
+## asked in her own words and may say no; the first sits across, the second on Anon's cushion,
+## and the game starts once both are seated. `rival` is the pony on his cushion.
 const MODELS := preload("res://world/minigames/board_games/board_models.gd")
 const DESKTOP_OWNER := preload("res://player/desktop_action_owner.gd")
 const HOUSE := preload("res://world/buildings/house_interior.gd")
@@ -65,6 +70,11 @@ var view: Node
 var opponent: Dictionary = {}
 ## Waiting for her answer to Anon's invitation: {id, key, name, actor, game, line_key, until, declined}.
 var invite: Dictionary = {}
+## A match: the pony on Anon's cushion, the same fields as `opponent`.
+var rival: Dictionary = {}
+## Two ponies asked to play each other: {game, until, by ("player" / "pony"), rows: [{id, key, name,
+## actor, seat ("far" / "near"), line_key, answer ("" / "yes" / "no")}]}.
+var match_invite: Dictionary = {}
 ## What happened last, for the view and the VR label ("Twilight turned you down").
 var notice := ""
 var inventory: Node
@@ -248,6 +258,7 @@ func candidates() -> Array:
 		var actor := pony as Node3D
 		if not can_play(actor): continue
 		if not opponent.is_empty() and opponent.actor == actor: continue
+		if not rival.is_empty() and rival.actor == actor: continue
 		out.append({"actor": actor, "id": pony_id(actor), "name": pony_name(actor), "distance": actor.global_position.distance_to(global_position)})
 	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.distance) < float(b.distance))
 	return out
@@ -255,8 +266,24 @@ func candidates() -> Array:
 ## For the action menu (pony_action_executor.gd capabilities): she is near enough to set a game up
 ## or is playing here.
 func available_to(actor: Node3D) -> bool:
-	if not opponent.is_empty() and opponent.actor == actor: return true
+	if involves(actor): return true
 	return can_play(actor)
+
+## She plays here, is coming to, or was asked (pony_action_executor.gd _board_table picks this table).
+func involves(actor: Node) -> bool:
+	if not opponent.is_empty() and opponent.actor == actor: return true
+	if not rival.is_empty() and rival.actor == actor: return true
+	if not invite.is_empty() and invite.actor == actor: return true
+	return not _match_row(actor).is_empty()
+
+## Two ponies playing each other here (or on their way to), Anon watching.
+func is_match() -> bool:
+	return not rival.is_empty() or not match_invite.is_empty() or (session != null and is_instance_valid(session) and bool(session.call("is_match")))
+
+func _match_row(actor: Node) -> Dictionary:
+	for row: Dictionary in match_invite.get("rows", []):
+		if row.actor == actor: return row
+	return {}
 
 # ------------------------------------------------------------------ the director
 
@@ -277,6 +304,7 @@ func director_key(actor: Node) -> String:
 ## Anon asks `actor` to play `game_name`. "" when asked, else why not.
 func ask(actor: Node3D, game_name: String) -> String:
 	if session != null and is_instance_valid(session) and not bool(session.call("is_over")): return "A game is already going"
+	if is_match(): release_opponent()
 	if not can_play(actor): return "%s can't come right now" % pony_name(actor)
 	if not opponent.is_empty() and opponent.actor == actor:
 		opponent.game = game_name
@@ -320,21 +348,12 @@ func _summon(actor: Node3D, game_name: String, by: String) -> bool:
 			return true
 		if session != null and is_instance_valid(session) and not bool(session.call("is_over")): return false
 		release_opponent("another pony took the seat")
-	var nav: Node = actor.get_node_or_null("Navigator")
-	if nav == null: return false
-	var id := pony_id(actor)
-	var token := "leisure:board:%d:%s" % [get_instance_id(), id]
-	opponent = {"id": id, "key": director_key(actor), "name": pony_name(actor), "actor": actor, "nav": nav, "token": token,
-		"previous": nav.command_owner, "wander": nav.wander_enabled, "speed": nav.command_speed_limit, "pace": nav.get("command_pace_target"),
-		"gaze": nav.face_point, "state": "coming", "game": game_name, "by": by, "since": _clock}
-	nav.stay()
-	nav.command_owner = token
-	nav.command_speed_limit = INF
-	if "command_pace_target" in nav: nav.command_pace_target = -1.0
-	nav.face_point = Vector3.INF
-	actor.set_meta("board_game_player", token)
-	pony_seat.set_meta("occupant", actor)
-	if not _walk_to_seat():
+	if is_match():
+		if session != null and is_instance_valid(session) and not bool(session.call("is_over")): return false
+		release_opponent()
+	opponent = _claim(actor, game_name, by, pony_seat)
+	if opponent.is_empty(): return false
+	if not _walk_to_seat(opponent):
 		release_opponent("%s could not find a way to the table" % opponent.name)
 		return false
 	game = game_name
@@ -343,89 +362,121 @@ func _summon(actor: Node3D, game_name: String, by: String) -> bool:
 	changed.emit()
 	return true
 
+## Takes her walk over for the table and marks `seat` hers: the row for `opponent` or `rival`, or
+## {} when she has no legs to walk.
+func _claim(actor: Node3D, game_name: String, by: String, seat: Node3D) -> Dictionary:
+	var nav: Node = actor.get_node_or_null("Navigator")
+	if nav == null: return {}
+	var id := pony_id(actor)
+	var token := "leisure:board:%d:%s" % [get_instance_id(), id]
+	var row := {"id": id, "key": director_key(actor), "name": pony_name(actor), "actor": actor, "nav": nav, "token": token,
+		"previous": nav.command_owner, "wander": nav.wander_enabled, "speed": nav.command_speed_limit, "pace": nav.get("command_pace_target"),
+		"gaze": nav.face_point, "state": "coming", "game": game_name, "by": by, "since": _clock, "seat": seat}
+	nav.stay()
+	nav.command_owner = token
+	nav.command_speed_limit = INF
+	if "command_pace_target" in nav: nav.command_pace_target = -1.0
+	nav.face_point = Vector3.INF
+	actor.set_meta("board_game_player", token)
+	seat.set_meta("occupant", actor)
+	return row
+
 ## Walks her onto her cushion. (The seating service counts 0.6 m as there, for benches she hops
 ## onto; on a floor cushion that would sit her beside it.)
-func _walk_to_seat() -> bool:
-	var nav: Node = opponent.nav
-	var target := pony_seat.global_position
+func _walk_to_seat(row: Dictionary) -> bool:
+	var nav: Node = row.nav
+	var target: Vector3 = (row.seat as Node3D).global_position
 	var goal: Vector3 = nav.command_support(target) if nav.has_method("command_support") else target
 	if not goal.is_finite(): goal = target
-	opponent.walk_at = _clock
+	row.walk_at = _clock
 	return bool(nav.command_destination(goal, "walk"))
 
-func _owned() -> bool:
-	return not opponent.is_empty() and is_instance_valid(opponent.actor) and is_instance_valid(opponent.nav) and opponent.nav.command_owner == opponent.token
+func _owned(row: Dictionary) -> bool:
+	return not row.is_empty() and is_instance_valid(row.actor) and is_instance_valid(row.nav) and row.nav.command_owner == row.token
 
-## She gets up and goes back to her day. `why` shows in the view.
+## She gets up and goes back to her day (in a match, both do, and a pending match invitation is
+## dropped). `why` shows in the view.
 func release_opponent(why := "") -> void:
-	if opponent.is_empty(): return
-	var actor: Node3D = opponent.actor if is_instance_valid(opponent.actor) else null
 	if why != "": notice = why
-	if _owned():
-		var nav: Node = opponent.nav
-		nav.stay()
-		# Back to her routine. Whatever else owned her walk when she came (a follow or approach
-		# from a reply) was cancelled by taking it: its owner restored would leave her held by a
-		# command nothing runs any more, and the living world would keep waiting on it.
-		var previous := str(opponent.previous)
-		nav.command_owner = previous if previous.begins_with("life:") else ""
-		nav.wander_enabled = opponent.wander
-		nav.command_speed_limit = opponent.speed
-		if "command_pace_target" in nav and opponent.pace != null: nav.command_pace_target = opponent.pace
-		nav.face_point = opponent.gaze
-		var game_root: Node = get_tree().current_scene
-		var life: Node = game_root.get("life") as Node if game_root != null else null
-		if is_instance_valid(life) and life.get("actors") is Dictionary and life.actors.has(opponent.id): life.actors[opponent.id].goal = Vector3.INF
-	if actor != null:
-		if actor.get_meta("board_game_player", "") == opponent.token: actor.remove_meta("board_game_player")
-		if pony_seat.get_meta("occupant", null) == actor: pony_seat.remove_meta("occupant")
-		if actor.get("action_gaze_target") == gaze_point and actor.has_method("set_action_gaze"): actor.set_action_gaze(null)
-		if actor.has_method("request_posture") and actor.has_method("posture_status") and str(actor.posture_status().get("kind", "")) == "sit":
-			actor.request_posture("stand")
+	_cancel_match_invite()
+	if not rival.is_empty():
+		_release_row(rival)
+		rival = {}
+	if opponent.is_empty():
+		changed.emit()
+		return
+	_release_row(opponent)
 	opponent = {}
 	# A finished game goes with her; the view falls back to the notice and asking somepony.
 	if session != null and is_instance_valid(session) and bool(session.call("is_over")): session.call("close")
 	changed.emit()
 
+func _release_row(row: Dictionary) -> void:
+	var actor: Node3D = row.actor if is_instance_valid(row.actor) else null
+	var seat: Node3D = row.get("seat", pony_seat)
+	if _owned(row):
+		var nav: Node = row.nav
+		nav.stay()
+		# Back to her routine. Whatever else owned her walk when she came (a follow or approach
+		# from a reply) was cancelled by taking it: its owner restored would leave her held by a
+		# command nothing runs any more, and the living world would keep waiting on it.
+		var previous := str(row.previous)
+		nav.command_owner = previous if previous.begins_with("life:") else ""
+		nav.wander_enabled = row.wander
+		nav.command_speed_limit = row.speed
+		if "command_pace_target" in nav and row.pace != null: nav.command_pace_target = row.pace
+		nav.face_point = row.gaze
+		var game_root: Node = get_tree().current_scene
+		var life: Node = game_root.get("life") as Node if game_root != null else null
+		if is_instance_valid(life) and life.get("actors") is Dictionary and life.actors.has(row.id): life.actors[row.id].goal = Vector3.INF
+	if actor != null:
+		if actor.get_meta("board_game_player", "") == row.token: actor.remove_meta("board_game_player")
+		if seat.get_meta("occupant", null) == actor: seat.remove_meta("occupant")
+		if actor.get("action_gaze_target") == gaze_point and actor.has_method("set_action_gaze"): actor.set_action_gaze(null)
+		if actor.has_meta("board_game_context"): actor.remove_meta("board_game_context")
+		if actor.has_method("request_posture") and actor.has_method("posture_status") and str(actor.posture_status().get("kind", "")) == "sit":
+			actor.request_posture("stand")
+
 ## A reason she can no longer play, or "".
-func _lost_reason() -> String:
-	if opponent.is_empty(): return ""
-	var actor: Variant = opponent.actor
-	if not is_instance_valid(actor) or not (actor as Node).is_inside_tree(): return "%s is gone" % opponent.name
-	if not _owned(): return "%s went off to do something else" % opponent.name
-	if actor.get("_held") == true: return "%s was picked up" % opponent.name
-	if actor.get("sleeping") == true: return "%s fell asleep" % opponent.name
+func _lost_reason(row: Dictionary) -> String:
+	if row.is_empty(): return ""
+	var actor: Variant = row.actor
+	if not is_instance_valid(actor) or not (actor as Node).is_inside_tree(): return "%s is gone" % row.name
+	if not _owned(row): return "%s went off to do something else" % row.name
+	if actor.get("_held") == true: return "%s was picked up" % row.name
+	if actor.get("sleeping") == true: return "%s fell asleep" % row.name
 	return ""
 
 ## On her cushion, turned to the board and sitting (asked for here, one step at a time).
-func _seated() -> bool:
-	if opponent.is_empty(): return false
-	var actor: Node3D = opponent.actor
-	var nav: Node = opponent.nav
-	var off := _flat(actor.global_position, pony_seat.global_position)
+func _seated(row: Dictionary) -> bool:
+	if row.is_empty(): return false
+	var actor: Node3D = row.actor
+	var nav: Node = row.nav
+	var seat: Node3D = row.get("seat", pony_seat)
+	var off := _flat(actor.global_position, seat.global_position)
 	var walking: bool = nav.get("_has_target") == true
-	if off > SEAT_REACH and off < 1.1 and walking and not opponent.has("overshoot"):
+	if off > SEAT_REACH and off < 1.1 and walking and not row.has("overshoot"):
 		# The navigator stops ~0.3 m short of its goal: on the last stretch aim a little past the
 		# cushion, so she ends up on it.
-		var on := pony_seat.global_position - actor.global_position
+		var on := seat.global_position - actor.global_position
 		on.y = 0.0
-		opponent.overshoot = true
-		nav.command_destination(pony_seat.global_position + on.normalized() * 0.28, "walk")
-		opponent.walk_at = _clock
+		row.overshoot = true
+		nav.command_destination(seat.global_position + on.normalized() * 0.28, "walk")
+		row.walk_at = _clock
 		return false
 	if off > SEAT_REACH:
 		# Stopped short: close enough after a moment, else ask again.
-		if walking or _clock - float(opponent.get("walk_at", 0.0)) < 2.5: return false
+		if walking or _clock - float(row.get("walk_at", 0.0)) < 2.5: return false
 		if off > SEAT_FALLBACK:
-			_walk_to_seat()
+			_walk_to_seat(row)
 			return false
 	if walking: nav.stay()
 	if str(actor.posture_status().get("kind", "")) == "sit": return true
-	if not opponent.has("arrived_at"): opponent.arrived_at = _clock
-	var facing := -pony_seat.global_basis.z
+	if not row.has("arrived_at"): row.arrived_at = _clock
+	var facing := -seat.global_basis.z
 	var ahead := -actor.global_basis.z
 	ahead.y = 0.0
-	if actor.has_method("face_direction") and ahead.normalized().dot(facing) < 0.985 and _clock - float(opponent.arrived_at) < 4.0:
+	if actor.has_method("face_direction") and ahead.normalized().dot(facing) < 0.985 and _clock - float(row.arrived_at) < 4.0:
 		actor.face_direction(facing)
 		return false
 	actor.request_posture("sit")
@@ -434,6 +485,9 @@ func _seated() -> bool:
 ## A game starts once she sits and Anon is here: at once when he asked her, on his E/grip when she
 ## set it up herself. With a game of theirs left unfinished, the open board view asks him first.
 func _begin_if_ready() -> void:
+	if is_match():
+		_begin_match_if_ready()
+		return
 	if opponent.is_empty() or opponent.state != "seated": return
 	if session != null and is_instance_valid(session) and not bool(session.call("is_over")): return
 	if is_instance_valid(view) and has_unfinished(str(opponent.game)):
@@ -444,6 +498,7 @@ func _begin_if_ready() -> void:
 ## A game with the pony at the table: the one they left unfinished, or with `fresh` (or none left)
 ## a new one, for which Anon's side swaps every game with the same pony.
 func start_game(game_name: String, fresh := false) -> bool:
+	if is_match(): return start_match(game_name)
 	if opponent.is_empty() or opponent.state != "seated": return false
 	if session != null and is_instance_valid(session): session.call("close")
 	var earlier: Dictionary = {} if fresh else ADJOURNED.game_of(str(opponent.id), game_name)
@@ -497,6 +552,7 @@ func _on_finished() -> void:
 func model_action(executor: Node, action: Dictionary) -> void:
 	var actor: Node3D = executor.get("actor") as Node3D
 	var what := str(action.get("game", "chess"))
+	if _match_action(executor, actor, what, str(action.get("with", "")), action): return
 	var mine: bool = not opponent.is_empty() and opponent.actor == actor
 	match what:
 		"no":
@@ -543,13 +599,15 @@ func _physics_process(delta: float) -> void:
 		var asked: Dictionary = invite
 		invite = {}
 		if not bool(asked.declined) and is_instance_valid(asked.actor): _summon(asked.actor, str(asked.game), "player")
+	if not match_invite.is_empty(): _tick_match_invite()
+	if not rival.is_empty(): _tick_rival()
 	if not opponent.is_empty():
-		var why := _lost_reason()
+		var why := _lost_reason(opponent)
 		if why != "":
 			if session != null and is_instance_valid(session) and not bool(session.call("is_over")): session.call("abandon", why)
 			release_opponent(why)
 		elif opponent.state == "coming":
-			if _seated():
+			if _seated(opponent):
 				opponent.state = "seated"
 				opponent.since = _clock
 				if opponent.actor.has_method("set_action_gaze"): opponent.actor.set_action_gaze(gaze_point)
@@ -559,12 +617,14 @@ func _physics_process(delta: float) -> void:
 		else:
 			var playing: bool = session != null and is_instance_valid(session) and not bool(session.call("is_over"))
 			var waited := _clock - float(opponent.since)
-			if not playing and not is_instance_valid(view) and waited > (WAIT_SECONDS if opponent.by == "pony" and session == null else LINGER_SECONDS):
+			# Waiting for Anon after she set it up, or for the other player of a match to sit down.
+			var patience := WAIT_SECONDS if (opponent.by == "pony" or is_match()) and session == null else LINGER_SECONDS
+			if not playing and not is_instance_valid(view) and waited > patience:
 				release_opponent()
 	_check_away(delta)
 	_tick_held()
 	_update_label()
-	if opponent.is_empty() and invite.is_empty() and _held.is_empty() and (session == null or not is_instance_valid(session)) and not near: set_physics_process(false)
+	if opponent.is_empty() and rival.is_empty() and match_invite.is_empty() and invite.is_empty() and _held.is_empty() and (session == null or not is_instance_valid(session)) and not near: set_physics_process(false)
 
 ## Anon walking off ends a game he left running.
 func _check_away(delta: float) -> void:
@@ -622,6 +682,8 @@ func _set_near(value: bool) -> void:
 func status_text() -> String:
 	if session != null and is_instance_valid(session): return str(session.call("status_text"))
 	if not invite.is_empty(): return "Asking %s…" % invite.name
+	var forming := _match_status()
+	if forming != "": return forming
 	if not opponent.is_empty():
 		if opponent.state == "coming": return "%s is coming to play %s" % [opponent.name, opponent.game]
 		return "%s is waiting to play %s" % [opponent.name, opponent.game]
@@ -665,6 +727,7 @@ func interaction_hint() -> Dictionary:
 	if hit.is_empty(): return {}
 	var text := "[E] Play chess or checkers"
 	if session != null and is_instance_valid(session) and not bool(session.call("is_over")): text = "[E] Back to the game"
+	elif is_match(): text = "[E] Watch the game"
 	elif not opponent.is_empty() and opponent.state == "seated":
 		text = ("[E] Finish your %s game with %s" if has_unfinished(str(opponent.game)) else "[E] Play %s with %s") % [opponent.game, opponent.name]
 	return {"target": board, "text": text, "point": hit.position, "collider": hit.collider, "outline": null}
@@ -682,7 +745,7 @@ func desktop_begin() -> bool:
 	if not bool(view.call("open", self, inventory)):
 		view.queue_free(); view = null
 		return false
-	if not opponent.is_empty() and opponent.state == "seated" and (session == null or not is_instance_valid(session)) and not has_unfinished(str(opponent.game)):
+	if not is_match() and not opponent.is_empty() and opponent.state == "seated" and (session == null or not is_instance_valid(session)) and not has_unfinished(str(opponent.game)):
 		start_game(str(opponent.game))
 	set_physics_process(true)
 	return true
@@ -690,6 +753,7 @@ func desktop_begin() -> bool:
 func view_closed(closed: Node) -> void:
 	if view == closed: view = null
 	if not opponent.is_empty(): opponent.since = _clock
+	if not rival.is_empty(): rival.since = _clock
 
 # ------------------------------------------------------------------ VR hands
 
@@ -721,6 +785,7 @@ func grab_offer(side: String, sample: Dictionary) -> Dictionary:
 	var near_box := palm.distance_to(checkers_box.global_position + Vector3.UP * 0.03) < 0.1
 	if not on_board and not near_box: return {}
 	var want := "checkers" if near_box else "chess"
+	if is_match(): return {}
 	if not opponent.is_empty():
 		if opponent.state != "seated": return {}
 		return {"target": checkers_box if near_box else board, "point": palm, "text": side.capitalize() + " grip · Play %s with %s" % [want, opponent.name],
@@ -790,3 +855,223 @@ func _exit_tree() -> void:
 	for side: String in _held.keys(): _drop_held(side, false)
 	if session != null and is_instance_valid(session): session.call("abandon", "")
 	release_opponent()
+
+# ------------------------------------------------------------------ a match: two ponies, Anon watching
+
+## Anon asks `first` and `second` to play `game_name` against each other while he watches (the
+## board view). "" when asked, else why not.
+func ask_match(first: Node3D, second: Node3D, game_name: String) -> String:
+	if session != null and is_instance_valid(session) and not bool(session.call("is_over")): return "A game is already going"
+	if first == second: return "Pick two different ponies"
+	for actor: Node3D in [first, second]:
+		if not can_play(actor) and not involves(actor): return "%s can't come right now" % pony_name(actor)
+	release_opponent()
+	invite = {}
+	notice = ""
+	_open_match_invite(game_name, "player", [first, second], [])
+	return ""
+
+## The rows of a new match invitation: `asking` get the question in their own words, `agreed`
+## (the pony who proposed it) is already on her way.
+func _open_match_invite(game_name: String, by: String, asking: Array, agreed: Array) -> void:
+	game = game_name
+	match_invite = {"game": game_name, "by": by, "until": _clock + ANSWER_SECONDS, "rows": []}
+	var everyone: Array = agreed + asking
+	for i in everyone.size():
+		var actor: Node3D = everyone[i]
+		(match_invite.rows as Array).append({"id": pony_id(actor), "key": director_key(actor), "name": pony_name(actor), "actor": actor,
+			"seat": "far" if i == 0 else "near", "line_key": "", "answer": "yes" if actor in agreed else ""})
+	show_position(game_name, _start_position(game_name))
+	set_physics_process(true)
+	var director := _director()
+	for row: Dictionary in match_invite.rows:
+		if str(row.answer) == "yes":
+			_match_take_seat(row)
+			continue
+		var other: Dictionary = _other_row(row)
+		if director == null or str(row.key) == "" or not director.has_method("queue_generated_intent"):
+			row.answer = "yes"; _match_take_seat(row); continue
+		row.line_key = "board-match:%d:%s:%d" % [get_instance_id(), row.id, Time.get_ticks_msec()]
+		var purpose := ""
+		if by == "player":
+			purpose = "Anon is %s and asks you and %s to play %s against each other while he watches." % [place_words, other.name, game_name]
+		else:
+			purpose = "%s asks you to play %s with her %s; Anon may watch." % [other.name, game_name, place_words]
+		purpose += " It is your choice: answer in your own words, as you really feel about it right now. If you say yes, add [board_game: %s] and come over to sit down at the board; to turn it down, add [board_game: no]." % game_name
+		var line_key := str(row.line_key)
+		director.queue_generated_intent(str(row.key), purpose, line_key, func() -> bool: return _match_line_open(line_key),
+			func() -> void: _match_answered(line_key), true)
+	changed.emit()
+
+func _other_row(row: Dictionary) -> Dictionary:
+	for other: Dictionary in match_invite.get("rows", []):
+		if other.actor != row.actor: return other
+	return {}
+
+func _match_line_open(line_key: String) -> bool:
+	for row: Dictionary in match_invite.get("rows", []):
+		if str(row.line_key) == line_key and str(row.answer) == "": return true
+	return false
+
+## Her line to the question is over: unless she said [board_game: no], she comes (as with Anon's invitation).
+func _match_answered(line_key: String) -> void:
+	await get_tree().create_timer(1.2).timeout
+	for row: Dictionary in match_invite.get("rows", []):
+		if str(row.line_key) == line_key and str(row.answer) == "":
+			row.answer = "yes"
+			_match_take_seat(row)
+	changed.emit()
+
+## She walks to her cushion: the first pony across, the second on Anon's.
+func _match_take_seat(row: Dictionary) -> void:
+	if row.has("taken"): return
+	row.taken = true
+	var seat: Node3D = pony_seat if str(row.seat) == "far" else player_seat
+	# Anon on his cushion, outside the board view (which stands him up itself): he gets up for her.
+	var sitter: Variant = seat.get_meta("occupant", null)
+	if seat == player_seat and is_instance_valid(sitter) and not is_instance_valid(view) and (sitter as Node).has_method("stand_up"): sitter.call("stand_up")
+	var claimed := _claim(row.actor, str(match_invite.game), str(match_invite.by), seat)
+	if claimed.is_empty() or not _walk_to_seat(claimed):
+		if not claimed.is_empty(): _release_row(claimed)
+		release_opponent("%s could not get to the table" % str(row.name))
+		return
+	if str(row.seat) == "far": opponent = claimed
+	else: rival = claimed
+
+## Somepony said no, or it fell through: both go back to their day.
+func _match_declined(row: Dictionary) -> void:
+	release_opponent("%s would rather not play right now" % str(row.name))
+
+func _cancel_match_invite() -> void:
+	if match_invite.is_empty(): return
+	var director := _director()
+	for row: Dictionary in match_invite.rows:
+		if str(row.line_key) != "" and str(row.answer) == "" and director != null and director.has_method("cancel_authored_line"):
+			director.cancel_authored_line(str(row.line_key))
+	match_invite = {}
+
+func _tick_match_invite() -> void:
+	for row: Dictionary in match_invite.rows:
+		if not is_instance_valid(row.actor):
+			release_opponent("%s is gone" % str(row.name)); return
+		# No answer in time: she comes anyway, as with Anon's invitation.
+		if str(row.answer) == "" and _clock > float(match_invite.until):
+			row.answer = "yes"; _match_take_seat(row)
+	if match_invite.is_empty(): return
+	if (match_invite.rows as Array).all(func(row: Dictionary) -> bool: return row.has("taken")): match_invite = {}
+
+## The pony on Anon's cushion: lost, walking over, or seated (opponent's row runs in _physics_process).
+func _tick_rival() -> void:
+	var why := _lost_reason(rival)
+	if why != "":
+		if session != null and is_instance_valid(session) and not bool(session.call("is_over")): session.call("abandon", why)
+		release_opponent(why)
+		return
+	if rival.state == "coming":
+		if _seated(rival):
+			rival.state = "seated"
+			rival.since = _clock
+			if rival.actor.has_method("set_action_gaze"): rival.actor.set_action_gaze(gaze_point)
+			changed.emit()
+			_begin_match_if_ready()
+		elif _clock - float(rival.since) > COMING_SECONDS: release_opponent("%s couldn't get to the table" % rival.name)
+
+## Both on their cushions: the match starts (Anon need not be here; walking off ends it, as with his own games).
+func _begin_match_if_ready() -> void:
+	if opponent.is_empty() or rival.is_empty() or opponent.state != "seated" or rival.state != "seated": return
+	if session != null and is_instance_valid(session) and not bool(session.call("is_over")): return
+	if session != null and is_instance_valid(session): return
+	start_match(str(opponent.game))
+
+## A new match between the two seated ponies: who has white (or red) is a coin toss.
+func start_match(game_name: String) -> bool:
+	if opponent.is_empty() or rival.is_empty() or opponent.state != "seated" or rival.state != "seated": return false
+	if session != null and is_instance_valid(session): session.call("close")
+	var script := load(SESSION) as Script
+	if script == null: return false
+	var near_side := 1 if randf() < 0.5 else -1
+	var players := {}
+	for pair: Array in [[rival, near_side], [opponent, -near_side]]:
+		var row: Dictionary = pair[0]
+		players[int(pair[1])] = {"id": row.id, "key": row.key, "name": row.name, "actor": row.actor,
+			"level": int(skill(str(row.id)).get(game_name, 2)), "style": style_of(str(row.id))}
+		row.game = game_name
+	session = script.new()
+	session.name = "BoardSession"
+	add_child(session)
+	game = game_name
+	face_board(near_side)
+	session.call("setup_match", self, game_name, players)
+	session.connect("finished", _on_finished)
+	notice = ""
+	changed.emit()
+	return true
+
+func _match_status() -> String:
+	if not match_invite.is_empty():
+		var waiting: PackedStringArray = []
+		for row: Dictionary in match_invite.rows:
+			if str(row.answer) == "": waiting.append(str(row.name))
+		if not waiting.is_empty(): return "Asking %s…" % " and ".join(waiting)
+	if rival.is_empty() and opponent.is_empty(): return ""
+	if rival.is_empty() or opponent.is_empty():
+		var row: Dictionary = opponent if rival.is_empty() else rival
+		return "%s is coming to play %s" % [row.name, game] if row.state == "coming" else "%s is waiting at the board" % row.name
+	var coming: PackedStringArray = []
+	for row: Dictionary in [opponent, rival]:
+		if row.state == "coming": coming.append(str(row.name))
+	if not coming.is_empty(): return "%s %s on the way to play %s" % [" and ".join(coming), "is" if coming.size() == 1 else "are", game]
+	return "%s and %s are at the board" % [opponent.name, rival.name]
+
+## [board_game: ...] from a pony in a match or a match invitation, or [board_game: chess, PONY_ID]
+## asking another pony. True when handled here.
+func _match_action(executor: Node, actor: Node3D, what: String, with_id: String, action: Dictionary) -> bool:
+	var row := _match_row(actor)
+	if not row.is_empty() and str(row.answer) == "":
+		if what == "no":
+			row.answer = "no"
+			executor._report(action, "completed", "You turned it down")
+			_match_declined(row)
+		elif what in ["chess", "checkers"]:
+			row.answer = "yes"
+			_match_take_seat(row)
+			executor._report(action, "accepted", "Going to the game table")
+		else: executor._report(action, "failed", "The game has not started yet")
+		return true
+	var playing_here: bool = (not opponent.is_empty() and opponent.actor == actor) or (not rival.is_empty() and rival.actor == actor)
+	if playing_here and is_match():
+		var live: bool = session != null and is_instance_valid(session) and not bool(session.call("is_over"))
+		match what:
+			"resign":
+				if live:
+					var players: Dictionary = session.get("players")
+					for side: int in [1, -1]:
+						if (players.get(side, {}) as Dictionary).get("actor") == actor: session.call("resign", side)
+					executor._report(action, "completed", "You resigned the game")
+				else: executor._report(action, "failed", "You are not playing a game")
+			"stop", "no":
+				if live: session.call("abandon", "%s put the game away" % pony_name(actor))
+				release_opponent("%s put the game away" % pony_name(actor))
+				executor._report(action, "completed", "You put the board away")
+			_:
+				if live: executor._report(action, "completed", "You are already playing")
+				elif start_match(what): executor._report(action, "accepted", "Another game")
+				else: executor._report(action, "failed", "Cannot start a game now")
+		return true
+	if with_id == "" or what not in ["chess", "checkers"]: return false
+	# She proposes a game with another pony: she goes over, the other is asked.
+	var partner: Node3D = null
+	for pony: Node in get_tree().get_nodes_in_group("sim_ponies"):
+		if pony_id(pony) == with_id or director_key(pony) == with_id: partner = pony as Node3D
+	if partner == null or partner == actor:
+		executor._report(action, "failed", "Nopony called %s is nearby" % with_id); return true
+	if session != null and is_instance_valid(session) and not bool(session.call("is_over")):
+		executor._report(action, "failed", "Somepony is already playing there"); return true
+	if not can_play(partner):
+		executor._report(action, "failed", "%s can't come right now" % pony_name(partner)); return true
+	release_opponent()
+	invite = {}
+	_open_match_invite(what, "pony", [partner], [actor])
+	if opponent.is_empty(): executor._report(action, "failed", "Cannot get to the game table")
+	else: executor._report(action, "accepted", "Going to the game table; %s is asked to play %s with you" % [pony_name(partner), what])
+	return true
