@@ -1,0 +1,5 @@
+extends Node
+## Test fixture (tools/modding/test_bundled_mods.gd): an old mod's copy of a game script that compiles
+## and preloads another game script the same pack replaces.
+const GOOD := true
+const OTHER := preload("res://world/characters/zecora/zecora_identity.gd")

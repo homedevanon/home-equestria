@@ -15,8 +15,10 @@ extends Node
 ## setup(game, venue, markers) or venue.spa_markers(). SPA_RUB_TABLE is her root lying on the
 ## massage table's pad; SPA_RUB_SPOT is the floor at the table's foot, where she hops up and down.
 ##
-## Romance firewall: every client carries set_meta("spa_client", true) while claimed; wave 2 makes
-## the pony/relationship side read it. Nothing here calls relationship or AI code.
+## Romance firewall: every client carries set_meta("spa_client", true) while claimed; the pony and
+## relationship side reads it. Here, a kiss or hug on a client is ended at once (_end_affection) and
+## spa_hands.gd keeps the desktop G pickup, flank slap and kiss/hug keys off clients. Nothing here
+## calls relationship or AI code.
 ## TODO(wave 2) items are marked in place and listed in the spa report.
 signal client_arrived(pony_id: String, display_name: String)
 signal service_finished(pony_id: String, service: String, bits: int)
@@ -51,6 +53,19 @@ const PATIENCE := 300.0
 ## and placed on the street out of view, so nobody stays trapped inside.
 const STUCK_SECONDS := 20.0
 const LEAVE_TIMEOUT := 90.0
+## A client who cannot get out waits by the door this long at most while the player can see her,
+## so she is not seen vanishing (player board #63); then she is placed outside anyway.
+const UNSEEN_WAIT := 30.0
+## The largest client (body_scale) the spa's rooms take. tools/spa/probe_big_pony_spa.gd on the real
+## venue and walk grid (2026-11-08): at 1.0 every leg arrives; at 1.35 every leg inside arrives but
+## the doorway is closed to her (street <-> lobby "disconnected"); at 1.7 and 2.3 ("Same height",
+## "Hoers") the footbath, table and cushion are unreachable too. Bigger ponies are not booked
+## (the bell says why) instead of being placed in the lobby and then outside (player board #63).
+const MAX_CLIENT_SIZE := 1.35
+## Stood up and moved on the table (a reply tag) further than this: she is put back on her spot.
+const TABLE_DRIFT := 0.08
+## A kiss or hug easing out holds her navigator; the visit waits this long for it at most.
+const AFFECTION_WAIT := 10.0
 const LOBBY_PAUSE := 2.5
 const SERVICES: Array[String] = ["file", "rub", "wings"]
 ## Pay (plan section 8: decided). Same for fillies. The footbath files both front hooves; the
@@ -82,7 +97,8 @@ const HOP_ARC := 0.45
 const CLIMB_PAUSE := 0.6
 ## Stalled this near the table's foot spot, she hops up from where she is.
 const CLIMB_REACH := 1.4
-## Stalled this near any other station for STALL_SECONDS, she takes it from there.
+## Stalled this near any other station for STALL_SECONDS, she takes it from there (x her size
+## when she is bigger than an adult).
 const STALL_REACH := 1.2
 const STALL_SECONDS := 2.5
 ## Lying down or standing up on the table: settled within this, or she leaves.
@@ -104,6 +120,7 @@ const STAFF: Array[String] = ["aloe", "lotus_blossom"]
 ## preferred, like friends on an outing); a client being served carries none and is left out, so a
 ## chat never pauses the player's work on her.
 const CHAT_PHASES: Array[String] = ["lobby", "queued", "line", "wing_wait"]
+const TOO_BIG_TEXT := "The ponies are too big for the spa's rooms at this pony size (Settings: pony size)."
 
 var hours_override := -1.0
 ## Fixtures (and a future pony-form player) may stand in for the player's head.
@@ -122,6 +139,8 @@ var _check := 0.0
 var _transition := false
 var _rng := RandomNumberGenerator.new()
 var _last_reason := ""
+## Ponies the last booking passed over for being too big for the rooms (MAX_CLIENT_SIZE).
+var _too_big := 0
 var earned_bits := 0
 ## The jobs core's shared lease bookkeeping (world/mechanics/jobs/customer_queue.gd); `-- --old-jobs`
 ## keeps the copied code. It shares this node's cooldowns.
@@ -185,6 +204,50 @@ func is_client(pony_id: String) -> bool:
 	return _visits.has(pony_id)
 
 
+## Anon's own clients (booked by the bell, a letter or a fixture): every visit but walk-ins.
+func anon_clients() -> Array:
+	var ids: Array = []
+	for id: String in _visits:
+		if not bool((_visits[id] as Dictionary).get("walk_in", false)): ids.append(id)
+	return ids
+
+
+# ------------------------------------------------------------------ walk-ins (day plans)
+
+## A resident's day step "relax at the spa" (world/life/day/actions/spa_walk_in.gd, M-ACT-01) while
+## Anon is not working here: she walks in through the door, soaks her hooves standing in a
+## footbath for `soak_seconds`, and walks out; no service, no pay. Her visit keeps `owner` (her
+## "day:<id>") on her navigator. Only when the spa is open and has no client of Anon's; the
+## spa's own eligibility (mares and fillies, size, not staff) applies. "" when she is on her way,
+## else why not.
+func request_walk_in(pony_id: String, actor: Node3D, owner: String, soak_seconds: float) -> String:
+	if not is_open_now(): return "The spa is closed"
+	if _transition or not anon_clients().is_empty(): return "Anon is working at the spa"
+	if not _stations_ready(): return "No spa here"
+	var why := _eligibility_reason(pony_id, actor, owner)
+	if not why.is_empty(): return why
+	var slot := _free_slot()
+	if slot < 0: return "The spa is full"
+	var services: Array[String] = ["soak"]
+	if not _claim(pony_id, actor, services, slot, "arriving", owner): return "Could not take her navigation"
+	var visit: Dictionary = _visits[pony_id]
+	visit.walk_in = true
+	visit.soak_seconds = maxf(10.0, soak_seconds)
+	_route(visit, "arriving", marker("SPA_DOOR_OUT").origin)
+	return "" if _visits.has(pony_id) else _last_reason
+
+
+## Her day step was cut short: the walk-in ends where she is.
+func end_walk_in(pony_id: String, reason: String) -> void:
+	if _visits.has(pony_id) and bool((_visits[pony_id] as Dictionary).get("walk_in", false)): _release(pony_id, reason)
+
+
+## The bell books Anon's clients: walk-ins are let go first (the fade's clear_room moves them out).
+func _end_walk_ins(reason: String) -> void:
+	for id: String in _visits.keys():
+		if _visits.has(id) and bool((_visits[id] as Dictionary).get("walk_in", false)): _release(id, reason)
+
+
 func clients() -> Array:
 	return _visits.keys()
 
@@ -214,7 +277,9 @@ func report() -> Dictionary:
 ## Returns the booked ids (empty when closed, busy or nobody is free).
 func ring_bell() -> Array[String]:
 	var booked: Array[String] = []
-	if _transition or not is_open_now() or not _visits.is_empty(): return booked
+	if _transition or not is_open_now(): return booked
+	_end_walk_ins("The spa opened for Anon's clients")
+	if not _visits.is_empty(): return booked
 	_transition = true
 	var cover := _cover()
 	if cover != null:
@@ -222,7 +287,9 @@ func ring_bell() -> Array[String]:
 		await cover.close_eyes()
 		if not _still_here(cover): return booked
 	clear_room()
+	_too_big = 0
 	booked = book_group(MAX_CLIENTS)
+	if booked.is_empty() and _too_big > 0: _say(TOO_BIG_TEXT)
 	if cover != null:
 		if not await SHUTDOWN.seconds(self, 0.5) or not _still_here(cover): return booked
 		await cover.open_eyes()
@@ -298,6 +365,7 @@ func book_group(count: int) -> Array[String]:
 		var actor: Node3D = live[key].get("actor") as Node3D
 		if not is_instance_valid(actor): continue
 		var reason := _eligibility_reason(id, actor)
+		if reason == "too big for the rooms": _too_big += 1
 		if not reason.is_empty() and reason != "outside visit radius": continue
 		# Far ponies only from the walk grid that covers the spa: a pony from another zone keeps
 		# that zone's grid, and her navigator would refuse every route inside the spa.
@@ -413,13 +481,15 @@ func _soft_busy(actor: Node3D, talking := true) -> bool:
 
 
 ## Hayburger's eligibility, copied: free, loaded, awake, not held/following/talking/in a group.
-func _eligibility_reason(id: String, actor: Node3D) -> String:
+## `day_owner`: her own day step's owner ("day:<id>", request_walk_in) counts as free.
+func _eligibility_reason(id: String, actor: Node3D, day_owner := "") -> String:
 	if _visits.has(id): return "already visiting"
 	if id in STAFF: return "spa staff"
 	if float(_cooldowns.get(id, 0.0)) > _clock: return "cooldown"
 	if actor.get("hoof_hold") == null or actor.get("profile") == null or actor.get("identity") == null: return "unsupported body"
 	# Mares and fillies only (dev 2026-10-29: "no stallions at the spa"); colts carry the flag too.
 	if bool((actor.get("identity") as Resource).get("stallion")): return "stallion"
+	if actor.get("body_scale") != null and float(actor.get("body_scale")) > MAX_CLIENT_SIZE + 0.001: return "too big for the rooms"
 	# Spike's hoof_hold is a stub (spike_parts.gd) with no grab_count or gesture_left: no lift.
 	var hold: Object = actor.get("hoof_hold") as Object
 	var feet: Variant = actor.get("feet")
@@ -430,7 +500,7 @@ func _eligibility_reason(id: String, actor: Node3D) -> String:
 	if not actor.global_position.is_finite(): return "unsupported body"
 	var nav := actor.get_node_or_null("Navigator")
 	var owner := str(nav.get("command_owner"))
-	if not (owner.is_empty() or owner == "life:" + id): return "owned by " + owner.get_slice(":", 0)
+	if not (owner.is_empty() or owner == "life:" + id or (not day_owner.is_empty() and owner == day_owner)): return "owned by " + owner.get_slice(":", 0)
 	if actor.has_meta("social_group"):
 		var group: Variant = actor.get_meta("social_group")
 		if group is Dictionary and (group as Dictionary).get("members", []).size() > 1: return "group outing"
@@ -456,14 +526,14 @@ func _door_service() -> Node:
 	return ROSTER.select_service(get_tree().get_nodes_in_group("pony_navigation"), door)
 
 
-func _claim(id: String, actor: Node3D, services: Array[String], slot: int, phase: String) -> bool:
+func _claim(id: String, actor: Node3D, services: Array[String], slot: int, phase: String, owner := "") -> bool:
 	var nav := actor.get_node("Navigator")
 	var identity: Resource = actor.get("identity")
 	var display_name := str(identity.get("display_name")) if identity != null else id.capitalize()
 	if display_name.is_empty(): display_name = id.capitalize()
 	var size := float(actor.get("body_scale")) if actor.get("body_scale") != null else 1.0
 	var visit := {"id": id, "display_name": display_name, "actor": actor, "nav": nav,
-		"owner": "leisure:spa:%d:%s" % [get_instance_id(), id], "slot": slot,
+		"owner": owner if not owner.is_empty() else "leisure:spa:%d:%s" % [get_instance_id(), id], "slot": slot,
 		"previous_owner": nav.command_owner, "previous_wander": nav.wander_enabled,
 		"previous_speed": nav.command_speed_limit, "previous_pace": nav.command_pace_target,
 		"previous_face": nav.get("face_point") if nav.get("face_point") is Vector3 else Vector3.INF,
@@ -663,7 +733,8 @@ func _route(visit: Dictionary, phase: String, target: Vector3, pace := "walk") -
 	visit.goal = goal
 	if _at_position(visit, goal, 0.3): return
 	if not visit.nav.command_destination(goal, pace):
-		if phase in ["to_door_in", "to_door_out"]: _place_outside(visit, "Navigator refused the way out")
+		if phase in ["to_door_in", "to_door_out"]:
+			if not _wait_unseen(visit, "Navigator refused the way out"): _place_outside(visit, "Navigator refused the way out")
 		else: _leave(visit, "Navigator refused destination")
 
 
@@ -711,7 +782,7 @@ func _arrived(visit: Dictionary, precise: bool) -> bool:
 ## leaving, which ended in the out-of-view placement players saw as ponies vanishing near the door
 ## (player board #42).
 func _stalled_near(visit: Dictionary, reach := STALL_REACH) -> bool:
-	return _at_position(visit, visit.goal, reach) and _clock - float(visit.progress_at) > STALL_SECONDS
+	return _at_position(visit, visit.goal, reach * maxf(float(visit.size), 1.0)) and _clock - float(visit.progress_at) > STALL_SECONDS
 
 
 func _face(visit: Dictionary, direction: Vector3) -> void:
@@ -732,6 +803,29 @@ func _camera() -> Camera3D:
 	var camera: Camera3D = inventory.get("camera") as Camera3D if is_instance_valid(inventory) else null
 	if is_instance_valid(camera): return camera
 	return get_viewport().get_camera_3d() if is_inside_tree() else null
+
+
+## Stuck on the way out: she stops and waits (stays a client) while the player can see her, at most
+## UNSEEN_WAIT, so she is not seen vanishing from the room (player board #63). True while she waits;
+## false when _place_outside may run now.
+func _wait_unseen(visit: Dictionary, reason: String) -> bool:
+	if not visit.has("stuck_out"):
+		visit.stuck_out = reason
+		visit.stuck_at = _clock
+		if _owned(visit): visit.nav.stay()
+	if _clock - float(visit.stuck_at) >= UNSEEN_WAIT: return false
+	return _seen_by_player(visit.actor, float(visit.size))
+
+
+## Roughly in the player's view: in the camera's frustum within 40 m and on the same side of the
+## spa's walls (from the street nobody sees the lobby floor, from inside nobody sees the street).
+func _seen_by_player(actor: Node3D, size := 1.0) -> bool:
+	var camera := _camera()
+	if camera == null or not is_instance_valid(actor) or not actor.is_inside_tree(): return false
+	var at := actor.global_position + Vector3.UP * 0.6 * size
+	if camera.global_position.distance_to(at) > 40.0 or not camera.is_position_in_frustum(at): return false
+	if is_instance_valid(_venue) and _venue.has_method("is_inside") and bool(_venue.is_inside(camera.global_position)) != bool(_venue.is_inside(at)): return false
+	return true
 
 
 ## The stuck rule: release her and place her on the street beside SPA_DOOR_OUT, somewhere the
@@ -788,8 +882,18 @@ func _advance(id: String) -> void:
 	# (customer_queue.gd reclaim_from_model) and a walk to a station carries on.
 	if is_instance_valid(visit.actor) and QUEUE.reclaim_from_model(visit.nav, visit.owner):
 		print("[spa] client %s keeps her visit: a reply tag had taken her navigation" % id)
-		if (_travelling(visit) or visit.phase in ["to_door_in", "to_door_out"]) and visit.goal is Vector3 and (visit.goal as Vector3).is_finite() and not _at_position(visit, visit.goal, 0.3):
-			if not visit.nav.command_destination(visit.goal, "walk"): _leave(visit, "Navigator refused destination"); return
+		# A stationary phase gets its pose back too: a [stand] or [sit] tag sat her up on the table
+		# or sat her down in the footbath (private #336).
+		if not _resume_phase(visit): return
+	# Romance firewall: a kiss or hug on a client (VR contact, or her own) ends at once and leaves
+	# no afterglow; while it eases out it holds her navigator ("affection"), so she waits with every
+	# clock paused instead of the visit ending, then carries on where she was.
+	if is_instance_valid(visit.actor) and _end_affection(visit):
+		for key: String in ["deadline", "patience", "progress_at", "until"]: visit[key] = float(visit[key]) + CHECK_SECONDS
+		return
+	if visit.get("resume", false) and _owned(visit):
+		visit.erase("resume")
+		if not _resume_phase(visit): return
 	if not _owned(visit) or not is_instance_valid(population) or population.live.get(id, {}).get("actor") != visit.actor:
 		_release(id, "Resident or navigation ownership changed"); return
 	var hard := _hard_interrupt(visit.actor)
@@ -804,8 +908,12 @@ func _advance(id: String) -> void:
 		visit.progress_pos = visit.actor.global_position
 		visit.progress_at = _clock
 	if leaving:
-		if _clock - float(visit.progress_at) > STUCK_SECONDS or _clock - float(visit.since) > LEAVE_TIMEOUT or nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED]:
-			_place_outside(visit, "Stuck on the way out"); return
+		var stuck := str(visit.get("stuck_out", ""))
+		if stuck.is_empty() and (_clock - float(visit.progress_at) > STUCK_SECONDS or _clock - float(visit.since) > LEAVE_TIMEOUT or nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED]):
+			stuck = "Stuck on the way out"
+		if not stuck.is_empty():
+			if _wait_unseen(visit, stuck): return
+			_place_outside(visit, stuck); return
 	elif _travelling(visit):
 		if _clock >= float(visit.deadline) or nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED]:
 			_leave(visit, "No way to the station: " + str(nav.get("reason"))); return
@@ -816,7 +924,8 @@ func _advance(id: String) -> void:
 			if _arrived(visit, false): _route(visit, "entering", marker("SPA_DOOR_IN").origin)
 		"entering":
 			if _arrived(visit, false):
-				client_arrived.emit(id, visit.display_name)
+				# A walk-in is nopony Anon booked (the guide's welcome step waits for his bell).
+				if not bool(visit.get("walk_in", false)): client_arrived.emit(id, visit.display_name)
 				_next_station(visit)
 		"lobby":
 			if _clock >= float(visit.until): _next_station(visit)
@@ -827,6 +936,17 @@ func _advance(id: String) -> void:
 				_relax(visit, 0.2)
 		"bath":
 			_tick_filing(visit)
+		"to_soak":
+			if _arrived(visit, true) or _stalled_near(visit):
+				visit.phase = "soak"; visit.since = _clock
+				visit.until = _clock + float(visit.get("soak_seconds", 30.0))
+				visit.patience = float(visit.until) + 30.0
+				_face(visit, facing(marker("SPA_BATH_%d" % (int(visit.slot) + 1))))
+				_relax(visit, 0.4)
+		"soak":
+			if _clock >= float(visit.until):
+				visit.services.erase("soak")
+				_next_station(visit)
 		"to_line":
 			if _arrived(visit, true) or _stalled_near(visit):
 				visit.phase = "line"
@@ -873,8 +993,86 @@ func _advance(id: String) -> void:
 			if _arrived(visit, false) or _at_position(visit, visit.goal, 1.0): _release(id, "Back to the daily routine")
 
 
+## Ends a kiss or hug on her (pony_affection.gd) with no afterglow or return kiss. True while its
+## ease-out still holds her navigator (owner "affection"); at most AFFECTION_WAIT, after which the
+## visit ends as for any other takeover.
+func _end_affection(visit: Dictionary) -> bool:
+	var affection: Node = visit.actor.get_node_or_null("Affection")
+	if affection != null:
+		var kind := str(affection.get("kind"))
+		if kind in ["kiss", "hug"]:
+			print("[spa] client %s: the %s ends, spa care is not romance" % [visit.id, kind])
+			affection.call("end")
+			visit.resume = true
+		if affection.get("afterglow_left") != null and float(affection.get("afterglow_left")) > 0.0 and affection.has_method("cancel_afterglow"):
+			affection.call("cancel_afterglow")
+	if not is_instance_valid(visit.nav) or str(visit.nav.get("command_owner")) != "affection":
+		visit.erase("affection_since")
+		return false
+	if not visit.has("affection_since"): visit.affection_since = _clock
+	visit.resume = true
+	return _clock - float(visit.affection_since) < AFFECTION_WAIT
+
+
+## After a reclaim (a reply tag, or a kiss or hug easing out, had her navigator): back to what this
+## phase has her doing. A walk is issued again; a stationary phase gets its pose and facing back
+## (stand at the lobby, footbath and table foot, lie on the table, sit on a bench or the cushion).
+## False when the visit ended.
+func _resume_phase(visit: Dictionary) -> bool:
+	var phase := str(visit.phase)
+	if visit.hopping: return true
+	if _travelling(visit) or phase in ["to_door_in", "to_door_out"]:
+		if visit.has("stuck_out"): return true
+		if visit.goal is Vector3 and (visit.goal as Vector3).is_finite() and not _at_position(visit, visit.goal, 0.3):
+			if not visit.nav.command_destination(visit.goal, "walk"):
+				_leave(visit, "Navigator refused destination")
+				return false
+		return true
+	match phase:
+		"lobby", "queued":
+			_stand(visit)
+			_face(visit, facing(marker("SPA_LOBBY_WAIT_%d" % (int(visit.slot) + 1))))
+		"bath", "soak":
+			_stand(visit)
+			_face(visit, facing(marker("SPA_BATH_%d" % (int(visit.slot) + 1))))
+		"rub_climb":
+			_stand(visit)
+			_face(visit, facing(marker("SPA_RUB_SPOT")))
+		"line", "wing_wait":
+			if visit.seat != null:
+				if str(visit.seat_state) == "sitting": visit.actor.request_posture("sit")
+			else:
+				_stand(visit)
+				if phase == "line" and int(visit.line_index) >= 0: _face(visit, facing(marker("SPA_RUB_LINE_%d" % (int(visit.line_index) + 1))))
+		"rub_lying", "rub":
+			_back_on_table(visit)
+		"wing_sit", "wing":
+			if visit.sat: visit.actor.request_posture("sit")
+			_face(visit, facing(marker("SPA_WING_CUSHION")))
+	return true
+
+
+func _stand(visit: Dictionary) -> void:
+	var status: Dictionary = visit.actor.posture_status()
+	if str(status.get("kind", "stand")) not in ["stand", ""] or str(status.get("requested", "stand")) != "stand":
+		visit.actor.request_posture("stand")
+
+
+## Lying on the table again, on the spot she hopped onto: moved off it (stood up and stepped), she
+## is put back there first. Lying down again is the rub tick's own request.
+func _back_on_table(visit: Dictionary) -> void:
+	var actor: Node3D = visit.actor
+	var pose: Transform3D = visit.get("table_pose", Transform3D(Basis(), Vector3.INF))
+	if not visit.on_table or not pose.origin.is_finite(): return
+	actor.set_meta("lie_style", "stretch")
+	visit.nav.stay()
+	if actor.global_position.distance_to(pose.origin) > TABLE_DRIFT * float(visit.size) and actor.has_method("reset_motion"):
+		actor.reset_motion(pose)
+	if not _lying(actor): actor.request_posture("lie_down")
+
+
 func _travelling(visit: Dictionary) -> bool:
-	return visit.phase in ["arriving", "entering", "to_bath", "to_line", "to_rub", "to_wing"]
+	return visit.phase in ["arriving", "entering", "to_bath", "to_line", "to_rub", "to_wing", "to_soak"]
 
 
 ## Next service on her list, or the way out.
@@ -886,6 +1084,9 @@ func _next_station(visit: Dictionary) -> void:
 			visit.services.pop_front()
 			continue
 		match service:
+			"soak":
+				# A walk-in's footbath soak (request_walk_in): no filing, no pay.
+				_route(visit, "to_soak", marker("SPA_BATH_%d" % (int(visit.slot) + 1)).origin)
 			"file":
 				_route(visit, "to_bath", marker("SPA_BATH_%d" % (int(visit.slot) + 1)).origin)
 			"rub":
@@ -1245,7 +1446,8 @@ func _climb_on(visit: Dictionary) -> void:
 	# SPA_RUB_TABLE is an adult's root; a smaller pony lies further toward the foot so her back
 	# hooves still end at the player's end (an adult's reach 0.72 m behind her root).
 	var root: Vector3 = table.origin - facing(table) * HIND_REACH * (1.0 - float(visit.size)) + Vector3.UP * 0.02
-	_hop(visit, Transform3D(Basis.looking_at(facing(table), Vector3.UP), root), func():
+	visit.table_pose = Transform3D(Basis.looking_at(facing(table), Vector3.UP), root)
+	_hop(visit, visit.table_pose, func():
 		visit.nav.stay()
 		visit.actor.request_posture("lie_down")
 		visit.phase = "rub_lying"; visit.since = _clock)
@@ -1504,6 +1706,13 @@ func _cover() -> Node:
 	if not is_instance_valid(_game) or not _game.has_method("_find_camera") or _game.get("player") == null: return null
 	var cover: Node = COVER.new(); cover.name = "SpaCover"; _game.add_child(cover); cover.setup(_game)
 	return cover
+
+
+## A short line on the hotbar (world/mechanics/ledger.gd say), and the log.
+func _say(text: String) -> void:
+	print("[spa] ", text)
+	var inventory: Node = _game.get("inventory") as Node if is_instance_valid(_game) else null
+	if is_instance_valid(inventory): LEDGER.say(inventory, text)
 
 
 func _lock_player(locked: bool) -> void:

@@ -440,8 +440,21 @@ func _exclude_world_ink() -> void:
 				OUTLINE_EXCLUSION.apply_to(mi, outline_width)
 
 
+## dev 2026-11-08 ("the head's colours are darker than the body's ... at the neck"): the body coat has no
+## occlusion bake (plain cel bands), so the head's devkit bake (AO, 85% of direct light too) made the
+## whole head darker than the neck it joins. The head keeps the occlusion shader (its snout detail
+## lives there) with a white map, so head and body shade alike. Rollback: HEAD_COAT_AO = true.
+const HEAD_COAT_AO := false
+static var _no_ao: ImageTexture
+
+
 func _coat_ao(mi: MeshInstance3D) -> Texture2D:
-	return HEAD_AO if mi.name == "Head" else null
+	if mi.name != "Head": return null
+	if HEAD_COAT_AO: return HEAD_AO
+	if _no_ao == null:
+		var white := Image.create(1, 1, false, Image.FORMAT_L8); white.fill(Color.WHITE)
+		_no_ao = ImageTexture.create_from_image(white)
+	return _no_ao
 
 
 ## The impostor's stand/stride flip-book on the physics tick instead of every rendered frame
@@ -525,7 +538,8 @@ func _hybrid_physics(delta: float) -> void:
 	# Not held and already reset, update() would only reset it again.
 	if _held or _carry_reaction.active: _carry_reaction.update(self, delta)
 	if pinkie_bounce != null: pinkie_bounce.advance(delta)
-	expression_stance.advance(delta)
+	# The stance is HERO only: on the clip tiers advance() would only keep a zero amount at zero.
+	if sim_tier == SimTier.HERO or expression_stance.amount > 0.0: expression_stance.advance(delta)
 	super._physics_process(delta)
 	# The face work below is the tier label minus this one.
 	if started > 0: CROWD_PROFILE.record("hybrid_loco_total", started)
@@ -673,6 +687,7 @@ func set_sim_tier(tier: int, phase: int = 0) -> void:
 		_far_mesh_waiting = false
 		_set_impostor(false, {})
 		_show_far_mesh(null, false)
+		_near_waiting = true
 		# The distance pass restores ink and own shadows where she now stands.
 		_lod_timer = 0.0
 
@@ -743,6 +758,7 @@ func _poll_far_mesh() -> void:
 func _show_far_mesh(mesh: ArrayMesh, show: bool) -> void:
 	if show == _far_mesh_shown: return
 	_far_mesh_shown = show
+	if not show: _near_waiting = true
 	if show:
 		if far_mesh == null:
 			far_mesh = MeshInstance3D.new()
@@ -848,7 +864,12 @@ func _poll_near_mesh() -> void:
 	if not near_mesh_enabled or not NEAR_MESH.enabled or _model == null or not _near.is_empty():
 		_near_waiting = false
 		return
-	if sim_tier == SimTier.FAR or _far_mesh_shown or _tick < 3:
+	if sim_tier == SimTier.FAR or _far_mesh_shown:
+		# Nothing to attach while she is far: stop asking every frame (a pony that was FAR since
+		# spawn kept _process on for the whole session). Leaving FAR and hiding the far mesh re-arm it.
+		_near_waiting = false
+		return
+	if _tick < 3:
 		return
 	var plan: Variant = NEAR_MESH.request(self)
 	if plan == null:
@@ -1056,7 +1077,14 @@ func needs_full_rate() -> bool:
 
 func speech_progress() -> Dictionary:
 	if head == null or head.voice == null: return {}
+	# A line still arriving from the voice server has no length yet: callers estimate from the text.
+	if is_instance_valid(head._pcm_player): return {"time":maxf(0.0,head._speech_time)}
 	return {"time":maxf(0.0,head._speech_time),"duration":head.voice.stream.get_length() if head.voice.stream else 0.0}
+
+
+## True when say() also takes a line that is still arriving ("pcm://..." from tts_client.gd).
+func supports_pcm_speech() -> bool:
+	return head != null and head.has_method("_speak_pcm") and head.voice != null
 
 func set_action_gaze(target: Node3D) -> void:
 	action_gaze_target = target
@@ -1092,16 +1120,40 @@ func gesture(name: String) -> bool:
 
 ## Opening a house door: a unicorn works the handle with magic (horn and handle glow in her
 ## colour); earth ponies and pegasi lift a forehoof to it, forearm level, bent 90 degrees.
+## Past the crowd's NEAR range the forehoof is not lifted (W1-PERF-PONY, 2026-11-08): the lift needs
+## the leg solver, and a held hoof pins her to it at every tick with the inline GDScript solve
+## (about 0.5 ms a tick at the saved bench spot, ponies 50-180 m away entering houses) for a
+## gesture drawn as a far mesh or a picture. The door still opens and she still waits at it.
+## Rollback: FAR_DOOR_LIFT = true.
+const FAR_DOOR_LIFT := false
+
 func door_gesture(door: Node3D) -> void:
 	if magic != null and sim_tier != SimTier.FAR:
 		if cast_magic(1.8): door.magic_glow(magic.color, 1.8, global_position)
 		return
+	if not FAR_DOOR_LIFT and _beyond_near_range(): return
 	if hoof_hold.leg_index < 0: hoof_hold.push_door(randi() % 2, door.handle_world())
+
+## Farther from the camera than PonyCrowd draws NEAR ponies (where she would be FAR).
+func _beyond_near_range() -> bool:
+	var camera := preload("res://world/player_view.gd").camera(self)
+	if camera == null: return false
+	var limit := 30.0
+	if is_instance_valid(_crowd):
+		var near: Variant = _crowd.get("near_distance")
+		if near != null: limit = float(near)
+	return global_position.distance_to(camera.global_position) > limit
 
 ## Light her horn in her magic colour for a while (unicorns and alicorns only).
 func cast_magic(seconds := 2.5) -> bool:
 	if magic == null or sim_tier == SimTier.FAR: return false
 	return magic.cast(seconds)
+
+## Someone rides her (M-LIF-09): her flight's obstacle and landing probes ignore the bodies under
+## `nodes` (his body, hands, held things) as they ignore her own. [] on dismount (pony_flight.gd).
+func set_flight_rider(nodes: Array) -> void:
+	_ensure_flight()
+	flight.set_rider(nodes)
 
 func request_flight(destination: Vector3, hover_seconds := 0.0, long_range := false) -> bool:
 	if identity != null and not identity.can_fly: return false   # Scootaloo can't fly (yet)
@@ -1445,6 +1497,11 @@ func _attach_devkit_hair() -> void:
 		var n := String(mi.name)
 		var is_hair: bool = n == identity.hair_prefix + "DevkitMane" or n == identity.hair_prefix + "DevkitTail"
 		mi.visible = is_hair or n in identity.accessories
+		# A rigid piece on a bone of the hair rig (Applejack's hat): the identity may re-seat it.
+		if identity.accessory_offsets.has(n) and (mi as MeshInstance3D).skin == null:
+			var offset: Vector3 = identity.accessory_offsets[n]
+			var parent := mi.get_parent() as Node3D
+			if parent != null: mi.position += parent.global_basis.inverse() * (pivot.global_basis * offset)
 	hair_skeleton = hair.find_children("*","Skeleton3D",true,false)[0]
 	hair_skeleton.modifier_callback_mode_process = Skeleton3D.MODIFIER_CALLBACK_MODE_PROCESS_PHYSICS
 	hair_link = HAIR_LINK.new()

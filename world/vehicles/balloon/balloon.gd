@@ -140,9 +140,13 @@ func _set_gate(open:bool,instant:=false)->void:
 func _physics_process(delta:float)->void:
  if not has_node("Gate"):return
  _scan-=delta
+ var scanned:=false
  if _scan<=0:
-  _scan=.25;_board_occupants()
- elif PARK_IDLE and _parked_idle():
+  _scan=.25;_board_occupants();scanned=true
+  _parked_scans=_parked_scans+1 if PARK_IDLE and _parked_idle() else 0
+ # Parked idle: the boarding scan stays at 4 Hz; the full tick after it only every
+ # PARKED_FULL_EVERY scans (W2 perf pass; the safety re-grounding then runs at 1 Hz).
+ if PARK_IDLE and (not scanned or (_parked_scans-1)%PARKED_FULL_EVERY!=0) and _parked_idle():
   # The full tick's only changes while parked empty: its two timers.
   if is_instance_valid(inventory):_empty_time+=delta
   else:_empty_time=0
@@ -215,11 +219,16 @@ func _physics_process(delta:float)->void:
 ## Anything that changes (controls, gate, pose, a rider, a passenger, a boarding) runs full ticks.
 ## Rollback: PARK_IDLE = false.
 const PARK_IDLE:=true
+## Rollback of the 1 Hz parked full tick: PARKED_FULL_EVERY = 1 (a full tick after every scan).
+const PARKED_FULL_EVERY:=4
+var _parked_scans:=0
 var _rest_key:Array=[]
 func _parked_idle()->bool:
+ # Field by field: no Array built per tick (same comparison as _rest_key==[...]).
  return landed and velocity==Vector3.ZERO and lift==0.0 and vent==0.0 and steering==Vector2.ZERO and _burner_audio==0 \
   and _lift_wait==0.0 and not is_instance_valid(_player) and passengers.is_empty() and _boarding.is_empty() and _evicting.is_empty() \
-  and _gate_angle==(PI*.5 if gate_open else 0.0) and _rest_key==[global_transform,lift,vent,steering,gate_open,_gate_angle]
+  and _gate_angle==(PI*.5 if gate_open else 0.0) and _rest_key.size()==6 and _rest_key[0]==global_transform and _rest_key[1]==lift \
+  and _rest_key[2]==vent and _rest_key[3]==steering and _rest_key[4]==gate_open and _rest_key[5]==_gate_angle
 
 func _support()->Dictionary:
  var excluded:Array[RID]=[get_rid(),$Gate.get_rid(),$Ramp.get_rid()]
@@ -260,9 +269,15 @@ func _board_occupants()->void:
  # aboard (_invite_followers) or a rider restored with the save comes in; anypony else found in
  # the basket or up on its rim hops down to the ramp foot.
  var anon_aboard:bool=holds_player(_player)
+ # Neither box below (basket or rim) reaches past ~3.1 m of the origin in local space: ponies
+ # farther away skip the per-pony property and passenger lookups (45 ponies, 4 scans a second).
+ var size:=global_basis.get_scale().abs()
+ var reach:float=SCAN_REACH*maxf(size.x,maxf(size.y,size.z))
+ var centre:=global_position
  for id:String in population.live:
   var actor:Node3D=population.live[id].get("actor") as Node3D
-  if not is_instance_valid(actor) or actor.get("_held")==true or _boarding.has(id) or _evicting.has(actor):continue
+  if not is_instance_valid(actor) or actor.global_position.distance_squared_to(centre)>reach*reach:continue
+  if actor.get("_held")==true or _boarding.has(id) or _evicting.has(actor):continue
   var existing:=false
   for row:Dictionary in passengers:existing=existing or row.actor==actor
   if existing:continue
@@ -279,6 +294,8 @@ func _board_occupants()->void:
   elif _on_rim(at) and _can_step_off(actor):_evict(actor)
  _invite_followers()
 
+## Farthest local point of the rim box (1.78, 1.9, 1.64) plus slack; contains() is inside it.
+const SCAN_REACH:=3.2
 ## Landed where she can stand: solid ground, or a cloud only for a pony who walks on clouds.
 func _can_step_off(actor:Node3D)->bool:
  if not landed:return false

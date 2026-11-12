@@ -361,6 +361,21 @@ var _corner_stale := true
 ## full-rate path (touch, carry, flight, the player's own pony). Rollback: SETTLED_MOVE_SKIP = false.
 const SETTLED_MOVE_SKIP := true
 const SETTLED_MOVE_RECHECK := 6
+## Walk-gait floor push into the slope (private board #222, M-NAV-07, 2026-11-08). On floor the
+## motor pushes her down at FLOOR_PUSH m/s so she keeps contact. Straight down, the capsule's slide
+## takes FLOOR_PUSH * sin(slope) off her uphill travel: on Fluttershy's 34-degree stair ramp any
+## walk slower than ~0.169 m/s stood still (the hill-scaled slow walk is 0.167). While she walks
+## (not trot or gallop) UP a slope steeper than WALK_PUSH_SLOPE, her horizontal command is laid
+## along the floor plane (same horizontal speed, the plane's rise added) and the push goes into the
+## floor along its normal. Downhill keeps the old straight-down push: along the normal it cost the
+## descent of the cottage stairs 41% of its speed (cottage traversal, slow walk: 3165 -> 4467 ticks
+## down, measured 2026-11-08), so only rise > 0 takes the new push. Flat floors, downhill, standing,
+## posture, trot and gallop keep the old straight-down push.
+## Gated on the slope the body solver already measured: one float compare per tick otherwise.
+## Rollback: WALK_PUSH_ALONG_NORMAL = false.
+const WALK_PUSH_ALONG_NORMAL := true
+const FLOOR_PUSH := 0.25
+const WALK_PUSH_SLOPE := 0.09
 var _settled_moves := 0
 var _settled_skips := 0
 var _settled_velocity := Vector3.ZERO
@@ -852,6 +867,20 @@ var moving_support: Node3D
 var _support_transform := Transform3D.IDENTITY
 var _support_floor_layers := 0
 
+## A moving support pins her to the solver (body_pinned) only while it really travels (W1-PERF-PONY,
+## 2026-11-08). Rainbow Dash's Cloudominium drifts at under 0.15 m/s in ~1 cm steps every 0.1 s
+## (cloud_drift.gd), and that pin kept her asleep on the full solver, every tick, 330 m from the
+## player at the saved bench spot (about 0.2 ms of every physics step). Slower than
+## SUPPORT_PIN_SPEED for SUPPORT_PIN_HOLD seconds she ranks by distance like anyone else: the clip
+## tiers carry her root (and their floor) with the frame on every step, since needs_full_rate()
+## still holds for any support. Boarding pins her for SUPPORT_PIN_HOLD as before; a balloon in
+## flight pins her again on its first fast step. Rollback: SLOW_SUPPORT_UNPIN = false.
+const SLOW_SUPPORT_UNPIN := true
+const SUPPORT_PIN_SPEED := 0.25
+const SUPPORT_PIN_HOLD := 2.0
+var _support_moved_frame := -1
+var _support_fast_until := -1
+
 func set_moving_support(frame: Node3D) -> void:
 	if frame == moving_support: return
 	if is_instance_valid(moving_support): platform_floor_layers = _support_floor_layers
@@ -860,12 +889,33 @@ func set_moving_support(frame: Node3D) -> void:
 		_support_transform = frame.global_transform
 		_support_floor_layers = platform_floor_layers
 		platform_floor_layers = 0 # The rigid frame transfer below already carries the root.
+		_support_moved_frame = Engine.get_physics_frames()
+		_support_fast_until = _support_moved_frame + int(SUPPORT_PIN_HOLD * Engine.physics_ticks_per_second)
+
+## On a support that pins her: valid and fast within the last SUPPORT_PIN_HOLD seconds.
+func _support_pins() -> bool:
+	if not is_instance_valid(moving_support): return false
+	return not SLOW_SUPPORT_UNPIN or Engine.get_physics_frames() <= _support_fast_until
 
 func _follow_moving_support() -> void:
 	if not is_instance_valid(moving_support): return
 	var current := moving_support.global_transform
 	var motion := current * _support_transform.affine_inverse()
+	var moved := current != _support_transform
 	_support_transform = current
+	if moved:
+		# Speed of her own spot over the time since the frame last moved, at most 0.1 s back (the
+		# cloud's step): steps of a slow drift stay slow, a balloon's per-tick motion is per tick.
+		var now := Engine.get_physics_frames()
+		var ticks := clampi(now - _support_moved_frame, 1, ceili(0.1 * Engine.physics_ticks_per_second))
+		var travelled := (motion * global_position).distance_to(global_position)
+		if travelled > SUPPORT_PIN_SPEED * ticks / float(Engine.physics_ticks_per_second):
+			_support_fast_until = now + int(SUPPORT_PIN_HOLD * Engine.physics_ticks_per_second)
+		_support_moved_frame = now
+	if is_finite(_clip_floor) and _clip_floor_at.is_finite():
+		# The clip tiers' last measured floor rides with the frame too (the rays recast on a turn).
+		_clip_floor = (motion * Vector3(_clip_floor_at.x, _clip_floor, _clip_floor_at.z)).y
+		_clip_floor_at = motion * _clip_floor_at
 	if _held or (thrown != null and thrown.active()) or (flight != null and flight.active()): return
 	global_transform = motion * global_transform
 	for foot in feet:
@@ -921,8 +971,13 @@ func _physics_process(delta: float) -> void:
 			# Resting/paused bodies stay where their posture or physical owner put them.
 			if not motion_paused and (posture == null or not posture.active()):
 				# Off screen or a picture: catch the movement up on the next beat instead.
-				if coarse_motion or has_meta(PonyCrowd.HIDDEN): _coarse_motion_delta += motion_delta
-				else: _clip_step(motion_delta)
+				if coarse_motion or has_meta(PonyCrowd.HIDDEN):
+					_coarse_motion_delta += motion_delta
+					if prof: _cpu_lap("loco_offbeat_coarse", lap)
+				else:
+					_clip_step(motion_delta)
+					if prof: _cpu_lap("loco_offbeat_step", lap)
+			elif prof: _cpu_lap("loco_offbeat_rest", lap)
 			return
 		delta = _far_tick_delta
 		_far_tick_delta = 0.0
@@ -959,6 +1014,7 @@ func _physics_process(delta: float) -> void:
 		flight.update(delta)
 		return
 	if motion_paused and not single_step:
+		if prof: _cpu_lap("loco_paused_return", lap)
 		return
 	single_step = false
 	hoof_hold.prepare(delta)
@@ -1099,6 +1155,12 @@ func _physics_process(delta: float) -> void:
 	velocity.x = forward.x * horizontal_speed
 	velocity.z = forward.z * horizontal_speed
 	velocity.y = -0.25 if is_on_floor() else (0.0 if _heightmap_supported else velocity.y - 9.8 * delta)
+	if WALK_PUSH_ALONG_NORMAL and _slope_angle > WALK_PUSH_SLOPE and horizontal_speed > 0.0 \
+			and _gait_request < profile.trot_entry and velocity.y == -FLOOR_PUSH:
+		var floor_normal := get_floor_normal()
+		if floor_normal.y > 0.5:
+			var rise := -(floor_normal.x * velocity.x + floor_normal.z * velocity.z) / floor_normal.y
+			if rise > 0.0: velocity = Vector3(velocity.x, rise, velocity.z) - floor_normal * FLOOR_PUSH
 	if _jump_request > 0.0:
 		velocity.y = _jump_request
 		_jump_request = 0.0
@@ -1270,13 +1332,14 @@ func is_pinned() -> bool:
 
 ## Physical interaction only (dev 2026-09-25: "remove pinning??? ... they dont need to be at full
 ## detail just because theyre sleeping if theyre still far away"): held, a hoof held, carried,
-## thrown, flying, on a moving support, or being touched. Sitting, lying, sleeping, following,
-## walking through a house and paused ponies go by distance like any other; the clip tiers play
-## their baked postures. The hybrid adds conversation, which PonyCrowd limits to close range.
+## thrown, flying, on a travelling support (_support_pins), or being touched. Sitting, lying,
+## sleeping, following, walking through a house and paused ponies go by distance like any other;
+## the clip tiers play their baked postures. The hybrid adds conversation, which PonyCrowd limits
+## to close range.
 func body_pinned() -> bool:
 	if activity_mouth_pose != null and activity_mouth_pose.active(): return true
 	if water_escape.active: return true
-	if is_instance_valid(moving_support): return true
+	if _support_pins(): return true
 	if thrown != null and thrown.active(): return true
 	return (flight != null and flight.active()) or _held or hoof_hold.leg_index>=0 or not _interaction.is_empty() or carry.blend > 0.0
 
@@ -2367,6 +2430,8 @@ func _update_contacts(delta: float) -> void:
 ## _update_contacts_native() reads its 20 timing values through one step_timing.contact_timing()
 ## call (0.1.0 perf pass; the same values bit for bit). Rollback: CONTACT_TIMING_BATCH = false.
 const CONTACT_TIMING_BATCH := true
+## Native plants go to the hoof the native pass names (M-PRF-11). Rollback: false (nearest lock).
+const HOOF_PLANT_INDICES := true
 func _update_contacts_native(delta: float) -> void:
 	if _native_contact_profile != profile:
 		_native_contact_profile = profile
@@ -2401,8 +2466,17 @@ func _update_contacts_native(delta: float) -> void:
 		PackedFloat64Array([_blend, _spawn_settle, body_scale, profile.hip_height, step_timing.seconds_since_switch(),
 			profile.gait_blend_seconds]))
 	if prof: lap = _cpu_lap("contacts_plant", lap)
-	if not (planted[2] as PackedVector3Array).is_empty():
-		_hoof_plants.plant_native(self, planted[2])
+	var plants_at: PackedVector3Array = planted[2]
+	if not plants_at.is_empty():
+		# hoof_contacts.cpp (2026-11-08, W1-PERF-PONY) also returns which hoof made each plant, as
+		# the GDScript pass does: a gait switch can unplant that foot later in the same pass, and
+		# matching to the nearest still-planted lock gave her plant (and its sound) to another hoof.
+		if HOOF_PLANT_INDICES and planted.size() > 3:
+			var plants_hoof: PackedInt32Array = planted[3]
+			for k in plants_at.size():
+				_hoof_plants.plant(plants_hoof[k], plants_at[k])
+		else:
+			_hoof_plants.plant_native(self, plants_at)
 	var points: PackedVector3Array = planted[0]
 	var resample: PackedByteArray = planted[1]
 	var contacts: Array = [{}, {}, {}, {}]

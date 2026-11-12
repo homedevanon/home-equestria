@@ -25,7 +25,7 @@ static func is_sapling(id: String) -> bool:
 
 static func definition(id: String) -> Dictionary:
 	if not is_sapling(id): return {}
-	return {"name": "Apple sapling", "description": "Plant it in Anon's row at Sweet Apple Acres; water it on three days and it grows into an apple tree.",
+	return {"name": "Apple sapling", "description": "Plant it in Anon's row at Sweet Apple Acres; water it with the spray bottle on three days (rain counts too) and it grows into an apple tree.",
 		"stack": STACK, "price_bits": PRICE, "size_m": 0.6, "shop": true}
 
 ## The orchard species a tree id grows as (deterministic, so a sapling and its grown tree match).

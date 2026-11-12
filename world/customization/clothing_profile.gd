@@ -352,8 +352,8 @@ func dye_pony_socks(store: RefCounted, colour: int) -> String:
 	if colour<0 or colour>=PONY_OUTFIT.COLOUR_COUNT:return "No such colour."
 	var items:=pony_items(saved)
 	for i in items.size():
-		if PONY_OUTFIT.kind(items[i])=="socks":
-			items[i]="wear:socks:%d"%colour
+		if PONY_OUTFIT.kind(items[i]) in ["socks","plain-socks"]:
+			items[i]="wear:%s:%d"%[PONY_OUTFIT.kind(items[i]),colour]
 			return _commit_pony(store,items,store.slots.duplicate(true),store.loans.duplicate(true))
 	return "She is not wearing thigh highs."
 
@@ -378,7 +378,7 @@ func _commit_pony(store: RefCounted, items: Array, next_slots: Array, checked: D
 		if not path.is_empty():SAVE_FILE.write(path,{"version":1,"clothes":saved})
 		return store.last_error if not store.last_error.is_empty() else "Could not save the briefcase."
 	saved=next;data=_with_pony_items(data,items);last_error=""
-	apply_pony_socks();changed.emit();return ""
+	apply_garments();changed.emit();return ""
 
 ## Physical equipment changes publish only after persistence succeeds. A failed
 ## write must not briefly remove flight permission while the player is airborne.
@@ -469,6 +469,8 @@ func apply_garments():
 		if data.get("wing_sandals", false): worn["shoes"] = false
 		GARMENTS.apply(actor,worn)
 		preload("res://world/customization/wing_sandals.gd").apply(actor, data.get("wing_sandals", false), flight_model)
+		# The cup scarf is one worn piece for both of Anon's forms (pony_items).
+		preload("res://world/customization/club_scarf.gd").apply(actor, pony_items(data).has(preload("res://world/customization/club_scarf.gd").ITEM))
 		if actor.has_method("refresh_forearm_clearance"):actor.refresh_forearm_clearance()
 
 func attach_pony(actor:Node3D) -> void:

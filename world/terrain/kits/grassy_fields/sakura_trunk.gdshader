@@ -1,6 +1,8 @@
 shader_type spatial;
 render_mode diffuse_burley, specular_schlick_ggx;
 
+// The foot fades into ground_color; that colour follows the seasons (season_ground_turn).
+#include "res://world/seasons/season.gdshaderinc"
 uniform sampler2D bark_color : source_color, repeat_enable, filter_linear_mipmap_anisotropic;
 uniform sampler2D bark_orm : repeat_enable, filter_linear_mipmap_anisotropic;
 uniform sampler2D bark_normal : repeat_enable, filter_linear_mipmap_anisotropic;
@@ -17,6 +19,11 @@ uniform float terrain_blend_m;
 uniform float gradient_height;
 uniform float ground_height_m;
 uniform bool ground_from_instance = false;
+// How much the foot takes the ground's colour, and how much moss lies on the bark's upper sides
+// (1 = as authored). Both are 0 on the trunk material: plain brown bark down to the ground (dev
+// 2026-11-10; tools/look/set_trunk_foot.gd writes them into the material).
+uniform float foot_fade : hint_range(0.0, 1.0) = 1.0;
+uniform float moss_amount : hint_range(0.0, 1.0) = 1.0;
 varying vec3 world_position;
 varying vec3 world_normal;
 varying vec3 world_tangent;
@@ -61,13 +68,14 @@ void fragment() {
 	vec3 explicit_world_normal = normalize(world_tangent * combined_n.x
 		+ world_binormal * combined_n.y + world_normal * combined_n.z);
 	float moss_alpha = clamp(dot(explicit_world_normal, vec3(0.0, 1.0, 0.0))
-		* 0.5 * upvector_sharpness + upvector_bias, 0.0, 1.0);
+		* 0.5 * upvector_sharpness + upvector_bias, 0.0, 1.0) * moss_amount;
 	vec3 moss = (moss_variation_value + 0.5) * moss_color.rgb;
 	vec3 local_color = mix(bark, moss, moss_alpha);
 	float contact = clamp(texture(noise_texture, UV * noise_uv_scale).r
 		+ (world_position.y - (ground_from_instance ? instance_ground : ground_height_m)) / max(terrain_blend_m, 0.00001)
 		+ gradient_height, 0.0, 1.0);
-	ALBEDO = mix(ground_color.rgb, local_color, contact);
+	contact = mix(1.0, contact, foot_fade);
+	ALBEDO = mix(season_ground_turn(ground_color.rgb, world_position), local_color, contact);
 	NORMAL_MAP = normalize(mix(vec3(0.0, 0.0, 1.0), combined_n, contact)) * 0.5 + 0.5;
 	ROUGHNESS = mix(1.0, rough, contact);
 	METALLIC = 0.0;

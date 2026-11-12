@@ -12,7 +12,11 @@ const DEFAULTS := {"id": "", "kind": "letter", "from": "player", "to": "", "stat
 	"craft": -1, "heart": -1, "score": -1, "gist": "", "reply_to": "", "reply_id": "", "appointment": "",
 	"pinned": false, "pin_until": -1.0, "gift": "", "ai": "",
 	# false: her reply booked a meeting he could not know of before reading it (letter_post.gd meeting_known).
-	"meet_known": true}
+	"meet_known": true,
+	# M-AI-16: a relationship offer her reply makes in person when they next meet ("" none), its
+	# state ("" waiting, "asked", "lapsed") and when he opened the reply; the letter waits on her
+	# doorstep until she is home (letter_props.gd).
+	"offer": "", "offer_state": "", "opened_at": -1.0, "doorstep": false}
 
 ## The live rows dictionary (created on first use); {} when there is no writable world.
 static func rows(context: Node) -> Dictionary:

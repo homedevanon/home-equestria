@@ -11,6 +11,24 @@ const ANDROID_REQUIRED_DATA := [
 	"res://world/terrain/data_half/terrain3d_00_02.res",
 ]
 const MISSING_DATA := "Install the game's data (the OBB files, SideQuest does it with the APK), then reopen the game."
+## The other way round: files the code-only APK itself must hold, because the title loads them
+## before any data exists (GitHub #16: the menu fonts sat under world/books/, which ships in the
+## data pack, so the title script failed to load and the headset showed a black void). The preset
+## generator (tools/build/make_export_presets.py) keeps these and everything the title scene and
+## the autoloads preload in the APK, and refuses to write presets that leave one out.
+const ANDROID_REQUIRED_APK := [
+	"res://world/ui/title_screen.tscn",
+	"res://world/ui/fonts/CelestiaMediumRedux.ttf",
+	"res://world/books/fonts/AtkinsonHyperlegible-Regular.ttf",
+	"res://world/books/fonts/AtkinsonHyperlegible-Bold.ttf",
+	"res://world/books/fonts/AtkinsonHyperlegible-Italic.ttf",
+]
+
+## The first ANDROID_REQUIRED_APK file `exists` cannot find, or "" (tools/ui/test_title_without_data.gd).
+static func apk_problem(exists: Callable) -> String:
+	for path: String in ANDROID_REQUIRED_APK:
+		if not bool(exists.call(path)): return path
+	return ""
 
 static func installation_problem(android_export: bool, exists: Callable) -> String:
 	if not android_export: return ""

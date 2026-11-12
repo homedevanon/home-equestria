@@ -2,6 +2,8 @@ shader_type spatial;
 render_mode diffuse_burley, specular_schlick_ggx;
 uniform vec4 stripe_color : source_color = vec4(0.88, 0.48, 0.66, 1.0);
 uniform vec4 cream_color : source_color = vec4(0.96, 0.93, 0.87, 1.0);
+// 1 = cream stripes; 0 = one solid colour ("plain-socks").
+uniform float stripes : hint_range(0.0, 1.0) = 1.0;
 // A column of interlocking V stitches. Detail fades below pixel size, preventing shimmer.
 float stitch(vec2 p) {
 	vec2 cell = fract(p) - 0.5;
@@ -15,7 +17,7 @@ void fragment() {
 	float wave = sin((UV.y - 0.1) * 37.699112);
 	float stripe = smoothstep(-width, width, wave);
 	stripe = mix(stripe, 0.0, smoothstep(0.88, 0.92, UV.y));
-	stripe *= smoothstep(0.075, 0.115, UV.y) * (1.0 - cuff);
+	stripe *= smoothstep(0.075, 0.115, UV.y) * (1.0 - cuff) * stripes;
 	vec2 knit_uv = UV * vec2(64.0, 108.0);
 	float detail = 1.0 - smoothstep(0.35, 1.4, max(fwidth(knit_uv.x), fwidth(knit_uv.y)));
 	float h = stitch(knit_uv);

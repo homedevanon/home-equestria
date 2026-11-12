@@ -1,0 +1,14 @@
+extends RefCounted
+## Stands in for a game script that preloads another one (world/game_saves.gd did, and stopped
+## parsing after a plain take-over of the script it preloads).
+const BASE := preload("res://tools/modding/fixtures/loader/exported/game_base.gd")
+
+static func describe() -> String:
+	return BASE.new().describe()
+
+static func modded() -> bool:
+	var script: Script = BASE
+	while script != null:
+		if script.get_script_constant_map().has("MODDED"): return true
+		script = script.get_base_script()
+	return false

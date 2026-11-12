@@ -27,6 +27,7 @@ func _remember_touch(kind:String,id:String)->void:
 	if host._now()-float(_remembered_contacts.get(key,-100.))<10.:return
 	_remembered_contacts[key]=host._now()
 	var what:=kind if not kind.begins_with("petted:") else "petting your "+_pet_words(kind.get_slice(":",1))
+	if kind=="snowball_hit":what="hitting you with a snowball"
 	host.world_context.record("physical_contact","The player made contact with you: "+what+". This alone does not establish how you felt about it.",[id],["player",id])
 
 
@@ -42,6 +43,8 @@ func _remember_outcome(event:Dictionary,id:String)->void:
 func reaction_chance(kind:String) -> float:
 	if kind in ["carried", "carried_away", "sprayed", "thrown"] or kind.begins_with("anon_resting"): return 1.0
 	if kind.begins_with("petted"):return .3
+	# A snowball from Anon (W2-SEAS-F; only player-thrown hits emit it): usually worth a word.
+	if kind == "snowball_hit": return .7
 	match kind:
 		"flank_smack", "kiss_refused": return 1.0
 		"deep_kiss": return .8
@@ -79,7 +82,7 @@ func _on_physical_reaction(kind:String,id:String,deferred:bool=false,summary:=""
 	if not is_instance_valid(host.player_head) or not is_instance_valid(host.characters[id].node):return
 	if not host.awareness.can_hear(host.characters[id].node,host.player_head,host._earshot(id)):return
 	if host.state!="idle" or host.speech.state=="hearing":
-		if (kind in ["carried", "carried_away", "sprayed", "thrown"] or kind.begins_with("anon_resting")) and not deferred:
+		if (kind in ["carried", "carried_away", "sprayed", "thrown", "snowball_hit"] or kind.begins_with("anon_resting")) and not deferred:
 			host._pending_contacts[id] = {"kind": kind, "until": host._now() + 12.0}
 		return
 	if kind not in ["farewell","contact"] and host._reaction_rng.randf()>=reaction_chance(kind):return
@@ -100,6 +103,7 @@ func _on_physical_reaction(kind:String,id:String,deferred:bool=false,summary:=""
 	# Cuddling is her choice (dev 2026-09-28): the bed or couch only tells her he is lying there.
 	if kind.begins_with("anon_resting"): event = "Anon is lying down on the %s a few steps from you, resting. If you would like to cuddle with him, say so and use [cuddle]. It is just as fine to leave him be, or only say something." % kind.get_slice(":", 1)
 	if kind == "sprayed": event = "Anon just sprayed you with plain water from a small spray bottle. Your coat is damp where it hit. React briefly in character to the water."
+	if kind == "snowball_hit": event = "Anon just hit you with a snowball; snow is on your coat. React briefly in character: laugh, protest, or promise payback. You may throw one back if your actions allow it."
 	if kind=="quiet":event="The player has been quiet since your last reply. Sometimes just relish the moment with them: comfortable silence is a complete answer, so reply with only [silence], above all if you already asked a question. Speak only with a reason: a few natural words, then wait; never continue a monologue, restart your last topic or invent a project from the scenery. You may bring up something new instead. " + preload("res://world/ai/chatter_topics.gd").seed_line()
 	if kind=="farewell":
 		event="The conversation has run its course: "+host._farewell_reason+" Decide for yourself what you do next. Usually you say a short goodbye in your own words and voice, then go about your day (go_to, go_home or resume_routine). You need not say where you are going or why. This is your choice, bedtime included: if you would rather stay with the player (a friend, a good talk, a moment worth staying up for), say so and use [stay] (or [follow: player] if he is walking somewhere). Speak; do not reply with only [silence]."

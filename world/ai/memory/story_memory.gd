@@ -10,6 +10,7 @@ extends RefCounted
 
 const STORE := preload("res://world/ai/memory/story_store.gd")
 const TOWN_TALK := preload("res://world/ai/memory/town_talk.gd")
+const CONTROLS := preload("res://world/ai/speech_controls.gd")
 ## Running summary (AI tokens 2026-10-22: a 31-minute capture sent 53 identical failing calls,
 ## 1.33M input tokens, because every reply hit its cap and the failure was resent every 20 s).
 ## Story text after noise filtering (story_line) may reach this size before a summary call.
@@ -47,7 +48,8 @@ const BOILERPLATE := [" This was an intention, not proof of completion; active c
 ## 1600 since heard sentences are merged per reply (merged_speech): the same conversation, ~30% fewer characters.
 const RECENT_HEARD_CHARS := 1600
 const RECENT_HEARD_LINES := 24
-## Story notes: <brain> blocks (<story> also accepted). An unclosed
+## Story notes: <brain> blocks (<story> also accepted; [brain] wrappers are turned into these
+## first, speech_controls.gd angle_notes). An unclosed
 ## block at the very end (cut-off reply) is dropped, never spoken.
 const BRAIN_RE := "(?s)<(?:story|brain)>(.*?)</(?:story|brain)>"
 const BRAIN_OPEN_RE := "(?s)<(?:story|brain)>.*$"
@@ -488,11 +490,39 @@ func declined(pony: String, asked: String, answer: String) -> int:
 		var shared := 0
 		for word: String in STORE.thread_words(str(thread.text)):
 			if said.has(word): shared += 1
-		if shared >= 2: store.close_thread(int(thread.id)); closed += 1
+		if shared >= 2: _settle(int(thread.id)); closed += 1
 	return closed
 
-## Strips story notes from a reply, storing them. Returns the cleaned reply.
+## A topic Anon turned down or a DONE note settled stays settled for SETTLED_MINUTES, and a topic that
+## already had its day on her mind (story_store.gd THREAD_LIFE_MINUTES from its first opening) rests as
+## long: the same WANT or NEXT written again meanwhile is not reopened. Before this, every notes turn
+## could reopen it, so a refused helicopter drawing came back after every no and stale wants returned
+## each day (player threads 43665659, 43670743, 2026-10-29/30).
+const SETTLED_MINUTES := 2 * 1440
+
+## Closes a thread as settled: `closed` holds 2 + the journal line id it was settled at (0 is open,
+## 1 faded out), so the settling time can be read back; every reader only tests closed = 0.
+func _settle(id: int) -> void:
+	store._run("UPDATE threads SET closed = ? WHERE id = ?;", [2 + store.last_line_id(), id])
+
+## True when this pony's `text` is a settled or spent topic (SETTLED_MINUTES) and must not reopen.
+func settled_topic(pony: String, text: String) -> bool:
+	if not is_open(): return false
+	var now := _now()
+	var at := int(now.day) * 1440 + int(now.minute)
+	var life := STORE.THREAD_LIFE_MINUTES
+	var rows := store._rows("SELECT threads.text AS text, threads.closed AS closed, o.day * 1440 + o.minute AS opened_at, s.day * 1440 + s.minute AS settled_at"
+		+ " FROM threads LEFT JOIN lines o ON o.id = threads.opened LEFT JOIN lines s ON threads.closed >= 2 AND s.id = threads.closed - 2"
+		+ " WHERE threads.pony = ? AND ((threads.closed >= 2 AND s.day * 1440 + s.minute > ?) OR (o.day * 1440 + o.minute > ? AND o.day * 1440 + o.minute < ?));",
+		[pony, at - SETTLED_MINUTES, at - life - SETTLED_MINUTES, at - life])
+	for row: Dictionary in rows:
+		if STORE.similar(str(row.text), text): return true
+	return false
+
+## Strips story notes from a reply, storing them. Returns the cleaned reply. Square wrappers
+## ([brain]...[/brain], [story]; GitHub PR #13) count as the angle ones.
 func take_notes(text: String, speaker: String, present: Array) -> String:
+	text = CONTROLS.angle_notes(text)
 	var brain := RegEx.create_from_string(BRAIN_RE)
 	var found := brain.search(text)
 	if found != null:
@@ -534,7 +564,9 @@ func _store_brain(note: String, speaker: String, present: Array, reply := "") ->
 		var owners: Array = [speaker]
 		for id in present:
 			if str(id) not in owners and str(id) != "player": owners.append(str(id))
-		for pony: String in owners: store.close_matching(pony, settled)
+		for pony: String in owners:
+			for thread: Dictionary in store.open_threads(pony, 12):
+				if STORE.similar(str(thread.text), settled): _settle(int(thread.id))
 	for raw in note.split("\n"):
 		var line := raw.strip_edges()
 		if line.begins_with("WANT "):
@@ -542,11 +574,17 @@ func _store_brain(note: String, speaker: String, present: Array, reply := "") ->
 			var colon := rest.find(":")
 			if colon <= 0: continue
 			var pony := rest.left(colon).strip_edges().to_lower()
-			if pony in present or pony == speaker: store.add_thread(pony, "You want: " + rest.substr(colon + 1).strip_edges(), store.last_line_id())
+			if pony in present or pony == speaker: _open_thread(pony, "You want: " + rest.substr(colon + 1).strip_edges())
 		elif line.begins_with("NEXT:"):
-			store.add_thread(speaker, "Soon: " + line.trim_prefix("NEXT:").strip_edges(), store.last_line_id())
+			_open_thread(speaker, "Soon: " + line.trim_prefix("NEXT:").strip_edges())
 		elif line.begins_with("ELSEWHERE:"):
 			_store_rumour(line.trim_prefix("ELSEWHERE:").strip_edges(), speaker, reply)
+
+func _open_thread(pony: String, text: String) -> void:
+	if settled_topic(pony, text):
+		print("[story] %s: settled topic not reopened: %s" % [pony, text.left(100)])
+		return
+	store.add_thread(pony, text, store.last_line_id())
 
 ## Applies and removes [feel: pony_id +1] tags (speaker's feeling toward another pony).
 func take_feelings(text: String, speaker: String) -> String:

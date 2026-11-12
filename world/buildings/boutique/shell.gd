@@ -3,11 +3,17 @@ extends RefCounted
 const LAYOUT := preload("res://world/buildings/boutique/layout.gd")
 const DOOR := preload("res://world/buildings/hinged_door.gd")
 const LEAF := AABB(Vector3(-1.061,.04,-5.20),Vector3(1.768,3.69,.40))
+## The source's modelled brass knob and its backplate (three small pieces, 224 triangles) sit 0.24 m
+## from the hinge (x .698): the door swings on that side, so the knob read as on the wrong side
+## (board #308). The leaf already carries real pulls at its latch edge (door.handle, built by
+## hinged_door.gd), so the old knob is dropped from the moving leaf, like Trixie's wagon knob.
+const KNOB := AABB(Vector3(.36,1.02,-5.14),Vector3(.21,.70,.28))
 static func prepare(existing: Node3D) -> Dictionary:
 	var source: ArrayMesh = existing.get_node("Mesh1").mesh
 	var shell := ArrayMesh.new(); var leaf := ArrayMesh.new()
 	var moved := 0
 	var backing := 0
+	var knob := 0
 	for s in source.get_surface_count():
 		var arrays: Array = source.surface_get_arrays(s)
 		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
@@ -20,6 +26,8 @@ static func prepare(existing: Node3D) -> Dictionary:
 				# They are not part of a usable leaf: viewed from inside they blank its art.
 				if s==0 and vertices[face[0]].z> -4.87 and vertices[face[1]].z> -4.87 and vertices[face[2]].z> -4.87:
 					backing += 1; continue
+				if KNOB.has_point(vertices[face[0]]) and KNOB.has_point(vertices[face[1]]) and KNOB.has_point(vertices[face[2]]):
+					knob += 1; continue
 				moving.append_array(face); moved += 1
 			else: kept.append_array(face)
 		for pair: Array in [[shell,kept],[leaf,moving]]:
@@ -36,6 +44,7 @@ static func prepare(existing: Node3D) -> Dictionary:
 			compact.set_material(material);compact.commit(target)
 	assert(moved > 38, "Boutique source door changed; remeasure the leaf and its window")
 	assert(backing==2, "Remeasure the boutique scenery door backing")
+	if knob != 224: push_warning("[boutique] hinge-side knob cut %d triangles (expected 224): remeasure KNOB" % knob)
 	existing.get_node("Mesh1").mesh = shell
 	for body: Node in existing.find_children("*","CollisionObject3D",true,false):
 		body.collision_layer=0;body.collision_mask=0

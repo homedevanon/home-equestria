@@ -13,11 +13,16 @@ const PERSONA_CHARS := 1400
 const LINE_CHARS := 500
 const MEMORY_CHARS := 900
 const PLACE_LINES := 24
-## No relationship_offer: player_bonds.gd offers expire after 180 real seconds, long before he reads
-## her reply the next morning, so an offer made in a letter would quietly lapse unseen. She can
-## invite him in her words; the offer itself is made when they next talk.
+## No relationship_offer through the schema: player_bonds.gd offers expire after 180 real seconds,
+## long before he reads her reply the next morning. Her letter may still make one (M-AI-16):
+## [relationship_offer: KIND] is read here (OFFER_LINE, only while she may make one), kept on her
+## reply, and she makes the offer in person the next time they meet (letter_post.gd), so its
+## 180 s window starts then.
 ## relationship_answer only for his open offers that make no timed plan (letter_post.gd LETTER_ANSWERS).
 const CAPABILITIES := ["meet", "meet_cancel", "relationship_answer"]
+## M-AI-16: kinds a letter may offer (outings and dates lapse unless made in person, see above).
+const OFFER_KINDS := ["outing", "date", "dating", "engagement", "marriage"]
+const OFFER_LINE := "Optional: [relationship_offer: %s] if you want to ask him that; you ask him in person when you next meet, so mention it in your letter."
 ## Only while she has room for a favour (world/mechanics/asks/asks.gd letter_context): one line.
 const FAVOUR := "Optional, only if you really need his help: [ask: WANT, REWARD] ask him a favour (2 apples, fetch PONY, go to PLACE_ID or help at JOB; REWARD bits you hold or thanks), and ask it in the letter too."
 const TASK := """Anon sent you this letter by Derpy's post. Read it as yourself, decide, and write back.
@@ -26,7 +31,7 @@ Start with tags only, one per line:
 [gist: one line saying what he wrote or asked]
 Optional: [romance: -2..2] [mood: NAME] [thought: short private thought] [gift] (tuck a small gift in)
 Only if the letter asks for it: [meet: PLACE_ID, today|tomorrow|N, HH:MM] agree to meet him (or name another time you prefer),
-[meet_cancel] call off your meeting, [relationship_answer: OFFER_ID, yes|no]
+[meet_cancel] call off your meeting, [relationship_answer: OFFER_ID, yes|no], [come] set off now to where he is
 Then a line with --- and your reply letter, 40-160 words, in your own voice, starting "Dear Anon," and signed with your name.
 If you agree to meet, say where and when in the letter; he reads it tomorrow morning (right away if you meet before then), so name the day clearly. Never mention scores or tags."""
 
@@ -41,7 +46,7 @@ static func system_prompt(parts: Dictionary) -> String:
 		var line := _clip(str(parts.get(key, "")).replace("\n", " "), LINE_CHARS)
 		if not line.is_empty(): lines.append(line)
 	var today := str(parts.get("today", ""))
-	for key: String in ["appointment", "offer", "favour"]:
+	for key: String in ["appointment", "offer", "favour", "letter_offer"]:
 		var extra := str(parts.get(key, "")).strip_edges()
 		if not extra.is_empty(): today += "\n" + extra
 	var places: PackedStringArray = []
@@ -89,13 +94,18 @@ static func parse(reply: String, context: Dictionary) -> Dictionary:
 	found = _regex("\\[\\s*gist\\s*[:=]\\s*([^\\]\\n]*)\\]").search(tag_part)
 	var gist := found.get_string(1).strip_edges().left(160) if found != null else ""
 	var gift := _regex("\\[\\s*gift\\s*(?:[:=]\\s*(?:yes|true|1)\\s*)?\\]").search(tag_part) != null
-	var own := _regex("\\[\\s*(heart|gist|gift)\\b[^\\]\\n]*\\]")
+	# M-AI-18 [come] and M-AI-16 [relationship_offer: KIND] are read here, not by the schema.
+	var come := _regex("\\[\\s*come\\s*(?:[:=][^\\]\\n]*)?\\]").search(tag_part) != null
+	var offer := ""
+	found = _regex("\\[\\s*relationship_offer\\s*[:=]\\s*([a-z_]+)[^\\]\\n]*\\]").search(tag_part.to_lower())
+	if found != null and found.get_string(1) in OFFER_KINDS: offer = found.get_string(1)
+	var own := _regex("\\[\\s*(heart|gist|gift|come|relationship_offer)\\b[^\\]\\n]*\\]")
 	var tags := own.sub(tag_part, "", true)
 	letter = _strip_tags(letter)
 	var decoded: Dictionary = SCHEMA.decode_tags(tags + "\n" + letter, "letter", 0, context)
 	var actions: Array = decoded.get("actions", []) if not decoded.has("error") else []
 	return {"heart": heart, "gist": gist, "gift": gift, "impression": decoded.get("impression", {}),
-		"actions": actions, "dropped": decoded.get("dropped", []), "reply": letter}
+		"actions": actions, "dropped": decoded.get("dropped", []), "reply": letter, "come": come, "offer": offer}
 
 ## The places a model may name for [meet], as decode_tags locations and labels; `clock`
 ## ({day, hours}) is the game time a meeting day and time are read against.
@@ -106,6 +116,11 @@ static func decode_context(places: Array, relationship: Dictionary, clock: Dicti
 		if row is Array and (row as Array).size() >= 2:
 			ids.append(str(row[0])); labels[str(row[0])] = str(row[1])
 	return {"capabilities": CAPABILITIES.duplicate(), "targets": {}, "locations": ids, "place_labels": labels, "relationship": relationship, "clock": clock}
+
+## The optional offer line for kinds she may offer now, "" when none (no tokens spent).
+static func offer_line(kinds: Array) -> String:
+	var allowed := kinds.filter(func(kind: Variant) -> bool: return str(kind) in OFFER_KINDS)
+	return OFFER_LINE % "|".join(PackedStringArray(allowed)) if not allowed.is_empty() else ""
 
 static func _join(lines: PackedStringArray, memory: String, tail: String) -> String:
 	var text := "\n".join(lines)

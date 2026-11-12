@@ -78,6 +78,7 @@ func setup(game: Node) -> void:
 	for platform in track.find_children("*Platform", "Node3D", true, false):
 		if platform.has_meta("station"): platforms[str(platform.get_meta("station"))] = platform
 	_limit_station_ranges(track)
+	if LIMIT_TUNNEL_RANGES: _limit_tunnel_ranges(track, doc)
 	if not TRAINS_RUNNING:
 		# Track and stations stay; no trains, timetables or per-tick work (dev 2026-10-22: "we
 		# dont need those right now disable trains").
@@ -111,6 +112,44 @@ func _limit_station_ranges(track: Node) -> void:
 		if end == 0.0: continue
 		gi.visibility_range_end = end
 		gi.visibility_range_end_margin = 60.0
+
+## dev 2026-11-08 (board #340): a chunk that lies wholly inside a tunnel (the mountain spirals) drew
+## its ballast to 2,500 m, rails to 900 m and lining to 600 m, and showed through the coarse far
+## terrain over the hill. Such a chunk can only be seen down the bore, so tools/props_art/
+## bake_tunnel_ranges.py works out how far down the bore (or out of the portal) each one is still
+## in sight and writes that, plus the mesh margin, to TUNNEL_RANGES; those chunks stop there (never
+## further than before). Long straight bores keep their view; spirals drop to 190-400 m.
+## Chunks with open track (portals) keep their ranges. Load time only; fewer draws at distance.
+## Rollback: set LIMIT_TUNNEL_RANGES false. The bake is skipped (old ranges) if network_built.json
+## changed since it ran: rerun the tool after rebuilding the track.
+const LIMIT_TUNNEL_RANGES := true
+const TUNNEL_RANGES := "res://world/railway/tunnel_ranges.json"
+
+func _limit_tunnel_ranges(track: Node, doc: Dictionary) -> void:
+	if not FileAccess.file_exists(TUNNEL_RANGES): return
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(TUNNEL_RANGES))
+	if not parsed is Dictionary: return
+	var baked: Dictionary = parsed
+	var source: Dictionary = baked.get("source", {})
+	if str(source.get("revision", "")) != str(doc.get("revision", "")) or str(source.get("built", "")) != str(doc.get("built", "")):
+		push_warning("[rail] tunnel_ranges.json is older than the track: run tools/props_art/bake_tunnel_ranges.py")
+		return
+	var limited := 0
+	var chunks: Dictionary = baked.get("chunks", {})
+	for seg_id: String in chunks:
+		var holder := track.get_node_or_null(NodePath(seg_id))
+		if holder == null: continue
+		var rows: Dictionary = chunks[seg_id]
+		for chunk_name: String in rows:
+			var chunk := holder.get_node_or_null(NodePath(chunk_name))
+			if chunk == null: continue
+			var end := float(rows[chunk_name])
+			for node: Node in chunk.get_children():
+				var gi := node as GeometryInstance3D
+				if gi == null: continue
+				gi.visibility_range_end = end if gi.visibility_range_end <= 0.0 else minf(gi.visibility_range_end, end)
+			limited += 1
+	print("[rail] %d buried tunnel chunks drawn only down their bores" % limited)
 
 # ---------------------------------------------------------------- route and timetable
 

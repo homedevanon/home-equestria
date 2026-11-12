@@ -62,6 +62,8 @@ var _last_reason := ""
 
 func setup(game: Node, restaurant: Node3D) -> void:
 	release_all()
+	# Day plans find the restaurant's customers here (world/life/day/actions/eat_at_hayburger.gd).
+	add_to_group("hayburger_customers")
 	_game = game
 	_restaurant = restaurant
 	_markers.clear()
@@ -167,6 +169,73 @@ func served(order_id: Variant) -> void:
 func on_order_served(order: Dictionary, _reward: int = 0) -> void:
 	served(order.get("id", ""))
 
+# --- Day-plan meals (M-ACT-01, board #348) ----------------------------------------------------
+
+## A resident's day step "eat at the Hayburger" (world/life/day/actions/eat_at_hayburger.gd): she
+## comes in as an ordinary customer (the counter while Anon works a shift, else the kiosk) whose
+## visit keeps `owner` (her "day:<id>") on her navigator, then eats in a booth for `eat_seconds`.
+## "" when the visit started, else why not (closed, full, busy).
+func request_day_visit(id: String, actor: Node3D, owner: String, eat_seconds: float) -> String:
+	if not _open: return "The Hayburger is closed"
+	if not is_instance_valid(_restaurant) or not _restaurant.is_inside_tree(): return "No Hayburger here"
+	if _visitors.size() >= MAX_VISITORS: return "The Hayburger is full"
+	var why := _eligibility_reason(id, actor, owner)
+	if not why.is_empty(): return why
+	if not _claim(id, actor, not _working, owner): return _last_reason if not _last_reason.is_empty() else "No room inside"
+	var visit: Dictionary = _visitors[id]
+	visit.day = true
+	visit.eat_seconds = maxf(10.0, eat_seconds)
+	return ""
+
+func has_visit(id: String) -> bool:
+	return _visitors.has(id)
+
+func visit_phase(id: String) -> String:
+	return str(_visitors.get(id, {}).get("phase", ""))
+
+## Her day step was cut short: the visit ends where she is (whoever took her moves her on).
+func end_day_visit(id: String, reason: String) -> void:
+	if _visitors.has(id): _release(id, reason)
+
+## A free booth seat (seating.gd booth_seats) nearest her, taken through the shared seating
+## service with the visit's owner. True when she is on her way to it.
+func _take_booth(visit: Dictionary) -> bool:
+	var seating: Node = get_tree().get_first_node_in_group("pony_seating") if is_inside_tree() else null
+	if seating == null or not seating.has_method("booth_seats") or not is_instance_valid(_restaurant): return false
+	var actor: Node3D = visit.actor
+	var best: Node3D = null
+	var best_d := INF
+	for seat: Variant in seating.call("booth_seats", _restaurant):
+		if not is_instance_valid(seat) or not seat is Node3D: continue
+		var who: Variant = (seat as Node3D).get_meta("occupant") if (seat as Node3D).has_meta("occupant") else null
+		if is_instance_valid(who) and who != actor: continue
+		var d := actor.global_position.distance_squared_to((seat as Node3D).global_position)
+		if d < best_d: best = seat; best_d = d
+	if best == null: return false
+	var front: Variant = best.get_meta("front", null) if best.has_meta("front") else null
+	var rest := {"owner": visit.owner}
+	if front is Vector3: rest["front"] = front
+	actor.set_meta("hayburger_booth", visit.owner)
+	if not bool(seating.call("sit", actor, 0.0, best, rest)):
+		actor.remove_meta("hayburger_booth")
+		return false
+	visit.booth = best
+	visit.sat = true
+	return true
+
+## On a booth seat (or on her way to or off it) for this visit.
+func _in_booth(visit: Dictionary) -> bool:
+	return is_instance_valid(visit.get("booth")) and is_instance_valid(visit.actor) and visit.actor.get_meta("hayburger_booth", "") == visit.owner
+
+func _seating_phase(actor: Node3D) -> String:
+	var seating: Node = get_tree().get_first_node_in_group("pony_seating") if is_inside_tree() else null
+	return str(seating.call("phase", actor)) if seating != null and seating.has_method("phase") and is_instance_valid(actor) else ""
+
+func _left_booth(visit: Dictionary) -> void:
+	visit.erase("booth")
+	visit.sat = false
+	if is_instance_valid(visit.actor) and visit.actor.get_meta("hayburger_booth", "") == visit.owner: visit.actor.remove_meta("hayburger_booth")
+
 func release_all() -> void:
 	_working = false
 	_orders.clear()
@@ -225,10 +294,13 @@ func _population() -> Node:
 ## talk. Answering a customer used to release her and cancel her order (player report 2026-10-30).
 func _interrupted(actor: Node3D, visiting := false) -> bool:
 	if not is_instance_valid(actor) or not actor.is_inside_tree(): return true
-	if actor.get("sleeping") == true or actor.get("motion_paused") == true: return true
-	if actor.get_meta("active_follow", false) or actor.get_meta("seating", false): return true
+	# Seated in a booth by this visit (_take_booth): the seat hop pauses her motion and the seating
+	# service owns her posture; that is the meal, not an interruption.
+	var booth := visiting and str(actor.get_meta("hayburger_booth", "")) != ""
+	if actor.get("sleeping") == true or (actor.get("motion_paused") == true and not booth): return true
+	if actor.get_meta("active_follow", false) or (actor.get_meta("seating", false) and not booth): return true
 	if actor.has_method("is_held") and actor.is_held(): return true
-	if actor.has_method("action_interruption_reason"):
+	if actor.has_method("action_interruption_reason") and not booth:
 		var why := str(actor.action_interruption_reason())
 		# A hoof off the ground for a frame (the door sill) is no interaction: once a visit's 0.5 s
 		# check landed on that frame and sent the customer home (2026-10-31, test_doorway_traffic.gd).
@@ -244,14 +316,15 @@ func _interrupted(actor: Node3D, visiting := false) -> bool:
 func _eligible(id: String, actor: Node3D) -> bool:
 	return _eligibility_reason(id, actor).is_empty()
 
-func _eligibility_reason(id: String, actor: Node3D) -> String:
+## `day_owner`: her own day step's owner ("day:<id>", request_day_visit) counts as free.
+func _eligibility_reason(id: String, actor: Node3D, day_owner := "") -> String:
 	if _visitors.has(id): return "already visiting"
 	if float(_cooldowns.get(id, 0.0)) > _clock: return "cooldown"
 	if _interrupted(actor): return "interaction, sleep or unsupported"
 	if not actor.global_position.is_finite() or actor.global_position.distance_to(_restaurant.global_position) > VISIT_RADIUS: return "outside visit radius"
 	var nav := actor.get_node_or_null("Navigator")
 	var owner := str(nav.get("command_owner"))
-	if not (owner.is_empty() or owner == "life:" + id): return "owned by " + owner.get_slice(":", 0)
+	if not (owner.is_empty() or owner == "life:" + id or (not day_owner.is_empty() and owner == day_owner)): return "owned by " + owner.get_slice(":", 0)
 	if is_instance_valid(actor.get("flight")) and actor.flight.active(): return "flying"
 	if actor.has_meta("social_group"):
 		var group: Variant = actor.get_meta("social_group")
@@ -298,7 +371,7 @@ func _recruit(self_service: bool) -> bool:
 	return _claim(candidate, live[candidate].actor, self_service)
 
 ## Takes this resident's navigator for one visit, after checking both restaurant markers.
-func _claim(candidate: String, actor: Node3D, self_service: bool) -> bool:
+func _claim(candidate: String, actor: Node3D, self_service: bool, owner := "") -> bool:
 	var nav := actor.get_node("Navigator")
 	var occupied := []
 	for visit: Dictionary in _visitors.values(): occupied.append(visit.slot)
@@ -306,7 +379,7 @@ func _claim(candidate: String, actor: Node3D, self_service: bool) -> bool:
 	var display_name := str(identity.get("display_name")) if identity != null else candidate.capitalize()
 	if display_name.is_empty(): display_name = candidate.capitalize()
 	var visit := {"id": candidate, "display_name": display_name, "actor": actor, "nav": nav,
-		"owner": "leisure:hayburger:%d:%s" % [get_instance_id(), candidate], "slot": 0,
+		"owner": owner if not owner.is_empty() else "leisure:hayburger:%d:%s" % [get_instance_id(), candidate], "slot": 0,
 		"previous_owner": nav.command_owner, "previous_wander": nav.wander_enabled,
 		"previous_speed": nav.command_speed_limit, "previous_pace": nav.command_pace_target,
 		"phase": "", "self_service": self_service, "order_id": "", "announced": false,
@@ -453,7 +526,7 @@ func _owned(visit: Dictionary) -> bool:
 func _reclaim(visit: Dictionary) -> void:
 	if not is_instance_valid(visit.actor) or not QUEUE.reclaim_from_model(visit.nav, visit.owner): return
 	print("[hayburger] customer %s keeps her visit: a reply tag had taken her navigation" % visit.id)
-	if not str(visit.pending).is_empty() or visit.get("door_hold", false) or visit.phase == "eating": return
+	if not str(visit.pending).is_empty() or visit.get("door_hold", false) or visit.phase in ["eating", "rising"]: return
 	var via: Vector3 = visit.get("via", Vector3.INF)
 	var goal: Vector3 = via if via.is_finite() else visit.goal
 	if not goal.is_finite() or _at_position(visit, goal): return
@@ -616,9 +689,21 @@ func _advance(id: String) -> void:
 					visit.until = _clock + CHECK_SECONDS
 					visit.deadline = float(visit.until) + 5.0
 					return
+				if _in_booth(visit):
+					# Up from the booth first: the seating service hops her down to the aisle.
+					visit.actor.request_posture("stand")
+					visit.phase = "rising"
+					visit.deadline = _clock + 15.0
+					return
 				var self_service: bool = visit.self_service
 				_leave(visit, "Finished meal")
 				if self_service: self_serve_completed.emit(id, visit.display_name)
+		"rising":
+			if not _seating_phase(visit.actor).is_empty(): return
+			_left_booth(visit)
+			var was_self_service: bool = visit.self_service
+			_leave(visit, "Finished meal")
+			if was_self_service: self_serve_completed.emit(id, visit.display_name)
 		"exiting":
 			# A metre from the clearance point is well outside the door: no need to squeeze
 			# onto the exact spot past ponies standing in front of the restaurant.
@@ -634,12 +719,18 @@ func _eat(visit: Dictionary) -> void:
 	_clear_priority(visit)
 	visit.meal = true
 	visit.phase = "eating"
-	# Long enough to chat with the customer you just served (player bug board #29).
-	visit.until = _clock + _rng.randf_range(20.0, 40.0)
+	# Long enough to chat with the customer you just served (player bug board #29); a day-plan
+	# meal lasts its step's minutes.
+	visit.until = _clock + (float(visit.eat_seconds) if visit.has("eat_seconds") else _rng.randf_range(20.0, 40.0))
 	visit.deadline = float(visit.until) + 5.0
 	visit.nav.stay()
 	var actor: Node3D = visit.actor
-	if actor.has_method("request_posture") and _supported(actor, actor.global_position, .2).is_finite():
+	# A booth seat at a table (board #348) when one is free; else she sits where she stands.
+	if _take_booth(visit):
+		# The walk to the seat and the hop take a while; the meal clock waits for them.
+		visit.until = float(visit.until) + 8.0
+		visit.deadline = float(visit.until) + 20.0
+	elif actor.has_method("request_posture") and _supported(actor, actor.global_position, .2).is_finite():
 		visit.sat = actor.request_posture("sit")
 	_withdraw(visit)
 
@@ -660,6 +751,8 @@ func _release(id: String, reason: String) -> void:
 	if not _visitors.has(id): return
 	var visit: Dictionary = _visitors[id]
 	_visitors.erase(id)
+	if _in_booth(visit) and is_instance_valid(visit.actor) and visit.actor.get("sleeping") != true: visit.actor.request_posture("stand")
+	_left_booth(visit)
 	_clear_priority(visit)
 	# A failed route never served a meal. Give navigation/geometry time to
 	# recover, without banning that resident for the rest of a three-minute shift.

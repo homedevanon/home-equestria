@@ -2,9 +2,15 @@ extends Node
 ## Two local, idle residents may borrow the real dock rods while Anon fishes.
 ## Navigator/locomotion own every pony transform and native pose. This controller
 ## only moves a held prop, and uses the same cast/hook/reel path as player hands.
+## Day plans (world/life/day/actions/fish_at_dock.gd, M-ACT-01): invite_day takes a resident
+## who came to fish on her own, with or without Anon, under her day owner ("day:<id>"), through the
+## same rack, carry, cast, hook and reel steps; her lease stays when Anon stops fishing and ends
+## with release_day. Day and company leases share the two spots and rods.
 const OWNER := "leisure:fishing:"
 const NEARBY := 24.0
 const MAX_COMPANIONS := 2
+## A day lease fishes at most this long; the day step normally ends it first (seconds).
+const DAY_FISHING_LIMIT := 3600.0
 var game: Node
 var dock: Node3D
 var hands: Node
@@ -14,6 +20,7 @@ var trace := false
 var clock := 0.0
 var _scan := 0.0
 var _cooldown: Dictionary = {}
+var _day_fished: Dictionary = {}   # resident id -> she reached her spot and fished (day leases)
 
 func setup(host: Node, place: Node3D, player_hands: Node) -> void:
 	release_all()
@@ -24,9 +31,14 @@ func setup(host: Node, place: Node3D, player_hands: Node) -> void:
 
 func _physics_process(delta: float) -> void:
 	clock += delta
-	if not _player_fishing():
-		release_all("player fishing ended or activity unloaded")
-		return
+	var fishing := _player_fishing()
+	if not fishing:
+		# Only with leases left: nothing is copied on the usual idle tick. Anon's company goes
+		# when he stops; residents on a day-plan lease fish on.
+		if leases.is_empty(): return
+		for lease: Dictionary in leases.duplicate():
+			if not bool(lease.get("day", false)): _release(lease, "player fishing ended or activity unloaded")
+		if leases.is_empty(): return
 	for lease: Dictionary in leases.duplicate():
 		if not _owned(lease):
 			_release(lease, "navigation ownership changed")
@@ -41,6 +53,7 @@ func _physics_process(delta: float) -> void:
 			_release(lease, "new executor command reactivated follow")
 			continue
 		_step(lease, delta)
+	if not fishing: return
 	_scan -= delta
 	if autonomous and _scan <= 0.0:
 		_scan = 6.0
@@ -138,29 +151,82 @@ func _choose_company() -> void:
 			distance = gap
 	if nearest != null: invite(identity, nearest)
 
-## Public for deterministic fixtures; still enforces all live admission rules.
-func invite(identity: String, actor: Node3D) -> bool:
-	if leases.size() >= MAX_COMPANIONS or not eligible(actor): return false
-	if _residents().get(identity, {}).get("actor") != actor: return false
-	var slot := -1
+## A free companion spot index, or -1.
+func _free_slot() -> int:
+	if not is_instance_valid(dock): return -1
 	for index: int in mini(MAX_COMPANIONS, dock.companion_spots.size()):
 		var used := false
 		for lease: Dictionary in leases:
 			if lease.slot == index: used = true
-		if not used:
-			slot = index
-			break
-	var rod: Node3D
-	# Player holds one of the three; never take it or all remaining rack rods.
+		if not used: return index
+	return -1
+
+## A rack rod nopony holds or has leased (never the one in Anon's hand), or null.
+func _free_rod() -> Node3D:
+	if not is_instance_valid(dock): return null
+	var player_rod: Variant = hands.get("rod") if is_instance_valid(hands) else null
 	for index: int in range(dock.rods.size() - 1, -1, -1):
 		var candidate: Node3D = dock.rods[index]
-		if not is_instance_valid(candidate) or candidate == hands.rod or not candidate.holder.is_empty(): continue
+		if not is_instance_valid(candidate) or candidate == player_rod or not candidate.holder.is_empty(): continue
 		var used := false
 		for lease: Dictionary in leases:
 			if lease.rod == candidate: used = true
-		if not used:
-			rod = candidate
-			break
+		if not used: return candidate
+	return null
+
+## A spot and a rod are free for one more resident (fish_at_dock.gd asks before walking over).
+func day_spot_free() -> bool:
+	return leases.size() < MAX_COMPANIONS and _free_slot() >= 0 and _free_rod() != null
+
+func has_day_lease(identity: String) -> bool:
+	for lease: Dictionary in leases:
+		if bool(lease.get("day", false)) and str(lease.id) == identity: return true
+	return false
+
+## She got to her spot and fished during her latest day lease (it may have ended since).
+func day_fished(identity: String) -> bool:
+	return bool(_day_fished.get(identity, false))
+
+func release_day(identity: String, cause := "day step ended") -> void:
+	for lease: Dictionary in leases.duplicate():
+		if bool(lease.get("day", false)) and str(lease.id) == identity: _release(lease, cause)
+
+## A resident fishing on her day plan: `owner` is her day owner, already on her navigator; the
+## lease keeps it (the day runner sees its step) and restores it when it ends. She must stand near
+## the dock's bank end, free of chats, company and carrying. False when no spot or rod is free.
+func invite_day(identity: String, actor: Node3D, owner: String) -> bool:
+	if leases.size() >= MAX_COMPANIONS or not is_instance_valid(actor) or not is_instance_valid(dock) or not is_instance_valid(dock.approach): return false
+	if has_day_lease(identity) or actor.has_meta("fishing_companion") or _residents().get(identity, {}).get("actor") != actor: return false
+	var nav: Node = actor.get_node_or_null("Navigator")
+	if nav == null or owner.is_empty() or str(nav.command_owner) != owner or _interrupted(actor): return false
+	if actor.global_position.distance_to(dock.approach.global_position) > NEARBY: return false
+	var slot := _free_slot()
+	var rod := _free_rod()
+	if slot < 0 or rod == null: return false
+	var lease := {"id":identity, "actor":actor, "nav":nav, "rod":rod, "slot":slot, "owner":owner, "day":true,
+		"previous":nav.command_owner, "wander":nav.wander_enabled, "speed":nav.command_speed_limit,
+		"pace":nav.command_pace_target, "gaze":nav.face_point, "phase":"bank", "deadline":clock + 90.0,
+		"wait":0.0, "hold_time":0.0, "lift":0.0, "bite_time":0.0, "casts":0,
+		"prop_start":rod.global_transform, "excludes":rod.player_excludes.duplicate(), "follow":{}}
+	nav.stay()
+	nav.command_speed_limit = INF
+	nav.command_pace_target = -1.0
+	nav.face_point = Vector3.INF
+	actor.set_meta("fishing_companion", owner)
+	leases.append(lease)
+	_day_fished[identity] = false
+	if not _travel(lease, dock.approach.global_position, 0.7):
+		_release(lease, "bank support refused")
+		return false
+	return true
+
+## Public for deterministic fixtures; still enforces all live admission rules.
+func invite(identity: String, actor: Node3D) -> bool:
+	if leases.size() >= MAX_COMPANIONS or not eligible(actor): return false
+	if _residents().get(identity, {}).get("actor") != actor: return false
+	var slot := _free_slot()
+	# Player holds one of the three; never take it or all remaining rack rods.
+	var rod := _free_rod()
 	if slot < 0 or rod == null: return false
 	var nav: Node = actor.get_node("Navigator")
 	var token := OWNER + str(get_instance_id()) + ":" + identity
@@ -271,8 +337,9 @@ func _step(lease: Dictionary, delta: float) -> void:
 			nav.stay()
 			nav.face_point = actor.global_position + dock.water_direction() * 6.0
 			lease.phase = "fishing"
-			lease.deadline = clock + 180.0
+			lease.deadline = clock + (DAY_FISHING_LIMIT if bool(lease.get("day", false)) else 180.0)
 			lease.wait = 1.2
+			if bool(lease.get("day", false)): _day_fished[str(lease.id)] = true
 		"fishing":
 			if actor.global_position.distance_to(dock.companion_spots[lease.slot].global_position) > 0.9:
 				_release(lease, "left fishing spot")
@@ -322,6 +389,13 @@ func _visible(actor: Node3D, from: Vector3, to: Vector3) -> bool:
 	# Authored grips rest inside the top centimetre of the crossbar. Its endpoint
 	# contact is intentional support; no other body or earlier blockage is exempt.
 	return hit.collider == dock.get_node_or_null("Rod rack") and Vector3(hit.position).distance_to(to) <= 0.15
+
+## The day-plan resident fishing with this rod, or "" (fishing_runtime.gd: her catch is a fact
+## only, no loose fish for Anon, unless he is fishing too).
+func day_angler(rod: Node3D) -> String:
+	for lease: Dictionary in leases:
+		if lease.rod == rod and bool(lease.get("day", false)) and _owned(lease): return str(lease.id)
+	return ""
 
 ## For main's existing dock fish_landed callback: attribute, never duplicate payout.
 func actor_for_rod(rod: Node3D) -> Node3D:

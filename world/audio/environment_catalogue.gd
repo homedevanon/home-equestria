@@ -87,8 +87,20 @@ const MUD := [
 const GRAVEL := [
 	preload("res://world/audio/designed/environment/gravel_01.ogg"),
 ]
-const FOOT_MATERIALS := {"grass": GRASS, "dirt": GRASS, "sand": GRASS, "stone": STONE, "wood": WOOD, "snow": SNOW, "leaves": LEAVES, "mud": MUD, "gravel": GRAVEL, "cloud": CLOTH, "cloth": CLOTH, "water": SPLASH}
-const HOOF_MATERIALS := {"grass": HOOF_SOFT, "dirt": HOOF_SOFT, "sand": HOOF_SOFT, "stone": HOOF, "wood": HOOF, "snow": SNOW, "leaves": LEAVES, "mud": MUD, "gravel": GRAVEL, "cloud": CLOTH, "cloth": CLOTH, "water": HOOF_WATER}
+## Seasons (W2-SEAS-J): "ice" is a frozen slab (hard steps until a real ice creak recording
+## exists), "puddle" a wet-season puddle on terrain (ground_contact_audio.gd decides both).
+const FOOT_MATERIALS := {"grass": GRASS, "dirt": GRASS, "sand": GRASS, "stone": STONE, "wood": WOOD, "snow": SNOW, "leaves": LEAVES, "mud": MUD, "gravel": GRAVEL, "cloud": CLOTH, "cloth": CLOTH, "water": SPLASH, "ice": STONE, "puddle": SPLASH}
+const HOOF_MATERIALS := {"grass": HOOF_SOFT, "dirt": HOOF_SOFT, "sand": HOOF_SOFT, "stone": HOOF, "wood": HOOF, "snow": SNOW, "leaves": LEAVES, "mud": MUD, "gravel": GRAVEL, "cloud": CLOTH, "cloth": CLOTH, "water": HOOF_WATER, "ice": HOOF, "puddle": HOOF_WATER}
+## A puddle step under a cue's own level: the splash set is louder than a footfall, the wading
+## hoof set about as loud as a soft hoof.
+const PUDDLE_FOOT_DB := -9.0
+const PUDDLE_HOOF_DB := -2.0
+## Seasonal ambience beds (world/ambience.gd). Recorded only; each is one line to swap when a
+## better recording is added. The winter bed is the CC0 mild-wind recording, played as a steady
+## loop a little lower in pitch. Autumn rustle: no dedicated canopy leaf-rustle recording exists
+## in the project yet, so the same wind recording plays positioned at a nearby tree crown.
+const WINTER_WIND := preload("res://world/audio/designed/environment/breeze.ogg")
+const LEAF_RUSTLE := preload("res://world/audio/designed/environment/breeze.ogg")
 const EVENTS := {
 	"env_footstep": {"streams": GRASS, "materials": FOOT_MATERIALS, "volume_db": -13.0, "distance": 18.0, "cooldown": .45, "concurrency": 4, "priority": 1},
 	# Footfalls arrive on the baked plants (pony_hoof_plants.gd), each hoof gated to one per
@@ -107,5 +119,7 @@ const EVENTS := {
 	"env_rain": {"streams": [preload("res://world/audio/designed/environment/rain_outdoors.ogg")], "volume_db": -24.0, "distance": 400.0, "concurrency": 1, "priority": 1, "bus": "Ambience", "loop": true, "spatial": false},
 	"env_rain_roof": {"streams": [preload("res://world/audio/designed/environment/rain_roof.ogg")], "volume_db": -27.0, "distance": 400.0, "concurrency": 1, "priority": 0, "bus": "Ambience", "loop": true, "spatial": false},
 	"env_thunder": {"streams": [preload("res://world/audio/designed/environment/thunder_01.ogg")], "volume_db": -19.0, "distance": 400.0, "cooldown": 8.0, "concurrency": 1, "priority": 1, "bus": "Ambience", "spatial": false, "pitch_min": .94, "pitch_max": 1.01},
+	# Kicked or jumped-in leaf piles (W2-SEAS-E calls play_event(pile, "env_leaf_kick", {"intensity": 0..1}, at)).
+	"env_leaf_kick": {"streams": LEAVES, "volume_db": -15.0, "distance": 16.0, "cooldown": .12, "concurrency": 3, "priority": 1, "pitch_min": .88, "pitch_max": 1.08},
 	"env_tree_creak": {"streams": [preload("res://world/audio/designed/environment/tree_creak.ogg")], "volume_db": -28.0, "distance": 40.0, "cooldown": 90.0, "concurrency": 1, "priority": 0, "bus": "Ambience"},
 }

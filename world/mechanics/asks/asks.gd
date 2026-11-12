@@ -209,7 +209,14 @@ func create(from: String, want: String, reward: String, why: String, source: Str
 	return {"ok": true, "id": str(row.id), "error": ""}
 
 ## An invitation to a town event ([invite]): open until the event ends, completed by "attended".
+## An event's own driver (the Trixie show runtime, group "event_drivers") may refuse: no
+## invitation to a show the weather is spoiling (M-MEC-03, 2026-11-08).
 func invite(from: String, event_id: String, why: String, hours := DEFAULT_HOURS) -> Dictionary:
+	if is_inside_tree():
+		for driver: Node in get_tree().get_nodes_in_group("event_drivers"):
+			if not driver.has_method("invite_block"): continue
+			var blocked := str(driver.call("invite_block", event_id))
+			if not blocked.is_empty(): return {"ok": false, "id": "", "error": blocked}
 	return create(from, "event:" + event_id, "thanks", why, "invite", hours)
 
 func cancel(id: String, reason: String) -> bool:

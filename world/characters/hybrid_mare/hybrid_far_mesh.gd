@@ -42,6 +42,7 @@ static var cache: Dictionary = {}     # identity id -> ArrayMesh
 static var shadow_cache: Dictionary = {}  # identity id -> shadows-only ArrayMesh (one surface per weight stride)
 static var eyes_cache: Dictionary = {}    # identity id -> ArrayMesh of the eye surfaces (own shaders)
 const NEAR_MESH := preload("res://world/characters/hybrid_mare/hybrid_near_mesh.gd")
+const SOURCES := preload("res://world/characters/crowd/mesh_source_cache.gd")
 const FAR_SHADER := preload("res://world/characters/hybrid_mare/far_pony.gdshader")
 const FAR_OUTLINE_SHADER := preload("res://world/characters/hybrid_mare/far_pony_outline.gdshader")
 const FAR_IRIS_SHADER := preload("res://world/characters/hybrid_mare/far_iris.gdshader")
@@ -57,6 +58,10 @@ static var _pending: Dictionary = {}  # identity id -> {task, job}
 ## every frame while they wait (hybrid_mare.gd _poll_far_mesh, _set_shadow_proxy), so the rest
 ## simply go next frame. build_now (tools, tests) is not limited.
 static var _step_frame := -1
+static var _steps_taken := 0
+## Main-thread steps allowed per frame. game_loading.gd raises it behind the loading cover, where
+## a long frame is not seen, so the identities in view finish before play; 1 in play.
+static var steps_per_frame := 1
 
 static func discard_pending() -> void:
 	for pending: Dictionary in _pending.values():
@@ -105,11 +110,33 @@ static func request(pony: Node) -> ArrayMesh:
 	return null
 
 
+## Behind the loading cover (game_loading.gd): assembles worker builds that finished but that no
+## pony collected (the one that asked left FAR before it finished), within this frame's steps, so
+## they do not cost a frame in play; returns the builds still unassembled.
+static func harvest() -> int:
+	var left := 0
+	for id: String in _pending.keys():
+		var pending: Dictionary = _pending[id]
+		if not WorkerThreadPool.is_task_completed(pending.task) or not _take_step():
+			left += 1
+			continue
+		WorkerThreadPool.wait_for_task_completion(pending.task)
+		_pending.erase(id)
+		preload("res://world/debug/hitch_monitor.gd").mark("far mesh assemble " + id)
+		cache[id] = _assemble(pending.job)
+		shadow_cache[id] = _assemble_shadow(pending.job)
+		eyes_cache[id] = _assemble_eyes(pending.job)
+	return left
+
+
 static func _take_step() -> bool:
 	var frame := Engine.get_process_frames()
-	if frame == _step_frame:
+	if frame != _step_frame:
+		_step_frame = frame
+		_steps_taken = 0
+	if _steps_taken >= steps_per_frame:
 		return false
-	_step_frame = frame
+	_steps_taken += 1
 	return true
 
 
@@ -189,6 +216,8 @@ static func sources(pony: Node) -> Array[Array]:
 
 ## Main thread: collect surface arrays, per-bind world matrices and target bind indices.
 static func _gather(pony: Node) -> Dictionary:
+	var identity: Resource = pony.get("identity")
+	SOURCES.begin(String(identity.id) if identity != null else "default")
 	var body: Skeleton3D = pony.get("skeleton")
 	var body_mesh: MeshInstance3D = pony.find_child(BODY_MESH, true, false)
 	if body == null or body_mesh == null or body_mesh.skin == null:
@@ -260,8 +289,10 @@ static func _gather(pony: Node) -> Dictionary:
 				groups[key] = {"material": material, "eight": false, "parts": [], "kind": kind,
 					"tile": _tile_source(material) if kind == "merge" else {}}
 				order.append(key)
-			var arrays: Array = mi.mesh.surface_get_arrays(si)
+			# Shared imported meshes are read back once per session, not once per identity.
+			var arrays: Array = SOURCES.arrays(mi.mesh, si)
 			if skin == null:
+				arrays = arrays.duplicate()  # the bones and weights below must not reach the shared copy
 				# Synthesise a single full-weight bind on the accessory's matrix.
 				var count: int = arrays[Mesh.ARRAY_VERTEX].size()
 				var bones := PackedInt32Array()
@@ -734,7 +765,7 @@ static func _tile_source(material: Material) -> Dictionary:
 		info.specular = _param(sm, "specular", info.specular)
 		info.fresnel = _param(sm, "fresnel", info.fresnel)
 		var texture: Variant = sm.get_shader_parameter("base_texture")
-		if texture is Texture2D: info.image = (texture as Texture2D).get_image()
+		if texture is Texture2D: info.image = SOURCES.image(texture as Texture2D)
 		info.alpha = sm.shader != null and "cutout" in sm.shader.resource_path
 		if bool(_param(sm, "replace_texture_palette", false)):
 			info.palette = [_param(sm, "texture_palette_source_a", Color.BLACK), _param(sm, "texture_palette_source_b", Color.WHITE),
@@ -748,7 +779,7 @@ static func _tile_source(material: Material) -> Dictionary:
 	elif material is BaseMaterial3D:
 		var bm := material as BaseMaterial3D
 		info.color = bm.albedo_color
-		if bm.albedo_texture != null: info.image = bm.albedo_texture.get_image()
+		if bm.albedo_texture != null: info.image = SOURCES.image(bm.albedo_texture)
 		info.alpha = bm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED
 	return info
 

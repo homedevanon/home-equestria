@@ -12,10 +12,16 @@ extends Node3D
 ##
 ## Sounds reuse existing foley (no downloads). TODO(Anon): a real file rasp and a contented sigh;
 ## the rasp is paper_0x pitched up for now. Small hints near the hoof ("File · 7/12") are allowed.
-## TODO(wave 2): her pickup by a grip near the chest is not blocked during the wing service
-## (pony_grabber.gd), and VR hand contact still runs her ordinary petting (pony_touch_body.gd);
-## the spa_client firewall makes those spa-safe.
+## Romance firewall, desktop keys (they reach this _input before the interactor's and the kisser's
+## _unhandled_input): G does not lift a spa client (it ended her visit), a right click does not
+## slap her, and K/H do not start a kiss or hug with a client face to face. VR chest grips are
+## refused by pony_grabber.gd; a VR kiss or hug is ended by spa_customers._end_affection.
 const STROKES := preload("res://world/minigames/spa/spa_strokes.gd")
+const LOOSE_TIDY := preload("res://world/inventory/loose_tidy.gd")
+const LEDGER := preload("res://world/mechanics/ledger.gd")
+## K or H with a client's face this near the player's eyes is meant for her (the kisser's own reach
+## is 0.85 m for a hug).
+const AFFECTION_GATE := 0.9
 const FEATHERS := preload("res://world/minigames/spa/spa_feathers.gd")
 const SHOW_FX := preload("res://world/events/trixie_show/show_fx.gd")
 const FLIGHT_INPUT := preload("res://player/wing_flight.gd")
@@ -26,6 +32,8 @@ const BLADE_B := Vector3(0, 0, -0.20)
 const FILE_CONTACT := 0.04
 const FILE_ID := "hoof-file"
 const FILE_HOME_SECONDS := 1.0
+## Metres from the spa within which the counter's hoof file is kept laid out (_keep_file_home).
+const FILE_RESTOCK_REACH := 30.0
 ## A hand on her leg: contact this far past her leg radius; pressure rises from 0 there to full
 ## PRESS_DEPTH inside.
 const RUB_CONTACT := 0.03
@@ -59,6 +67,9 @@ var game: Node
 var inventory: Node
 var file_rest := Transform3D.IDENTITY
 var _file_home_clock := FILE_HOME_SECONDS
+## True when the last try to lay a file on the counter found no room (the 24 things out of the
+## briefcase are all kept things, or the briefcase has no slot for it).
+var file_blocked := false
 var bell_node: Node3D
 var _bell_striker: Node3D
 var _bell_cooldown := 0.0
@@ -188,17 +199,59 @@ func _keep_file_home(delta: float) -> void:
 		for side: Variant in held.keys():
 			if held_file(str(side)) != null: _take_out_of_hand(str(side), store)
 		store.discard(FILE_ID)
-	if home != null: return
+		# Away from the spa: the counter's file is laid again when he comes back within reach,
+		# well before the door. The loan scan and the lay-a-file retry (a spawn, and at the loose
+		# cap a tidy, every second) were the spa's per-step cost in town (W1-PERF-STEP-OTHER).
+		if camera.global_position.distance_squared_to(venue.global_position) > FILE_RESTOCK_REACH * FILE_RESTOCK_REACH: return
+	if home != null: file_blocked = false; return
+	for item: Variant in loose.values():
+		if is_instance_valid(item) and str((item as Node).get_meta("item_id", "")) == FILE_ID: file_blocked = false; return
+	# A loaned file with no body in the world (out of the case, but nowhere to be found) used to
+	# count as owned, so no file was laid and the guide pointed at an empty counter (thread
+	# 43694970): its loan ends and a fresh file goes onto the counter.
+	var lost: Array[String] = []
+	for token: Variant in store.loans.keys():
+		var loan: Dictionary = store.loans[token]
+		if str(loan.id) == FILE_ID and not loan.get("equipped", false) and not loose.has(token): lost.append(str(token))
+	for token: String in lost: store.consume(token)
 	var owned := 0
 	for slot: Dictionary in store.slots:
 		if not slot.is_empty() and str(slot.id) == FILE_ID: owned += int(slot.count)
-	for loan: Dictionary in store.loans.values():
-		if str(loan.id) == FILE_ID and not loan.get("equipped", false): owned += 1
-	for item: Variant in loose.values():
-		if is_instance_valid(item) and str((item as Node).get_meta("item_id", "")) == FILE_ID: return
-	if owned > 0: return
+	# Stashed in the briefcase inside the spa: hers to take out again (the guide says so).
+	if owned > 0: file_blocked = false; return
 	var spawned: RigidBody3D = inventory.spawn_owned_drop(FILE_ID, file_rest)
+	# At the 24-things cap a left-over mug or photo goes back into the briefcase first (M-INV-01).
+	if spawned == null and LOOSE_TIDY.make_room(inventory): spawned = inventory.spawn_owned_drop(FILE_ID, file_rest)
+	file_blocked = spawned == null
 	if spawned != null: spawned.freeze = true
+
+
+## Where the player's hoof file is, for the guide: {"where": "hand" | "loose" | "case" | "full" |
+## "none", "point": world position or INF}. "loose" is a file lying inside the spa (on the counter
+## or wherever it was put down); "case" is stashed in the briefcase; "full" is no room to lay one;
+## "none" is a moment before the next one is laid (at most FILE_HOME_SECONDS).
+func file_status() -> Dictionary:
+	var none := {"where": "none", "point": Vector3.INF}
+	if not is_instance_valid(inventory) or not is_instance_valid(spa): return none
+	var held: Variant = inventory.get("held")
+	if held is Dictionary:
+		for side: Variant in (held as Dictionary).keys():
+			var item := held_file(str(side))
+			if item != null: return {"where": "hand", "point": item.global_position}
+	var venue: Node3D = spa.get("_venue") as Node3D
+	var loose: Variant = inventory.get("loose")
+	if loose is Dictionary:
+		for item: Variant in (loose as Dictionary).values():
+			if not is_instance_valid(item) or str((item as Node).get_meta("item_id", "")) != FILE_ID: continue
+			if held is Dictionary and item in (held as Dictionary).values(): continue
+			var at: Vector3 = (item as Node3D).global_position
+			if not is_instance_valid(venue) or not venue.has_method("is_inside") or venue.is_inside(at): return {"where": "loose", "point": at}
+	var store: Variant = inventory.get("inventory")
+	if store != null:
+		for slot: Dictionary in store.slots:
+			if not slot.is_empty() and str(slot.id) == FILE_ID: return {"where": "case", "point": Vector3.INF}
+	if file_blocked: return {"where": "full", "point": Vector3.INF}
+	return none
 
 
 func _to_counter(item: RigidBody3D, token: String, store: Variant) -> void:
@@ -234,6 +287,7 @@ func _physics_process(delta: float) -> void:
 	if bool(inventory.get("_desktop")):
 		_desktop_tick(delta)
 		return
+	if _hands_idle_far(): return
 	for side: String in SIDES:
 		var sample: Dictionary = inventory.hand_sample(side)
 		var pose: Transform3D = sample.get("pose", sample.get("aim", Transform3D.IDENTITY))
@@ -256,6 +310,22 @@ func _physics_process(delta: float) -> void:
 		_pressed[side] = grip > 0.45 if active else true
 		_trigger_down[side] = trigger > 0.6 if active else true
 		_previous_tip[side] = tip if active else Vector3.INF
+
+
+## VR, the player's head beyond FILE_RESTOCK_REACH of the spa with nothing of it in hand: no hand
+## can reach a client, a feather or the bell, so the per-hand sampling stops (W1-PERF-STEP-OTHER
+## hook 2). The hands read as inactive, as they would there: no press edge carries back in.
+func _hands_idle_far() -> bool:
+	if not (_loose.is_empty() and _pinch.is_empty() and _rub.is_empty() and _preen.is_empty()): return false
+	var venue: Node3D = spa.get("_venue") as Node3D
+	var camera: Node3D = inventory.get("camera") as Node3D
+	if not is_instance_valid(venue) or not is_instance_valid(camera): return false
+	if camera.global_position.distance_squared_to(venue.global_position) <= FILE_RESTOCK_REACH * FILE_RESTOCK_REACH: return false
+	for side: String in SIDES:
+		if held_file(side) != null: return false
+	for side: String in SIDES:
+		_pressed[side] = true; _trigger_down[side] = true; _previous_tip[side] = Vector3.INF
+	return true
 
 
 func _drop_hand(side: String) -> void:
@@ -453,7 +523,11 @@ func _ray_segment(a: Vector3, b: Vector3) -> Dictionary:
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventKey and preload("res://world/ui/typing_guard.gd").active(): return  # typing never drives the game
 	if not is_instance_valid(inventory) or not bool(inventory.get("_desktop")): return
+	if (event is InputEventKey or event is InputEventMouseButton) and event.is_pressed() and _firewall(event):
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
 		if not _desk_mode.is_empty():
 			_end_desk_mode()
@@ -466,6 +540,58 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		if _desk_begin(): get_viewport().set_input_as_handled()
+
+
+## Desktop romance firewall (header): true when this press would lift, slap, kiss or hug a spa
+## client, and is kept from the interactor (G), desktop_interactions (right click) and the kisser
+## (K, H). Only while there are clients; nothing else is touched.
+func _firewall(event: InputEvent) -> bool:
+	if not is_instance_valid(spa) or spa.clients().is_empty() or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED: return false
+	var focus: Control = get_viewport().gui_get_focus_owner()
+	if focus is LineEdit or focus is TextEdit: return false
+	var target := firewall_target(event)
+	if target == null: return false
+	print("[spa] firewall: %s kept off spa client %s" % [event.as_text(), target.name])
+	LEDGER.say(inventory, "Spa clients are not picked up; she is here for hoof care." if event is InputEventKey \
+		and (event as InputEventKey).physical_keycode == KEY_G else "She is here for hoof care.")
+	return true
+
+
+## The spa client this desktop press would lift (G), slap (right click), kiss (K) or hug (H), or null.
+func firewall_target(event: InputEvent) -> Node3D:
+	var desk: Node = get_tree().get_first_node_in_group("desktop_interactions")
+	var target: Node3D = null
+	if event is InputEventMouseButton:
+		if (event as InputEventMouseButton).button_index != MOUSE_BUTTON_RIGHT or desk == null or not desk.has_method("_select"): return null
+		var offer: Variant = desk.call("_select", true)
+		if offer is Dictionary: target = (offer as Dictionary).get("target") as Node3D
+	elif event is InputEventKey and not (event as InputEventKey).echo:
+		match (event as InputEventKey).physical_keycode:
+			KEY_G:
+				var interactor: Node = desk.get("interactor") as Node if desk != null else null
+				# G with a pony in his arms sets her down or throws her: not a pickup.
+				if interactor == null or interactor.get("held") != null or not interactor.has_method("_looking_at_pony"): return null
+				target = interactor.call("_looking_at_pony") as Node3D
+			KEY_K, KEY_H:
+				target = _client_face_near(AFFECTION_GATE)
+	return target if is_instance_valid(target) and target.has_meta("spa_client") else null
+
+
+## The spa client whose face is nearest the player's eyes within `reach`, or null.
+func _client_face_near(reach: float) -> Node3D:
+	var camera: Node3D = inventory.get("camera") as Node3D
+	var population: Node = game.get("population") as Node if is_instance_valid(game) else null
+	if not is_instance_valid(camera) or not is_instance_valid(population): return null
+	var live: Variant = population.get("live")
+	if not live is Dictionary: return null
+	var best: Node3D = null
+	for id: String in spa.clients():
+		var entry: Variant = (live as Dictionary).get(id)
+		var actor: Variant = (entry as Dictionary).get("actor") if entry is Dictionary else null
+		if not is_instance_valid(actor) or not (actor as Node).has_method("listen_point"): continue
+		var gap: float = Vector3((actor as Node).call("listen_point")).distance_to(camera.global_position)
+		if gap < reach: reach = gap; best = actor as Node3D
+	return best
 
 
 ## What a left click starts, in order: filing (file in hand), a feather, the bell, a back hoof, a

@@ -1,0 +1,5 @@
+extends Control
+## Test fixture (tools/modding/test_bundled_mods.gd): an old mod's copy of world/ui/desktop_crosshair.gd
+## that calls a function the game no longer has, so it does not compile.
+func _ready() -> void:
+	missing_function_from_an_old_game()

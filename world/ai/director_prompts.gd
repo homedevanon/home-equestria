@@ -202,7 +202,13 @@ func system_prompt(id: String) -> String:
 	# costs tokens on the turns it fires.
 	var fixation: String = VARIETY.fixation_note(entry.spoken, host._player_text)
 	if fixation != "": prompt += "\n\n" + fixation
-	return prompt
+	return prompt + "\n\n" + SOLO_LENGTH
+
+
+## The last line of every solo request (dev 2026-11-11, reply style review): system.md's "less is
+## more" stood at the top of 21,000 characters with no number in it, and replies ran four to ten
+## sentences. Group and ambient lines have their own limits.
+const SOLO_LENGTH := "LENGTH OF WHAT YOU SAY OUT LOUD NOW: one or two sentences, then stop. Go longer only when Anon has just asked you for a story, an explanation or a list."
 
 
 ## Persona files repeat two shared sentences that system.md already states for every pony ("Hospitality is
@@ -246,7 +252,7 @@ const SOLO_ACTIONS := """ACTION TAGS: at most one movement or posture tag plus o
 - [sit], [stand], [lie_down]; [sit_on_seat] sit on the nearest free bench or seat; [wake_up] wake, or get out of a bed or off a couch
 - [go_to_bed] walk to your own bed, climb in and lie there (asleep at night) until [wake_up]; [go_to_bed: here] the bed in the house where Anon is; if he lies in a bed, [cuddle] joins him
 - [call_pony: PONY_ID] ask a nearby pony who can hear you to come; [send_pony: PONY_ID, TARGET] ask her to go to a nearby pony or the player. No remote summons; a request is not arrival
-- [relationship_offer: KIND, ACTIVITY] propose an eligible offer to Anon; ACTIVITY walk/fishing/orchard/meal/visit, or place plus a LOCATION ([relationship_offer: KIND, place, LOCATION])
+- [relationship_offer: KIND, ACTIVITY] propose an eligible offer to Anon; ACTIVITY walk/meal/visit/orchard/fishing, or place plus a LOCATION ([relationship_offer: KIND, place, LOCATION])
 - [relationship_answer: OFFER_ID, yes] or no: answer ONLY an existing invitation from Anon
 - [agreed: KIND] Anon just asked you for a step in his own words (be my marefriend, go out with me, marry me, move in...) and you say yes, or he just said yes to your own offer; KIND dating/date/outing/move_in/engagement/marriage, only from your eligible offers. Without it nothing changes
 - [request_space] withdraw physical permission for three minutes; say you want space
@@ -618,5 +624,5 @@ speaker_id: spoken words [to: listener_id] [tags]
 for example
 %s: [face:happy] (her opening words) [to: %s]
 %s: (her answer, straight back to her) [to: %s]
-The first line is spoken by %s. Whoever is spoken to answers on the very next line; nobody is left hanging and every participant speaks at least once. Take turns politely like ordinary ponies having a real chat: short lines of one or two sentences (at most 200 characters), no monologues, no speeches, no roll call. About 4 to 10 lines, at most ten; end naturally with a goodbye, a plan or an easy pause, not a punchline or an open question. Tags on a line belong to its speaker and must be among her own tags above. Never address Anon (player) in this conversation. Speech only, no narration. Only if nobody has anything to say, reply with just [silence].""" % [first, second, second, first, first])
+The first line is spoken by %s. Whoever is spoken to answers on the very next line; nobody is left hanging and every participant speaks at least once. Take turns politely like ordinary ponies having a real chat: short lines of one or two sentences (at most 200 characters), no monologues, no speeches, no roll call. Usually 2 to 6 lines, never more than ten. Every line brings something new (news, a wish, a joke, a plan, a real question); when nothing new is left the talk is over, even after two lines. End naturally with a goodbye, a plan or an easy pause, not a punchline or an open question. Tags on a line belong to its speaker and must be among her own tags above. Never address Anon (player) in this conversation. Speech only, no narration. Only if nobody has anything to say, reply with just [silence].""" % [first, second, second, first, first])
 	return "\n\n".join(parts)

@@ -9,6 +9,8 @@ const RNL_PONYVILLE := [
 	{"name": "LessMAN", "role": "Modelling, optimization and textures\nTools and production workflow"},
 	{"name": "Suroguner", "role": "Schoolhouse model"},
 ]
+## dev 2026-11-08: "this is a board project": first credit, shown with the 4CC crest.
+const BOARD_CREDIT := "/mlp/ - a board project"
 ## dev 2026-10-26: "Anonymous Playtester - Co-dev, Playtester, contributing features and code".
 const CONTRIBUTORS := [
 	{"name": "Anonymous Playtester", "role": "Co-dev, Playtester, contributing features and code"},
@@ -43,6 +45,7 @@ static func entries(section: String) -> Array[Dictionary]:
 		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(NOTICES))
 		if parsed is Dictionary: _data = parsed
 	if section == "assets":
+		result.append({"title": BOARD_CREDIT, "text": "Made by anons of /mlp/ for /mlp/."})
 		var names := PackedStringArray(["Original map and assets"])
 		for entry: Dictionary in RNL_PONYVILLE:
 			names.append(str(entry.name) + "\n" + str(entry.role))

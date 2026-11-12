@@ -119,22 +119,24 @@ func _physics_process(_delta: float) -> void:
 	if started > 0: CPU_PROFILE.record("grabber", started)
 
 func _physics_step(_delta: float) -> void:
+	if _hands.is_empty(): return
+	# Desktop: no physics hands. With nothing held and nothing settling, the rest of the tick
+	# only re-clears the (already clear) hand overrides. Checked before the validity scan of every
+	# pony below (45 ponies each tick, 2026-11-08): nothing in an idle desktop tick reads them, and
+	# game_residents.gd already drops a despawned pony from `ponies` and `pony`.
+	if not is_instance_valid(_hands.get("left")) and not is_instance_valid(_hands.get("right")) \
+			and not (_holding.left or _holding.right) and hoof_grabber.held.is_empty() and _sag == 0.0:
+		return
 	for p in ponies:
 		if p == null or not is_instance_valid(p):
 			ponies = ponies.filter(func(q): return q != null and is_instance_valid(q))
 			break
-	if _hands.is_empty(): return
 	if ponies.is_empty():
 		for side: String in SIDES:
 			if _holding[side]: _release(side)
 		return
 	if pony == null or not is_instance_valid(pony):
 		pony = ponies[0]
-	# Desktop: no physics hands. With nothing held and nothing settling, the rest of the tick
-	# only re-clears the (already clear) hand overrides.
-	if not is_instance_valid(_hands.get("left")) and not is_instance_valid(_hands.get("right")) \
-			and not (_holding.left or _holding.right) and hoof_grabber.held.is_empty() and _sag == 0.0:
-		return
 	if not (_holding.left or _holding.right):
 		_retarget()
 	hoof_grabber.process(_delta)

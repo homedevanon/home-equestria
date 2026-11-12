@@ -38,6 +38,9 @@ func run() -> void:
 	DirAccess.make_dir_recursive_absolute(mods_dir); DirAccess.make_dir_recursive_absolute(loose_dir)
 	var built := BUILD.build("dinnerbone", mods_dir.path_join("dinnerbone.pck"))
 	check(FileAccess.file_exists(built), "Dinnerbone builds (%s)" % built)
+	var scene := "[gd_scene format=3 uid=\"uid://keepme\"]\n\n[ext_resource type=\"Script\" uid=\"uid://b1x2\" path=\"res://mods/x/a.gd\" id=\"1\"]\n[ext_resource type=\"Texture2D\" path=\"res://mods/x/b.png\" id=\"2\"]\n"
+	var plain: String = BUILD.without_uids(scene)
+	check(not plain.contains("uid://b1x2") and plain.contains("path=\"res://mods/x/a.gd\" id=\"1\"") and plain.contains("uid://keepme"), "the build tool drops the mod's UIDs from [ext_resource] lines (%s)" % plain.c_escape())
 	pack(mods_dir.path_join("b_merge.pck"), {
 		"res://mods/merge_test/mod.json": JSON.stringify({"id": "merge_test", "name": "Merge test", "version": "2.0", "author": "Tester", "entry": "res://mods/merge_test/main.gd", "extends": ["res://mods/merge_test/ext.gd"]}),
 		"res://mods/merge_test/main.gd": "extends Node\nvar started := true\n",
@@ -99,8 +102,12 @@ func run() -> void:
 	check(LOADER.version_older("0.1.0-maredev", "0.1.1.1") and LOADER.version_older("0.1.1", "0.1.1.1") and not LOADER.version_older("0.1.0", "0.1.0-maredev")
 		and not LOADER.version_older("", "0.1.1") and not LOADER.version_older("0.2.0", "0.1.9") and LOADER.version_older("0.9", "0.10"), "version order by numbers")
 	var page: Control = load("res://world/ui/settings_page.gd").new()
-	var held_text: String = page.call("_mod_text", old, LOADER.mods)
+	var old_row: Dictionary = {}
+	for row: Dictionary in LOADER.pack_rows():
+		if row.file == "e_old.pck": old_row = row
+	var held_text: String = str(page.call("_mod_text", old_row, LOADER.mods)) + "\n" + str(page.call("_mod_notes", old_row))
 	check(held_text.contains("Old menus") and held_text.contains("Made for game 0.0.3") and held_text.contains("Kept off") and held_text.contains("res://PROJECT_SPLIT.json"), "the Mods screen names the old mod, its version and the files it replaces (%s)" % held_text)
+	check(old_row.held and old_row.switchable and not old_row.enabled and not str(old_row.reason).is_empty() and old_row.title == "Old menus", "pack_rows() shows the held state and its reason (%s)" % str(old_row))
 	var fake_author := {"file": "x.pck", "name": "Anonfilly", "version": "1", "author": "Home: Equestria", "description": "", "errors": []}
 	check((page.call("_mod_text", {"file": "x.pck", "error": ""}, [fake_author]) as String).contains("Third-party mod"), "and flags a mod naming the game as its author")
 	page.free()

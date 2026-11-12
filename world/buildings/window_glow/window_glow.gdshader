@@ -40,6 +40,10 @@ void vertex() {
 	v_lit = step(1.0, INSTANCE_CUSTOM.w);
 	// A little per-window brightness so a lit house is not one flat block.
 	v_shade = 0.82 + 0.18 * hash11(float(INSTANCE_ID) * 3.17 + seed * 57.0);
+	// Look 2026-11-10: a lit window breathes a little, like lamp and firelight behind glass
+	// (each house on its own slow rhythm). Delete these two lines for a steady glow.
+	float breath = sin(TIME * (1.7 + seed * 1.9) + seed * 40.0) * sin(TIME * 0.61 + seed * 17.0);
+	v_shade *= 1.0 + 0.07 * breath * v_lit;
 }
 
 void fragment() {

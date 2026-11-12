@@ -70,6 +70,8 @@
     "ambient_pony_cooldown_seconds": 75.0
   },
   "lip_sync": {
+    "engine": "auto",
+    "_engine": "auto = mouth shapes from the built-in recogniser first; rhubarb = skip it and use Rhubarb Lip Sync (or loudness)",
     "rhubarb_path": "",
     "_rhubarb_path": "optional absolute path to the Rhubarb Lip Sync executable; see bin/rhubarb/README.md"
   }

@@ -13,6 +13,38 @@ const BED_SIZE := Vector3(2.05, 1.1, 2.1)
 ## built-in layout ignores it: whether those items had loaded before the house furnished changed
 ## the player's home layout from load to load (bug board #34, 2026-10-28).
 const PLAYER_FURNISHING_LAYER := 1 << 17
+## M-LIF-05 (board #195, "furniture clear of doors"): standing furniture keeps out of a zone just
+## inside the front door: DOOR_SIDE_CLEARANCE past each jamb along the wall and DOOR_DEPTH_CLEARANCE
+## into the room. The door swing, the inside handle and the walking lane were already kept clear
+## (furnish_surfaces.gd, occupancy_grid.gd); a wardrobe could still stand right beside the latch
+## jamb or a table just past the lane, so ponies and Anon squeezed in. Rugs, the doormat and
+## wall/table decor are exempt.
+const DOOR_SIDE_CLEARANCE := 0.35
+const DOOR_DEPTH_CLEARANCE := 1.1
+
+## False when a piece of `size` at plan point `c` turned `yaw` would stand in the door zone above.
+## Rollback / A-B switch (tools/life_beds/door_clearance_probe.gd --no-door-rule): false = no door zone.
+static var door_rule_enabled := true
+static func _door_ok(context: RefCounted, c: Vector2, yaw: float, size: Vector3) -> bool:
+	if not door_rule_enabled or size.y <= 0.03: return true
+	var door_pt := context.door_pt as Vector2
+	var inward := (context.door_in as Vector2) - door_pt
+	if inward.length_squared() < 1e-6: return true
+	inward = inward.normalized()
+	var along := Vector2(-inward.y, inward.x)
+	var half_door := float((context.home as Node3D).door_width) * float(context.s) * 0.5
+	# Separating axes of two rectangles: the zone (door frame) and the piece (its own frame).
+	var zone_c := door_pt + inward * DOOR_DEPTH_CLEARANCE * 0.5
+	var zone_half := Vector2(half_door + DOOR_SIDE_CLEARANCE, DOOR_DEPTH_CLEARANCE * 0.5)
+	var right := context._right(yaw) as Vector2
+	var front := context._front(yaw) as Vector2
+	var piece_half := Vector2(size.x * 0.5, size.z * 0.5)
+	var offset := c - zone_c
+	for axis: Vector2 in [along, inward, right, front]:
+		var zone_r := absf(axis.dot(along)) * zone_half.x + absf(axis.dot(inward)) * zone_half.y
+		var piece_r := absf(axis.dot(right)) * piece_half.x + absf(axis.dot(front)) * piece_half.y
+		if absf(axis.dot(offset)) >= zone_r + piece_r: return true
+	return false
 
 
 static func _wall_candidates(context: RefCounted, area: Dictionary, id: String, size: Vector3, spec: Dictionary, step: Dictionary) -> Array:
@@ -188,7 +220,8 @@ static func _window_floor_candidates(context: RefCounted, area: Dictionary, size
 	for w: Dictionary in (context.windows as Array):
 		if not area.rect.grow(0.3).has_point(w.edge): continue
 		var c: Vector2 = w.edge + w.n * (size.z * 0.5 + 0.12)
-		if (context._flat_ok((context._cells(c, (context._yaw_of(w.n) as float), size.x * 0.5, size.z * 0.5) as PackedInt32Array), spec.get("no_lane", false)) as bool):
+		if (context._flat_ok((context._cells(c, (context._yaw_of(w.n) as float), size.x * 0.5, size.z * 0.5) as PackedInt32Array), spec.get("no_lane", false)) as bool) \
+				and _door_ok(context, c, (context._yaw_of(w.n) as float), size):
 			out.append({"pos": c, "yaw": (context._yaw_of(w.n) as float), "weight": 1.0})
 	return out
 
@@ -263,6 +296,9 @@ static func _wall_behind(context: RefCounted, c: Vector2, yaw: float, size: Vect
 	return touching >= 4
 
 static func _physics_clear(context: RefCounted, c: Vector2, yaw: float, size: Vector3, room: int) -> bool:
+	# The door zone is tested on the spot already drawn (like the physics below), not by dropping
+	# candidates beforehand: a house whose draw never lands in the zone keeps its layout exactly.
+	if not _door_ok(context, c, yaw, size): return false
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(maxf(size.x - 0.04, 0.05), maxf(minf(size.y, 2.0) - 0.15, 0.05), maxf(size.z - 0.04, 0.05))
 	var query := PhysicsShapeQueryParameters3D.new()

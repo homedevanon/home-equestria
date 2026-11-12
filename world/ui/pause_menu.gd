@@ -184,7 +184,10 @@ func _describe_here() -> void:
 	_world_name.text = str(look.name) if str(look.name) != "" else CATALOGUE.world_name(world)
 	_world_name.add_theme_color_override("font_color", (STYLE.SWATCHES[int(look.color) % STYLE.SWATCHES.size()] as Color).lerp(Color.WHITE, 0.2))
 	var hours := clampf(float(TimeOfDay.hours), 0.0, 23.99)
-	var season: String = SEASON_NAMES[int(TimeOfDay.day / maxi(1, int(Settings.season_days()))) % SEASON_NAMES.size()]
+	# The one season formula, F1 offset included (world/seasons/season_state.gd, M-SEA-04).
+	var seasons: Node = get_tree().get_first_node_in_group("season_state")
+	var season_index: int = int(seasons.call("season_index")) if seasons != null else preload("res://world/seasons/season_state.gd").index_for(int(TimeOfDay.day), int(Settings.season_days()))
+	var season: String = SEASON_NAMES[season_index % SEASON_NAMES.size()]
 	_when.text = "Day %d · %02d:%02d · %s" % [int(TimeOfDay.day) + 1, int(hours), int((hours - int(hours)) * 60.0), season]
 	_where.text = str(saves.place_now()) if saves != null and saves.has_method("place_now") else ""
 	_where.visible = not _where.text.is_empty()

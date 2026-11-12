@@ -59,6 +59,10 @@ static func valid_state(value: Variant) -> bool:
 		if not label is String or (label as String).length() > MAX_LABEL: return false
 		if row.has("kind") and row.get("kind") != KIND_PHOTO: return false
 		if row.has("printed") and not row.get("printed") is bool: return false
+	var bare: Variant = doc.get("bare", {})
+	if not bare is Dictionary or (bare as Dictionary).size() > MAX_ENTRIES: return false
+	for key: Variant in bare:
+		if not key is String or not valid_key(key) or not bare[key] is bool: return false
 	return true
 
 ## A slot's own pointers and labels replace the current ones; the images are shared files.
@@ -102,7 +106,18 @@ static func adopt_carried_wip(token: String, loans: Dictionary) -> void:
 		if not other.begins_with("easel:") or loans.has(other.substr(6)): continue
 		var file := str(_state.wip[other].file)
 		if best.is_empty() or file > newest: best = other; newest = file
-	if best.is_empty(): return
+	if best.is_empty():
+		# No picture to carry: an emptied easel (its canvas taken off and none put up) stays empty
+		# when it is folded and unfolded again (M-ACT-03 bought canvases).
+		var bare: Variant = _state.get("bare")
+		var keys: Array = (bare as Dictionary).keys() if bare is Dictionary else []
+		for other: String in keys:
+			if other.begins_with("easel:") and not loans.has(other.substr(6)):
+				_bare().erase(other)
+				_bare()[key] = true
+				_write()
+				return
+		return
 	_state.wip[key] = _state.wip[best]
 	_state.wip.erase(best)
 	_write()
@@ -115,6 +130,39 @@ static func new_serial() -> String:
 		_serial = (_serial + 1) % 10000
 		serial = "%d-%04d-%d" % [int(Time.get_unix_time_from_system()), _serial, randi() % 1000]
 	return serial
+
+## Bought canvases (M-ACT-03, docs/PAINTING_STATION_2026_10_22.md section 13): an owned easel
+## whose finished painting was taken off stands empty until Anon puts a blank canvas ("goods:canvas")
+## up on it (easel_wake.gd). The Balloon Hill station always has canvases. The rule is on while the
+## shop sells canvases (the item exists in the catalogue); `canvas_rule` 1/0 forces it for tests.
+const CANVAS_ITEM := "goods:canvas"
+static var canvas_rule := -1
+
+static func canvases_bought() -> bool:
+	if canvas_rule >= 0: return canvas_rule == 1
+	var catalog: Script = load("res://world/inventory/item_catalog.gd") as Script
+	return catalog != null and bool(catalog.call("has", CANVAS_ITEM))
+
+## True when this easel needs a bought canvas after its painting comes off.
+static func needs_bought_canvas(key: String) -> bool:
+	return key.begins_with("easel:") and canvases_bought()
+
+static func is_bare(key: String) -> bool:
+	var bare: Variant = _state.get("bare")
+	return bare is Dictionary and bool((bare as Dictionary).get(key, false))
+
+static func set_bare(key: String, bare: bool) -> void:
+	if not valid_key(key) or bare == is_bare(key): return
+	if bare:
+		if _bare().size() >= MAX_ENTRIES: return
+		_bare()[key] = true
+	else: _bare().erase(key)
+	if _bare().is_empty(): _state.erase("bare")
+	_write()
+
+static func _bare() -> Dictionary:
+	if not _state.get("bare") is Dictionary: _state["bare"] = {}
+	return _state["bare"]
 
 static func add_art(id: String, orient: String, label: String, kind: String = "") -> void:
 	if not valid_art_id(id) or not orient in ["P", "L"]: return
@@ -288,6 +336,11 @@ static func _clean(value: Dictionary) -> Dictionary:
 		next.art[id] = {"orient": str(arts[id].orient), "label": str(arts[id].get("label", ""))}
 		if str(arts[id].get("kind", "")) == KIND_PHOTO: next.art[id].kind = KIND_PHOTO
 		if arts[id].has("printed"): next.art[id].printed = bool(arts[id].printed)
+	var bare: Variant = value.get("bare", {})
+	if bare is Dictionary and not (bare as Dictionary).is_empty():
+		next["bare"] = {}
+		for key: String in bare:
+			if bool(bare[key]): next.bare[key] = true
 	return next
 
 static func _write() -> void:

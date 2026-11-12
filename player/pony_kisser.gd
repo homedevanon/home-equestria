@@ -276,6 +276,8 @@ func _young_player() -> bool:
 
 func _embracing(pony: Node3D) -> bool:
 	if pony.get("boop_node")==null or pony.is_held():return false
+	# The cheap test first: most ponies are far away.
+	if pony.global_position.distance_to(camera.global_position)>=1.5:return false
 	var hands:Dictionary=pony.boop_node._hands
 	if not is_instance_valid(hands.get("left")) or not is_instance_valid(hands.get("right")):return false
 	var sides:Array[float]=[]
@@ -285,7 +287,7 @@ func _embracing(pony: Node3D) -> bool:
 		var at:Vector3=pony.to_local(hand.global_position)/maxf(float(pony.body_scale),.01)
 		if at.y<.3 or at.y>1.1 or at.z<-.65 or at.z>.45 or absf(at.x)>.5:return false
 		sides.append(at.x)
-	return sides[0]*sides[1]<-.01 and pony.global_position.distance_to(camera.global_position)<1.5
+	return sides[0]*sides[1]<-.01
 
 func _attempt_hug() -> void:
 	if _down:return # A kiss button hold must not also count as an unsolicited hug.

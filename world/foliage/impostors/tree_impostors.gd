@@ -51,6 +51,8 @@ static func mesh(id: String) -> Mesh:
 		material.set_shader_parameter("normal_atlas", load(DIRECTORY + id + "_normal.res"))
 		for key in ["frames", "grid", "quad_size", "quad_centre_y", "max_lod"]:
 			material.set_shader_parameter(key, float(spec[key]))
+		# The sakura impostor blossoms with its tree (W2-SEAS-D H2).
+		if preload("res://world/foliage/vegetation_materials.gd").is_blossom(id): material.set_shader_parameter("blossom_tree", 1.0)
 		_register(material, id)
 		var side := float(spec.quad_size); var centre := float(spec.quad_centre_y)
 		var arrays := []; arrays.resize(Mesh.ARRAY_MAX)

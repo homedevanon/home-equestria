@@ -198,6 +198,47 @@ func _index_zone(id: String) -> void:
 
 ## Actual loaded canopy locations, using the existing 32 m vegetation index.
 ## Owners let an active call stop when its tree is erased, hidden or unloaded.
+## Crowns for seasonal effects (world/seasons/tree_query.gd, W2-SEAS-E hook 1): position, crown
+## radius, kind (tree_query.gd BROADLEAF 0, EVERGREEN 1, BLOSSOM 2; its kind_of_name would read the
+## word "evergreen" as broadleaf). Painted batch sakura trees then shed spring
+## petals and every crown has its real radius. Called on a 10 m camera move, not per frame.
+func tree_canopies(origin: Vector3, radius: float) -> Array:
+	var result: Array = []
+	var low := _cell(Vector2(origin.x, origin.z) - Vector2.ONE * radius)
+	var high := _cell(Vector2(origin.x, origin.z) + Vector2.ONE * radius)
+	for x in range(low.x, high.x + 1):
+		for z in range(low.y, high.y + 1):
+			var cell := Vector2i(x, z)
+			for rec: Dictionary in _native.get(cell, []):
+				if not rec.get("bird_tree", false) or not is_instance_valid(rec.node) or not rec.node.is_visible_in_tree(): continue
+				var box: AABB = rec.bounds
+				if box.size.y < 3.0: continue
+				var crown := box.position + box.size * Vector3(.5, .72, .5)
+				if origin.distance_to(crown) > radius: continue
+				var variant := str(rec.node.get_meta(&"grassy_tree_variant", "")) if rec.node.has_meta(&"grassy_tree_variant") else ""
+				var kind := 1 if bool(rec.get("pine", false)) else (2 if variant.contains("sakura") else 0)
+				var record := {"position": crown, "radius": clampf(minf(box.size.x, box.size.z) * 0.35, 1.0, 6.0), "kind": kind}
+				# Where the tree stands, so the seasons' script side (leaf carpet, petals) finds the
+				# same per-tree numbers as the leaf shaders (world/seasons/tree_query.gd autumn_tree).
+				if rec.node is Node3D: record["root"] = (rec.node as Node3D).global_position
+				result.append(record)
+			if not is_instance_valid(_tree_batches): continue
+			var batch: Dictionary = _tree_batches.batches.get(_tree_batches._key(cell), {})
+			var owner: Variant = batch.get("node")
+			if not is_instance_valid(owner) or not owner.is_visible_in_tree(): continue
+			for group: Dictionary in (batch.cells.get(cell, {}) as Dictionary).values():
+				var entry: Dictionary = group.entry
+				if entry.category != "tree" or float(entry.height) < 3.0: continue
+				var id := str(entry.get("id", ""))
+				var kind := 2 if id.contains("sakura") else (1 if id.contains("pine") or id.contains("spruce") else 0)
+				var canopy := GRASSY.collar_offset(entry) + Vector3.UP * (float(entry.height) - GRASSY.support_y(entry)) * .72
+				for placement: Transform3D in group.transforms:
+					var crown := Vector3(cell.x * CELL, 0, cell.y * CELL) + placement * canopy
+					if origin.distance_to(crown) <= radius:
+						result.append({"position": crown, "radius": clampf(float(entry.get("radius", 4.0)) * 0.4 * placement.basis.get_scale().x, 1.0, 6.0), "kind": kind,
+							"root": Vector3(cell.x * CELL, 0, cell.y * CELL) + placement.origin})
+	return result
+
 func bird_perches(origin: Vector3, near_distance := 25.0, far_distance := 70.0) -> Array:
 	var result: Array = []
 	var low := _cell(Vector2(origin.x, origin.z) - Vector2.ONE * far_distance)

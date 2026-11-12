@@ -112,6 +112,11 @@ func _physics_process(delta: float) -> void:
 
 func _physics_step(delta: float) -> void:
 	_cooldown = maxf(0.0, _cooldown - delta)
+	if IDLE_FAST and _idle():
+		# Nothing held and every carry state already at rest: the full step below would only
+		# place the hold point for his height again (W2 perf pass; same result, fewer calls).
+		_hold.position = HOLD_OFFSET * preload("res://player/player_mouth.gd").human_scale(get_parent() as Node3D)
+		return
 	_update_kiss_lift(delta)
 	_update_meter()
 	_update_keys()
@@ -132,6 +137,16 @@ func _physics_step(delta: float) -> void:
 	if _drop_upright and is_instance_valid(held) and cradle_amount() <= 0.1:
 		_drop_upright = false
 		_drop()
+
+
+## Rollback of the idle fast path: IDLE_FAST = false.
+const IDLE_FAST := true
+## Empty-handed and settled: what _physics_step's helpers would all leave unchanged.
+func _idle() -> bool:
+	return not is_instance_valid(held) and _laying < 0.0 and _lean == 0.0 and _kiss_lift == Vector3.ZERO \
+		and _pick_from < 0.0 and _b_from < 0.0 and not facing_player and _facing == 0.0 and not cradled \
+		and not _drop_upright and not _sleepy_kiss and _cradle_bob == 0.0 \
+		and not (is_instance_valid(_meter) and _meter.visible)
 
 
 ## G released: a short tap sets her down, a wind-up throws her (a menu may eat the key-up, so

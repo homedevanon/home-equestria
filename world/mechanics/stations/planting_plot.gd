@@ -41,6 +41,7 @@ const STAKE := "res://world/props/ponyville_kit/rail_fence_post.scn"
 const SOIL := "res://world/props/ponyville_kit/crop_row.scn"
 const SIGNPOST := "res://world/props/ponyville_kit/signpost.scn"
 const SIGN_AT := Vector3(108.6, 0.0, -478.0)
+const SIGN_HOW := "Water daily: spray bottle"
 const SPRAY_ID := "spray-bottle"
 
 ## One slot: a stake, a soil patch and (when planted) the sapling; the body the spray bottle hits
@@ -346,8 +347,11 @@ func _hint_text(index: int, held: String, vr: bool) -> String:
 		return "Hold it at the stake · Plant" if vr else "Click · Plant sapling"
 	if int(row.get("stage", 0)) >= 3: return ""
 	var days := watered_days(row)
-	if held == SPRAY_ID and index in thirsty(): return ("Trigger · Water the sapling" if vr else "Click · Water the sapling")
-	return "Sapling · watered %d of %d days" % [days, WATER_DAYS]
+	var thirsty_now := index in thirsty()
+	if held == SPRAY_ID and thirsty_now: return ("Trigger · Water the sapling" if vr else "Click · Water the sapling")
+	# Name the tool (thread report 2026-11: "how do I water the sapling? Is there a watering can").
+	var how := "Water it with the spray bottle, once a day" if thirsty_now else "Watered today · Again tomorrow"
+	return "Sapling · watered %d of %d days\n%s" % [days, WATER_DAYS, how]
 
 func slot_hint(index: int, ui: Node, side: String) -> Dictionary:
 	var vr := side != "desktop"
@@ -483,6 +487,14 @@ func _build_sign() -> void:
 	_sign_label.modulate = Color("f3e3c0"); _sign_label.outline_size = 0
 	_sign_label.position = Vector3(0.25, 1.66, 0.2)
 	_sign.add_child(_sign_label)
+	# How to look after the row, painted smaller under the name (the spray bottle is the tool).
+	var how := Label3D.new()
+	how.name = "HowTo"
+	how.pixel_size = 0.0015; how.font_size = 22
+	how.modulate = Color("f3e3c0"); how.outline_size = 0
+	how.position = Vector3(0.25, 1.605, 0.2)
+	how.text = SIGN_HOW
+	_sign.add_child(how)
 	_update_sign()
 
 func _update_sign() -> void:

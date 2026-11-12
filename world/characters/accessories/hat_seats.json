@@ -1,0 +1,520 @@
+{
+	"about": "Metres each fitted hat comes down from its authored height on each mane (negative: up). Built by the private tools/hats/build_hat_seats.py from tools/accessories/measure_hat_seats.gd; rebuild after adding or changing a mane.",
+	"default": {
+		"cowpony-hat": -0.033,
+		"detective-hat": 0.01,
+		"wizard_hat": -0.04
+	},
+	"manes": {
+		"res://world/characters/background/aloe_hair.scn": {
+			"cowpony-hat": 0.056,
+			"detective-hat": 0.099,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/amethyst_star_hair.scn": {
+			"cowpony-hat": 0.017,
+			"detective-hat": 0.047,
+			"wizard_hat": -0.009
+		},
+		"res://world/characters/background/angel_wings_hair.scn": {
+			"cowpony-hat": 0.053,
+			"detective-hat": 0.089,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/apple_bumpkin_hair.scn": {
+			"cowpony-hat": -0.008,
+			"detective-hat": 0.026,
+			"wizard_hat": -0.009
+		},
+		"res://world/characters/background/banana_fluff_hair.scn": {
+			"cowpony-hat": 0.06,
+			"detective-hat": 0.099,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/beauty_brass_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.008,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/berry_punch_hair.scn": {
+			"cowpony-hat": -0.019,
+			"detective-hat": 0.028,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/blossomforth_hair.scn": {
+			"cowpony-hat": 0.053,
+			"detective-hat": 0.09,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/blue_bobbin_hair.scn": {
+			"cowpony-hat": 0.079,
+			"detective-hat": 0.11,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/caramel_apple_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.045,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/cheerilee_hair.scn": {
+			"cowpony-hat": -0.006,
+			"detective-hat": 0.028,
+			"wizard_hat": -0.011
+		},
+		"res://world/characters/background/cherry_berry_hair.scn": {
+			"cowpony-hat": -0.019,
+			"detective-hat": 0.028,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/cherry_spices_hair.scn": {
+			"cowpony-hat": -0.018,
+			"detective-hat": 0.027,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/clear_skies_hair.scn": {
+			"cowpony-hat": 0.033,
+			"detective-hat": 0.061,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/clear_sky_hair.scn": {
+			"cowpony-hat": -0.011,
+			"detective-hat": 0.019,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/cloud_kicker_hair.scn": {
+			"cowpony-hat": -0.023,
+			"detective-hat": 0.017,
+			"wizard_hat": -0.016
+		},
+		"res://world/characters/background/cloudchaser_hair.scn": {
+			"cowpony-hat": 0.01,
+			"detective-hat": 0.046,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/cloudy_quartz_hair.scn": {
+			"cowpony-hat": 0.078,
+			"detective-hat": 0.11,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/coloratura_hair.scn": {
+			"cowpony-hat": 0.063,
+			"detective-hat": 0.1,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/daisy_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.031,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/daring_do_hair.scn": {
+			"cowpony-hat": -0.013,
+			"detective-hat": 0.022,
+			"wizard_hat": -0.029
+		},
+		"res://world/characters/background/derpy_hooves_hair.scn": {
+			"cowpony-hat": 0.033,
+			"detective-hat": 0.061,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/diamond_mint_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.043,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/dr_fauna_hair.scn": {
+			"cowpony-hat": -0.007,
+			"detective-hat": 0.027,
+			"wizard_hat": -0.011
+		},
+		"res://world/characters/background/fiddly_twang_hair.scn": {
+			"cowpony-hat": 0.0,
+			"detective-hat": 0.039,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/fleetfoot_hair.scn": {
+			"cowpony-hat": -0.033,
+			"detective-hat": 0.016,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/flitter_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.024,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/florina_tart_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.046,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/golden_harvest_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.046,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/helia_hair.scn": {
+			"cowpony-hat": -0.022,
+			"detective-hat": 0.017,
+			"wizard_hat": -0.017
+		},
+		"res://world/characters/background/janine_manewitz_hair.scn": {
+			"cowpony-hat": -0.036,
+			"detective-hat": 0.001,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/lemon_hearts_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.044,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/lemony_gem_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.043,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/lighthoof_hair.scn": {
+			"cowpony-hat": -0.01,
+			"detective-hat": 0.021,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/lightning_dust_hair.scn": {
+			"cowpony-hat": -0.003,
+			"detective-hat": 0.04,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/lilac_links_hair.scn": {
+			"cowpony-hat": 0.015,
+			"detective-hat": 0.053,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/lily_lace_hair.scn": {
+			"cowpony-hat": -0.009,
+			"detective-hat": 0.021,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/lily_valley_hair.scn": {
+			"cowpony-hat": 0.01,
+			"detective-hat": 0.047,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/limestone_pie_hair.scn": {
+			"cowpony-hat": 0.068,
+			"detective-hat": 0.106,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/lotus_blossom_hair.scn": {
+			"cowpony-hat": 0.057,
+			"detective-hat": 0.1,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/luster_dawn_hair.scn": {
+			"cowpony-hat": 0.029,
+			"detective-hat": 0.068,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/lyra_heartstrings_hair.scn": {
+			"cowpony-hat": 0.015,
+			"detective-hat": 0.045,
+			"wizard_hat": -0.01
+		},
+		"res://world/characters/background/lyrica_lilac_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.044,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/maud_pie_hair.scn": {
+			"cowpony-hat": 0.073,
+			"detective-hat": 0.105,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/mayor_mare_hair.scn": {
+			"cowpony-hat": -0.03,
+			"detective-hat": 0.01,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/meadow_flower_hair.scn": {
+			"cowpony-hat": 0.052,
+			"detective-hat": 0.089,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/merry_may_hair.scn": {
+			"cowpony-hat": 0.035,
+			"detective-hat": 0.062,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/minuette_hair.scn": {
+			"cowpony-hat": 0.017,
+			"detective-hat": 0.046,
+			"wizard_hat": -0.007
+		},
+		"res://world/characters/background/misty_fly_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.013,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/moon_dancer_hair.scn": {
+			"cowpony-hat": 0.049,
+			"detective-hat": 0.093,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/mrs_shy_hair.scn": {
+			"cowpony-hat": 0.014,
+			"detective-hat": 0.048,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/ms_harshwhinny_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.038,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/night_glider_hair.scn": {
+			"cowpony-hat": -0.033,
+			"detective-hat": 0.017,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/nurse_redheart_hair.scn": {
+			"cowpony-hat": 0.027,
+			"detective-hat": 0.063,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/octavia_melody_hair.scn": {
+			"cowpony-hat": -0.002,
+			"detective-hat": 0.038,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/orange_swirl_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.046,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/peachy_sweet_hair.scn": {
+			"cowpony-hat": 0.052,
+			"detective-hat": 0.089,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/perfect_pie_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.046,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/photo_finish_hair.scn": {
+			"cowpony-hat": 0.025,
+			"detective-hat": 0.062,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/pinny_lane_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.044,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/prim_hemline_hair.scn": {
+			"cowpony-hat": -0.035,
+			"detective-hat": 0.002,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/rainbowshine_hair.scn": {
+			"cowpony-hat": -0.008,
+			"detective-hat": 0.026,
+			"wizard_hat": -0.008
+		},
+		"res://world/characters/background/raven_inkwell_hair.scn": {
+			"cowpony-hat": 0.049,
+			"detective-hat": 0.094,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/red_gala_hair.scn": {
+			"cowpony-hat": -0.02,
+			"detective-hat": 0.018,
+			"wizard_hat": -0.016
+		},
+		"res://world/characters/background/roseluck_hair.scn": {
+			"cowpony-hat": 0.017,
+			"detective-hat": 0.047,
+			"wizard_hat": -0.008
+		},
+		"res://world/characters/background/royal_ribbon_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.044,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/saffron_masala_hair.scn": {
+			"cowpony-hat": -0.005,
+			"detective-hat": 0.063,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/sassaflash_hair.scn": {
+			"cowpony-hat": -0.021,
+			"detective-hat": 0.018,
+			"wizard_hat": -0.017
+		},
+		"res://world/characters/background/sea_swirl_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.043,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/shimmy_shake_hair.scn": {
+			"cowpony-hat": -0.003,
+			"detective-hat": 0.04,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/shoeshine_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.043,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/silver_spanner_hair.scn": {
+			"cowpony-hat": 0.034,
+			"detective-hat": 0.061,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/somnambula_hair.scn": {
+			"cowpony-hat": 0.09,
+			"detective-hat": 0.11,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/spitfire_hair.scn": {
+			"cowpony-hat": -0.033,
+			"detective-hat": 0.016,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/sprinkle_medley_hair.scn": {
+			"cowpony-hat": 0.01,
+			"detective-hat": 0.046,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/starlight_glimmer_hair.scn": {
+			"cowpony-hat": -0.024,
+			"detective-hat": 0.021,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/stellar_flare_hair.scn": {
+			"cowpony-hat": 0.014,
+			"detective-hat": 0.054,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/strawberry_sunrise_hair.scn": {
+			"cowpony-hat": -0.005,
+			"detective-hat": 0.029,
+			"wizard_hat": -0.007
+		},
+		"res://world/characters/background/sugar_belle_hair.scn": {
+			"cowpony-hat": -0.02,
+			"detective-hat": 0.025,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/sunny_rays_hair.scn": {
+			"cowpony-hat": -0.022,
+			"detective-hat": 0.017,
+			"wizard_hat": -0.017
+		},
+		"res://world/characters/background/sunset_shimmer_hair.scn": {
+			"cowpony-hat": 0.029,
+			"detective-hat": 0.068,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/sunshower_hair.scn": {
+			"cowpony-hat": 0.051,
+			"detective-hat": 0.088,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/sunshower_raindrops_hair.scn": {
+			"cowpony-hat": 0.035,
+			"detective-hat": 0.062,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/suri_polomare_hair.scn": {
+			"cowpony-hat": -0.011,
+			"detective-hat": 0.022,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/surprise_hair.scn": {
+			"cowpony-hat": -0.032,
+			"detective-hat": 0.017,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/sweetie_drops_hair.scn": {
+			"cowpony-hat": 0.017,
+			"detective-hat": 0.055,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/tempest_shadow_hair.scn": {
+			"cowpony-hat": 0.031,
+			"detective-hat": 0.104,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/trixie_hair.scn": {
+			"cowpony-hat": -0.003,
+			"detective-hat": 0.034,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/twilight_velvet_hair.scn": {
+			"cowpony-hat": 0.053,
+			"detective-hat": 0.09,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/twinkleshine_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.043,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/twist_hair.scn": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.044,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/vapor_trail_hair.scn": {
+			"cowpony-hat": -0.01,
+			"detective-hat": 0.021,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/background/vinyl_scratch_hair.scn": {
+			"cowpony-hat": 0.034,
+			"detective-hat": 0.058,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/white_lightning_hair.scn": {
+			"cowpony-hat": -0.005,
+			"detective-hat": 0.029,
+			"wizard_hat": -0.012
+		},
+		"res://world/characters/background/wild_fire_hair.scn": {
+			"cowpony-hat": 0.022,
+			"detective-hat": 0.059,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/background/windy_whistles_hair.scn": {
+			"cowpony-hat": 0.078,
+			"detective-hat": 0.11,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/hybrid_mare/dash_devkit_hair.glb": {
+			"cowpony-hat": -0.015,
+			"detective-hat": 0.022,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/mane6/applejack_devkit_hair.glb": {
+			"cowpony-hat": -0.01,
+			"detective-hat": 0.029,
+			"wizard_hat": 0.0
+		},
+		"res://world/characters/mane6/fluttershy_devkit_hair.glb": {
+			"cowpony-hat": -0.036,
+			"detective-hat": -0.004,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/mane6/pinkie_pie_devkit_hair.glb": {
+			"cowpony-hat": -0.045,
+			"detective-hat": -0.011,
+			"wizard_hat": -0.013
+		},
+		"res://world/characters/mane6/rarity_devkit_hair.glb": {
+			"cowpony-hat": -0.035,
+			"detective-hat": -0.013,
+			"wizard_hat": -0.04
+		},
+		"res://world/characters/mane6/twilight_sparkle_devkit_hair.glb": {
+			"cowpony-hat": -0.013,
+			"detective-hat": 0.023,
+			"wizard_hat": 0.0
+		}
+	}
+}

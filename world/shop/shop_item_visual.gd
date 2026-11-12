@@ -63,6 +63,8 @@ func _wear() -> void:
 	else:
 		match parts[1]:
 			"scarf": piece = WARDROBE._scarf(colour)
+			"4cc-scarf": piece = WARDROBE.FITTED.display_club_scarf()
+			"plain-socks": piece = WARDROBE._sock(colour, true)
 			"wizard_hat": piece = WARDROBE._wizard_hat(colour)
 			"cape": piece = WARDROBE._cape(colour)
 			_: piece = WARDROBE._sock(colour)

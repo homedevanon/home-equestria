@@ -28,6 +28,17 @@ const WALK_TAP := 0.3
 var walk_toggled := false
 var _walk_key_down := false
 var _walk_key_since := 0.0
+## Sprint key mode (Settings controls/sprint_toggle, M-INP-07): false holds it to sprint (the
+## default, as always); true taps it on and off, and a walk tap ends a toggled sprint.
+var sprint_toggle := false
+var sprint_toggled := false
+var _sprint_key_down := false
+## This tick's sprint, read once per tick by _sprint_held().
+var _sprinting := false
+## Auto-run (Settings binding "auto_run", NumLock by default): a tap runs him forward until it is
+## tapped again, he takes forward or back himself, he sits, or something takes the controls.
+var auto_running := false
+var _auto_key_down := false
 @export var fly_speed := 30.0
 @export var mouse_sensitivity := 0.0022
 @export var jump_velocity := 5.0
@@ -130,6 +141,8 @@ func _apply_settings() -> void:
 	if settings == null: return
 	mouse_sensitivity = settings.mouse_sensitivity()
 	invert_y = bool(settings.get_value("controls/invert_y"))
+	sprint_toggle = bool(settings.get_value("controls/sprint_toggle"))
+	if not sprint_toggle: sprint_toggled = false
 	if not headset_view: camera.fov = float(settings.get_value("controls/fov"))
 	bob_enabled = not bool(settings.get_value("access/reduced_motion")) and not headset_view and form_driver == null
 
@@ -218,6 +231,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if headset_view:
 			# The headset gives pitch; the mouse only turns the body.
 			_turn_seated(-mm.relative.x * mouse_sensitivity)
+		elif LOOK_ON_TICK and form_driver == null:
+			# Desktop human: gathered here, turned at the next physics tick (_apply_look).
+			_look_pending += Vector2(-mm.relative.x, -mm.relative.y * (-1.0 if invert_y else 1.0)) * mouse_sensitivity
 		else:
 			rotate_y(-mm.relative.x * mouse_sensitivity)
 			_pitch = clampf(_pitch - mm.relative.y * mouse_sensitivity * (-1.0 if invert_y else 1.0), -1.5, 1.5)
@@ -398,22 +414,53 @@ func stand_up() -> void:
 	col.disabled = false
 	velocity = Vector3.ZERO
 
+## Desktop human mouse look turns the rig and pitches the camera on the physics tick, not in
+## _unhandled_input: a turn outside the tick moved the interpolated Camera3D from outside
+## physics ("Interpolated Camera3D triggered from outside physics process", tens of thousands of
+## times a session) and showed each turn by the interpolation fraction, so the per-frame turn was
+## uneven above 60 FPS. On the tick the turn is interpolated evenly like his walking. false
+## restores the old immediate turn. AnonPony (top-level, non-interpolated camera placed by
+## place_view) and seated VR still turn at once.
+const LOOK_ON_TICK := false  # lead 2026-11-08: +1 tick mouse latency is Anon's call (frame-ahead rule); warning stays until then
+var _look_pending := Vector2.ZERO
+## A text field (the chat box, the debug console, a mod's talk line) has the keyboard: polled
+## keys are letters being typed, not hotkeys (player board #44/#45, GitHub PR #17: "q" or, on
+## AZERTY, "a" stood Anon up from a bed; Space reached the knockdown). Set once per tick.
+var _typing := false
+
+func _apply_look() -> void:
+	if _look_pending == Vector2.ZERO: return
+	var turn := _look_pending
+	_look_pending = Vector2.ZERO
+	rotate_y(turn.x)
+	_pitch = clampf(_pitch + turn.y, -1.5, 1.5)
+	if form_driver == null and not headset_view: camera.rotation.x = _pitch
+
+## True while a LineEdit or TextEdit has GUI focus.
+func typing() -> bool:
+	var focus := get_viewport().gui_get_focus_owner() if is_inside_tree() else null
+	return focus is LineEdit or focus is TextEdit
+
 func _physics_process(delta: float) -> void:
+	_apply_look()
+	_typing = typing()
 	if not wing_flight.active and not wing_flight.resume_pending and wing_flight.charge < wing_flight.CAPACITY: wing_flight.recover(delta)
 	var pony := is_instance_valid(form_driver)
-	if knockdown.step(self,delta,Input.is_action_just_pressed("move_jump")):
+	if knockdown.step(self,delta,not _typing and Input.is_action_just_pressed("move_jump")):
+		auto_running = false
 		if pony: _drive(delta, Vector2.ZERO, false, false)
 		return
 	if seat != null:
+		auto_running = false
 		if not is_instance_valid(seat):
 			stand_up()
 		else:
 			if not is_instance_valid(_couch_rest): global_position = seat.global_position
 			velocity = Vector3.ZERO
-			var rest_pressed := Input.is_key_pressed(KEY_CTRL)
+			var rest_pressed := not _typing and Input.is_key_pressed(KEY_CTRL)
 			if rest_pressed and not _rest_held and not controls_locked: toggle_couch_sleep()
 			_rest_held = rest_pressed
-			var stick := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+			var stick := Vector2.ZERO if _typing else Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 			var lying: bool = bool(form_driver.is_lying()) if pony else (is_instance_valid(_couch_rest) and float(_couch_rest.amount) >= 0.99)
 			# Lying down: WASD shifts you along the bed (W toward the foot) (dev 2026-09-29). Q gets you up
 			# from any seat, bed or nap, always; Space never does, Ctrl lies down / sits up (dev 2026-10-22).
@@ -421,7 +468,7 @@ func _physics_process(delta: float) -> void:
 			var wants_up := not controls_locked and not lying and stick.length() > 0.5
 			if has_meta("shared_nap_surface") and not controls_locked and stick.length() > .5: wants_up = true
 			if lying and not controls_locked:
-				if Input.is_action_pressed("move_jump"):
+				if not _typing and Input.is_action_pressed("move_jump"):
 					_space_hold += delta
 					if _space_hold >= SLEEP_HOLD and not _slept_hold:
 						_slept_hold = true
@@ -429,7 +476,8 @@ func _physics_process(delta: float) -> void:
 						if sleeper != null: sleeper.sleep()
 				else:
 					_space_hold = 0.0; _slept_hold = false
-			var q_pressed := InputMap.has_action("stand_up") and Input.is_action_pressed("stand_up")
+			# Typing is not getting up: the key is a physical one (PR #17, AZERTY "a").
+			var q_pressed := not _typing and InputMap.has_action("stand_up") and Input.is_action_pressed("stand_up")
 			# Q in the wake picker means "stay awake" (world/life/wake_picker.gd), not "get up".
 			var force_up := q_pressed and not _q_held and not has_meta("sleep_picking")
 			_q_held = q_pressed
@@ -444,7 +492,9 @@ func _physics_process(delta: float) -> void:
 			if pony: _drive(delta, Vector2.ZERO, false, false)
 			return
 	# A deep kiss holds him where he stands (pony_kisser.gd kiss_hold); looking still works.
-	var input := Vector2.ZERO if controls_locked or has_meta("kiss_hold") or has_meta("lay_hold") else Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	var input := Vector2.ZERO if controls_locked or _typing or has_meta("kiss_hold") or has_meta("lay_hold") else Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	input = _auto_run(input)
+	_sprinting = _sprint_held()
 	if pony:
 		_pony_step(delta, input)
 		return
@@ -452,9 +502,9 @@ func _physics_process(delta: float) -> void:
 		if wing_sandals_equipped: velocity = wing_flight.resume(); _wing_air_time = 0.0
 		else: wing_flight.resume_pending = false
 	var dir := (transform.basis * Vector3(input.x, 0, input.y)).normalized()
-	var sprinting := not controls_locked and Input.is_action_pressed("move_sprint")
+	var sprinting := _sprinting
 	swimming.sample(get_world_3d().direct_space_state, global_position, _eye_height, delta, not flying)
-	if not flying and not controls_locked and swimming.bank_exit(self,global_position,_eye_height,dir,Input.is_action_pressed("move_jump"),delta):
+	if not flying and not controls_locked and swimming.bank_exit(self,global_position,_eye_height,dir,not _typing and Input.is_action_pressed("move_jump"),delta):
 		return
 	if flying or controls_locked: swimming.climbing = false
 
@@ -465,8 +515,8 @@ func _physics_process(delta: float) -> void:
 		wing_flight.bank_input = wing_flight.bank_buttons(self)
 		_wing_air_time += delta
 		velocity = wing_flight.step(velocity, camera.global_basis, input,
-			not controls_locked and Input.is_action_pressed("move_jump"), sprinting,
-			not controls_locked and Input.is_key_pressed(KEY_CTRL), delta)
+			not controls_locked and not _typing and Input.is_action_pressed("move_jump"), sprinting,
+			not controls_locked and not _typing and Input.is_key_pressed(KEY_CTRL), delta)
 		move_and_slide()
 		if (_wing_air_time > 0.6 and is_on_floor() and velocity.y <= 0.0) or swimming.active: wing_flight.finish()
 		_update_crouch(delta)
@@ -475,13 +525,13 @@ func _physics_process(delta: float) -> void:
 
 	# Ctrl crouches on foot and descends while flying, so one key covers the
 	# "go down" intent in both modes.
-	crouching = not swimming.active and not controls_locked and Input.is_key_pressed(KEY_CTRL)
+	crouching = not swimming.active and not controls_locked and not _typing and Input.is_key_pressed(KEY_CTRL)
 
 	if swimming.active:
-		velocity.y = swimming.vertical(velocity.y, global_position.y, _eye_height, not controls_locked and Input.is_action_pressed("move_jump"), delta)
+		velocity.y = swimming.vertical(velocity.y, global_position.y, _eye_height, not controls_locked and not _typing and Input.is_action_pressed("move_jump"), delta)
 	elif not is_on_floor():
 		velocity.y -= _gravity * delta
-	elif not controls_locked and Input.is_action_just_pressed("move_jump") and not crouching:
+	elif not controls_locked and not _typing and Input.is_action_just_pressed("move_jump") and not crouching:
 		velocity.y = jump_velocity
 
 	var strolling := _walking() and not sprinting
@@ -521,9 +571,9 @@ func toggle_wing_flight() -> bool:
 func _fly(input: Vector2, sprinting: bool) -> void:
 	var speed := fly_speed * (3.0 if sprinting else 1.0)
 	var vertical := 0.0
-	if not controls_locked and Input.is_action_pressed("move_jump"):
+	if not controls_locked and not _typing and Input.is_action_pressed("move_jump"):
 		vertical += 1.0
-	if not controls_locked and Input.is_key_pressed(KEY_CTRL):
+	if not controls_locked and not _typing and Input.is_key_pressed(KEY_CTRL):
 		vertical -= 1.0
 	# Fly follows gaze so surveying a 1 km map does not need a separate
 	# altitude control for every hill.
@@ -538,25 +588,52 @@ func _fly(input: Vector2, sprinting: bool) -> void:
 ## so no ground movement, swimming, jump, crouch or bob here. Debug fly still flies the rig
 ## (the pony waits hidden). Exactly one drive() per tick, with no input while flying.
 func _pony_step(delta: float, input: Vector2) -> void:
-	var sprinting := not controls_locked and Input.is_action_pressed("move_sprint")
+	var sprinting := _sprinting
 	if flying:
 		_fly(input, sprinting)
 		_drive(delta, Vector2.ZERO, false, false)
 		return
 	var walking := _walking() and not sprinting
 	var unheld := not controls_locked and not has_meta("kiss_hold")
-	_drive(delta, input, unheld and sprinting, unheld and (Input.is_key_pressed(KEY_CTRL) or walking))
+	_drive(delta, input, unheld and sprinting, unheld and ((not _typing and Input.is_key_pressed(KEY_CTRL)) or walking))
 
 ## The walk key: a short tap flips walk_toggled; while held it walks either way.
 func _walking() -> bool:
-	var down := not controls_locked and InputMap.has_action("move_walk") and Input.is_action_pressed("move_walk")
+	var down := not controls_locked and not _typing and InputMap.has_action("move_walk") and Input.is_action_pressed("move_walk")
 	var now := Time.get_ticks_msec() * .001
 	if down and not _walk_key_down: _walk_key_since = now
-	elif not down and _walk_key_down and now - _walk_key_since < WALK_TAP: walk_toggled = not walk_toggled
+	elif not down and _walk_key_down and now - _walk_key_since < WALK_TAP:
+		walk_toggled = not walk_toggled
+		# Walking ends a toggled sprint (as sprinting ends a toggled walk, below).
+		if walk_toggled: sprint_toggled = false
 	_walk_key_down = down
 	# Sprinting ends a toggled walk.
-	if not controls_locked and Input.is_action_pressed("move_sprint"): walk_toggled = false
+	if not controls_locked and not _typing and Input.is_action_pressed("move_sprint"): walk_toggled = false
 	return walk_toggled or down
+
+
+## The sprint key, once per tick: held (default), or tapped on and off (controls/sprint_toggle).
+func _sprint_held() -> bool:
+	var down := not controls_locked and not _typing and Input.is_action_pressed("move_sprint")
+	var tapped := down and not _sprint_key_down
+	_sprint_key_down = down
+	if not sprint_toggle: return down
+	if tapped: sprint_toggled = not sprint_toggled
+	return sprint_toggled and not controls_locked
+
+## Auto-run: the auto_run key taps it on and off; while on he moves forward (strafing still steers),
+## also while a text field has the keys. Forward or back by hand, a seat or knockdown
+## (_physics_process), a kiss or anything taking the controls ends it.
+func _auto_run(input: Vector2) -> Vector2:
+	var down := not controls_locked and not _typing and InputMap.has_action("auto_run") and Input.is_action_pressed("auto_run")
+	if down and not _auto_key_down: auto_running = not auto_running
+	_auto_key_down = down
+	if not auto_running: return input
+	if controls_locked or has_meta("kiss_hold") or has_meta("lay_hold") \
+			or (not _typing and (Input.is_action_pressed("move_forward") or Input.is_action_pressed("move_back"))):
+		auto_running = false
+		return input
+	return Vector2(input.x, -1.0).limit_length(1.0)
 
 
 func _drive(delta: float, move: Vector2, sprint: bool, slow: bool) -> void:
@@ -602,6 +679,7 @@ func _update_bob(delta: float, speed: float) -> void:
 ## Pony mode on: the desktop camera leaves the rig (top level, not interpolated) and is placed
 ## only through place_view; no bob. Seated keeps its anchor, now placed by the driver too.
 func set_form_driver(driver: Node) -> void:
+	_apply_look() # a human turn still waiting for its tick lands before the camera changes hands
 	form_driver = driver
 	_bob_offset = 0.0
 	crouching = false

@@ -30,6 +30,14 @@ const MORNING_HOUR := 7.0
 ## Delivered before this hour ("last night"): the reply comes that same morning.
 const NIGHT_ENDS := 4.0
 const PIN_DAYS := 2.0
+## M-AI-16 (player board #49: Dash came to town hall "but said she never got the letter"): the
+## meeting's "met" used to unpin the letter that very moment, so her greeting at the meeting had no
+## letter in her prompt. It now stays pinned this long after they meet.
+const MET_PIN_HOURS := 2.0
+## M-AI-16: an offer her reply makes waits this long (game days, from when he opened it) for them to
+## meet; she makes it in person when he is within OFFER_NEAR_M of her, so its 180 s starts then.
+const OFFER_DAYS := 3.0
+const OFFER_NEAR_M := 4.0
 ## A booked meeting he learns of from the reply: her wait opens this long before the hour
 ## (appointments.gd EARLY_HOURS), and the reply must reach him by then.
 const MEET_LEAD_HOURS := 0.75
@@ -164,7 +172,8 @@ func delivered(id: String) -> void:
 	if r.is_empty() or r.kind != "letter" or r.status not in ["in_flight", "draft"] or str(r.to).is_empty(): return
 	if r.status == "draft": dispatched(id)
 	var now := _now()
-	STORE.update(_context(), id, {"status": "delivered", "delivered_at": now, "pinned": true, "pin_until": now + PIN_DAYS, "ai": "pending"})
+	# On her doorstep until she is home (letter_props.gd), then she keeps it in her house.
+	STORE.update(_context(), id, {"status": "delivered", "delivered_at": now, "pinned": true, "pin_until": now + PIN_DAYS, "ai": "pending", "doorstep": true})
 	var context := _context()
 	if context != null and context.has_method("record"):
 		context.record("letter_from_anon", "Anon wrote you a letter on day %d and Derpy's post brought it to you." % int(floorf(now)),
@@ -177,7 +186,9 @@ func set_status(id: String, status: String) -> bool:
 	if r.is_empty() or r.kind == "letter" or status not in ["scheduled", "in_mailbox", "taken", "opened"]: return false
 	if r.status == status: return true
 	if r.status == "opened" or (r.status == "taken" and status != "opened"): return false
-	return STORE.update(_context(), id, {"status": status})
+	var fields := {"status": status}
+	if status == "opened": fields.opened_at = _now()
+	return STORE.update(_context(), id, fields)
 
 ## A note she writes on her own (APPOINTMENTS: stood up), due in Anon's mailbox next morning.
 func pony_writes(pony: String, about: String, mood: String) -> String:
@@ -245,6 +256,7 @@ func tick() -> void:
 	var next := ""
 	for id: String in ids:
 		var r: Dictionary = rows[id]
+		if r.kind == "reply" and not str(r.get("offer", "")).is_empty() and str(r.get("offer_state", "")).is_empty() and str(r.status) == "opened": _offer_in_person(id, r, now)
 		if r.kind != "letter": continue
 		if bool(r.pinned) and _pin_done(r, now, appointments): STORE.update(context, id, {"pinned": false})
 		if next.is_empty() and _reading.is_empty() and r.status == "delivered" and (r.ai == "pending" or str(r.ai).begins_with("retry:")) \
@@ -266,7 +278,11 @@ func _on_appointment_resolved(appointment: Dictionary) -> void:
 	for id: String in STORE.rows(context):
 		var r: Dictionary = STORE.rows(context)[id]
 		if bool(r.pinned) and (str(r.appointment) == str(appointment.get("id", "")) or source == "letter:" + id):
-			STORE.update(context, id, {"pinned": false})
+			if str(appointment.get("status", "")) == "met":
+				# They are meeting now: the letter stays in her prompt a while longer (#49).
+				STORE.update(context, id, {"appointment": "", "pin_until": _now() + MET_PIN_HOURS / 24.0})
+			else:
+				STORE.update(context, id, {"pinned": false})
 
 func _read(id: String) -> void:
 	if not ai_available():
@@ -343,6 +359,7 @@ func build_request(id: String) -> Dictionary:
 	# A favour by letter (world/mechanics/asks/asks.gd), only while she has room for one.
 	var asks := _asks()
 	var favour: Dictionary = asks.call("letter_context", pony) if asks != null else {}
+	parts.letter_offer = READER.offer_line(letter_offer_kinds(pony))
 	if not favour.is_empty():
 		parts.favour = READER.FAVOUR
 		(decode.capabilities as Array).append("ask")
@@ -384,6 +401,14 @@ func _apply(id: String, parsed: Dictionary, mode: String) -> void:
 			appointment = str(result.get("id", ""))
 			booked = result.get("row", {})
 		else: ask = true
+	# M-AI-18 (board #14): he asked her to come and she agreed ([come]; without AI a fair letter that
+	# asks it). Her day plan walks her to where he is now (appointments.gd come); no telepathy.
+	var coming := false
+	if appointment.is_empty() and appointments != null and appointments.has_method("come") \
+			and (bool(parsed.get("come", false)) if ai else (asked.is_empty() and FALLBACK.asks_to_come(str(r.text)) and score >= COME_SCORE)):
+		var called: Dictionary = appointments.call("come", pony, "letter:" + id, ("he asked you to come: " + gist).left(120))
+		if bool(called.get("ok", false)):
+			appointment = str(called.get("id", "")); booked = called.get("row", {}); coming = true
 	var due := due_after(float(r.delivered_at))
 	# He learns of her meeting from this reply. One that starts before the reply would reach him
 	# (she named an earlier time, or today) comes to him right away; and unless it is the very
@@ -393,7 +418,8 @@ func _apply(id: String, parsed: Dictionary, mode: String) -> void:
 		var meet_at := float(booked.get("day", 0)) + float(booked.get("hour", 12.0)) / 24.0
 		known = _same_meeting(asked, booked, float(r.sent_at) if float(r.sent_at) >= 0.0 else float(r.delivered_at)) or meet_at - MEET_LEAD_HOURS / 24.0 >= due
 		if not known: due = maxf(_now(), float(r.delivered_at))
-		if not ai:
+		if not ai and coming: confirm = "I'm on my way to you now!"
+		elif not ai:
 			# Worded for when he reads it: "today" is the day the reply arrives.
 			var read_day := int(floorf(due))
 			confirm = "%s %s at %s, I'll be there!" % [str(booked.get("place_label", "There")), FALLBACK.spoken_day(int(booked.get("day", read_day)), read_day), FALLBACK.spoken_time(float(booked.get("hour", 12.0)))]
@@ -407,7 +433,8 @@ func _apply(id: String, parsed: Dictionary, mode: String) -> void:
 	reply_text = reply_text.left(LETTER_TEXT.MAX_CHARS)
 	var reply_id := STORE.create(context, {"kind": "reply", "from": pony, "to": "player", "stationery": "floral" if score >= 70 else "plain",
 		"text": reply_text, "status": "scheduled", "written_at": _now(), "due_at": due, "reply_to": id,
-		"gist": _gist(SCORING.body_text(reply_text, true, true)), "gift": gift, "appointment": appointment, "ai": mode})
+		"gist": _gist(SCORING.body_text(reply_text, true, true)), "gift": gift, "appointment": appointment, "ai": mode,
+		"offer": str(parsed.get("offer", "")) if ai and str(parsed.get("offer", "")) in letter_offer_kinds(pony) else ""})
 	STORE.update(context, id, {"status": "read", "craft": craft, "heart": heart, "score": score, "gist": gist, "reply_id": reply_id,
 		"appointment": appointment, "meet_known": known, "ai": mode})
 	var courier := _courier()
@@ -417,6 +444,52 @@ func _apply(id: String, parsed: Dictionary, mode: String) -> void:
 			[pony], [pony, "player"], "letter-read:" + id)
 	_gossip(pony, id, score)
 	letter_read.emit(id, pony, score)
+
+## A fair letter is enough for her to come without AI (rule-based reply).
+const COME_SCORE := 40
+
+## M-AI-16: offer kinds her letter may make now (letter_reader_prompt.gd OFFER_KINDS she is eligible
+## for, not on a refusal wait; dating only once she is ready to ask, as in person).
+func letter_offer_kinds(pony: String) -> Array:
+	var bonds := _bonds()
+	if bonds == null or not bonds.has_method("eligible"): return []
+	var kinds: Array = []
+	for kind: String in READER.OFFER_KINDS:
+		if not bool(bonds.eligible(pony, kind)) or bool(bonds.offer_on_cooldown(pony, kind)): continue
+		if kind == "dating" and bonds.has_method("ready_to_ask") and not bool(bonds.ready_to_ask(pony)): continue
+		kinds.append(kind)
+	return kinds
+
+## M-AI-16: the offer her opened reply carries is made in person when they next meet (the
+## director's relationship intent: her own words and [relationship_offer] tag, as when she asks
+## face to face), so player_bonds.gd's 180 s window starts then. Lapses after OFFER_DAYS.
+func _offer_in_person(id: String, r: Dictionary, now: float) -> void:
+	var context := _context()
+	if float(r.get("opened_at", -1.0)) >= 0.0 and now - float(r.opened_at) > OFFER_DAYS:
+		STORE.update(context, id, {"offer_state": "lapsed"}); return
+	var pony := str(r.from)
+	var kind := str(r.offer)
+	if not _offer_ready(pony, kind): return
+	var director := _director()
+	if director == null or not director.has_method("request_relationship_intent"): return
+	var asked: bool = director.call("request_relationship_intent", pony, {"kind": "relationship_offer", "offer_kind": kind, "activity": "walk"},
+		_offer_ready.bind(pony, kind)) == true
+	if asked:
+		STORE.update(context, id, {"offer_state": "asked"})
+		if context.has_method("record"):
+			context.record("letter_offer", "You asked Anon in person what your letter said you would (%s)." % kind.replace("_", " "), [pony], [pony, "player"], "letter-offer:" + id)
+
+## He is within OFFER_NEAR_M of her, she is free, and the offer is still hers to make.
+func _offer_ready(pony: String, kind: String) -> bool:
+	var bonds := _bonds()
+	if bonds == null or not (kind in letter_offer_kinds(pony)) or not (bonds.pending(pony) as Dictionary).is_empty(): return false
+	var population: Variant = game.get("population") if game != null else null
+	var entry: Variant = (population.live as Dictionary).get(pony) if population is Node and "live" in population else null
+	var actor: Variant = (entry as Dictionary).get("actor") if entry is Dictionary else null
+	if not actor is Node3D or not is_instance_valid(actor) or not (actor as Node3D).is_inside_tree() or (actor as Node3D).get("sleeping") == true or (actor as Node3D).get("_held") == true: return false
+	var player: Variant = game.get("player") if game != null else null
+	var camera: Variant = game.call("_find_camera", player) if game != null and game.has_method("_find_camera") and is_instance_valid(player) else null
+	return camera is Node3D and is_instance_valid(camera) and (actor as Node3D).global_position.distance_to((camera as Node3D).global_position) < OFFER_NEAR_M
 
 ## One of her tagged decisions: {"id", "row"} for a meeting made or moved ({"id"} for one called
 ## off), {"ask": true} when a meeting could not be booked, or {}.

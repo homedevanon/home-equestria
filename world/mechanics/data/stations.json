@@ -12,9 +12,9 @@
   "days": 3, "needs": {"water": true, "season_not": ["winter"]}, "slots": 8,
   "copper": {"takes": ["tag:plantable"], "makes": ["orchard_tree"], "facts": ["planted", "watered", "grew"], "verbs": ["use"],
    "plans": ["water_saplings"], "consumers": ["orchard_tree", "orchard_bucking", "applebuck_season"]}},
- {"id": "home_cooker", "name": "kitchen", "kind": "adapter", "driver": "cooking", "workers": ["player"],
+ {"id": "home_cooker", "name": "kitchen", "kind": "adapter", "driver": "cooking", "workers": ["player", "resident"],
   "inputs": [], "outputs": [], "copper": {"takes": ["tag:ingredient"], "makes": ["tag:meal"], "facts": ["made"], "verbs": [],
-   "plans": [], "consumers": ["eat", "gift", "ask"]}},
+   "plans": ["cook"], "consumers": ["eat", "gift", "ask"]}},
  {"id": "keg_pour", "name": "cider keg", "kind": "adapter", "driver": "cider_pour", "workers": ["player"],
   "inputs": [{"id": "goods:cider-keg"}, {"id": "food-empty:sweet-apple-acres-cider"}], "outputs": [{"id": "food:sweet-apple-acres-cider"}],
   "copper": {"takes": ["goods:cider-keg"], "makes": ["food:sweet-apple-acres-cider"], "facts": ["made"], "verbs": [],
@@ -24,7 +24,8 @@
   "inputs": [], "outputs": [{"tag": "apple"}], "needs": {"season_not": ["winter"]},
   "copper": {"takes": [], "makes": ["tag:apple"], "facts": ["harvested", "worked"], "verbs": ["offer_job"],
    "plans": ["buck_apples"], "consumers": ["cider_press", "orchard_bucking", "applebuck_season"]}},
- {"id": "fishing_dock", "name": "fishing dock", "kind": "adapter", "driver": "fishing", "workers": ["player"],
+ {"id": "fishing_dock", "name": "fishing dock", "kind": "adapter", "driver": "fishing", "workers": ["player", "any_pony"],
+  "where": {"world": [256.4, -21.4, 98.2], "ground": true, "radius": 6.0},
   "inputs": [], "outputs": [{"id": "river-fish"}],
-  "copper": {"takes": [], "makes": ["river-fish"], "facts": ["caught"], "verbs": [], "plans": [], "consumers": ["eat", "gift", "sell", "ask"]}}
+  "copper": {"takes": [], "makes": ["river-fish"], "facts": ["caught"], "verbs": [], "plans": ["fish"], "consumers": ["eat", "gift", "sell", "ask"]}}
 ]}

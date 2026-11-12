@@ -218,6 +218,11 @@ func _update_visits() -> void:
 	for id: String in visits.keys():
 		var visit: Dictionary = visits[id]
 		var actor: Node3D = visit.actor as Node3D if is_instance_valid(visit.get("actor")) else null
+		# Her own [sit], [stand] or [approach] reply tag while Anon chats with her took her navigator
+		# and ended the order (private #336): the lease takes it back and she carries on.
+		if actor != null and not queue.owns(id) and queue.reclaim(id):
+			print("[cider stand] %s keeps her place: a reply tag had taken her navigation" % id)
+			if not _resume(id, visit, actor): continue
 		if actor == null or not queue.owns(id):
 			_end(id, "Left the stand"); continue
 		match str(visit.phase):
@@ -236,6 +241,22 @@ func _update_visits() -> void:
 				else: _label(id, "Cider, please")
 			"drink":
 				if queue.clock > float(visit.until): _end(id, "Drank her cider")
+
+## After a reclaim: walking, she sets off for her spot again; waiting or drinking, she stands
+## facing the stall. False when the visit ended.
+func _resume(id: String, visit: Dictionary, actor: Node3D) -> bool:
+	var nav: Node = actor.get_node_or_null("Navigator")
+	if nav == null: return true
+	if str(visit.phase) == "walk":
+		if not bool(nav.call("command_destination", _spot(int(visit.spot)), "walk")):
+			_end(id, "Navigator refused destination")
+			return false
+		return true
+	if actor.has_method("posture_status") and actor.has_method("request_posture"):
+		var status: Dictionary = actor.call("posture_status")
+		if str(status.get("kind", "stand")) not in ["stand", ""] or str(status.get("requested", "stand")) != "stand": actor.call("request_posture", "stand")
+	if "face_point" in nav: nav.set("face_point", global_position + Vector3.UP * 0.9)
+	return true
 
 ## She reached her spot: her order is a job ask (no cap, no prompt line, no notebook page).
 func _order(id: String) -> void:

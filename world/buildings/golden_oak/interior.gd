@@ -44,6 +44,8 @@ func build(layout: Dictionary = {}) -> void:
 	_build_breakfast()
 	_build_lamps()
 	REFERENCE.telescope(self, Vector3(3.55, loft_y, -2.85))
+	# Its eyepiece view (M-ACT-04): look through it in VR, click it on desktop.
+	preload("res://world/items/telescope_view.gd").attach(self)
 	REFERENCE.fireplace(self, ARCHITECTURE.polar(4.1, deg_to_rad(-125.0), 0), deg_to_rad(55.0))
 	KIT.marker(self, "Entry", Vector3(0.16, 0, 4.4))
 	KIT.marker(self, "Loft", stair_path[-1])

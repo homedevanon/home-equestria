@@ -14,5 +14,24 @@
  {"id": "trixie_show", "name": "Trixie's stage show", "driver": "trixie_show",
   "roll": {"chance": 0.03, "cooldown_days": 7}, "hours": [16.5, 19.0], "place": "activity:trixie_show", "place_name": "the schoolhouse stage", "radius": 45.0, "hosts": ["trixie"],
   "copper": {"takes": [], "makes": [], "facts": ["event_started", "attended"], "verbs": ["invite", "pay_player"],
-   "plans": [], "consumers": ["invite", "gossip", "pay_panel"]}}
+   "plans": [], "consumers": ["invite", "gossip", "pay_panel"]}},
+ {"id": "winter_wrap_up", "name": "Winter Wrap Up", "season": "spring", "from": 0.0, "to": 0.2,
+  "place": "landmark:town_hall", "place_name": "Ponyville Town Hall", "radius": 60.0, "hours": [7, 19],
+  "hosts": ["mayor_mare", "twilight_sparkle", "applejack", "rainbow_dash", "fluttershy"],
+  "effects": {"snow_melt": 0.5},
+  "asks": [{"from": "mayor_mare", "want": "event:winter_wrap_up", "reward": "bits:10", "why": "every pony helps wrap up winter", "hours": 24}],
+  "copper": {"takes": [], "makes": [], "facts": ["event_started", "attended"], "verbs": ["invite", "ask"],
+   "plans": ["wrap_up_snow", "wrap_up_gardens", "wrap_up_skies", "wrap_up_animals"], "consumers": ["invite", "ask", "gossip"]}},
+ {"id": "hearths_warming", "name": "Hearth's Warming", "season": "winter", "from": 0.6, "to": 0.9,
+  "place": "landmark:town_hall", "place_name": "Ponyville Town Hall", "radius": 60.0, "hours": [17, 22],
+  "hosts": ["mayor_mare", "pinkie_pie", "rarity", "twilight_sparkle"],
+  "asks": [{"from": "pinkie_pie", "want": "event:hearths_warming", "reward": "thanks", "why": "Hearth's Warming is better with friends", "hours": 24}],
+  "decor": [
+   {"id": "garland_arch", "scene": "res://world/props/rnl/rnl_wirearch_v2/prefab.scn", "at": [125.58, -17.12, -91.15], "yaw": 1.3253, "scale": 1.25,
+    "ground": [[-2.78, 0.0], [2.78, 0.0]]},
+   {"id": "square_tree", "scene": "res://world/props/ponyville_kit/tiered_fir.scn", "scale": 1.5, "range": 160.0, "clear": 2.4, "height": 5.0, "trunk": 1.2,
+    "spots": [[299.0, -12.06, -117.0, 0.4], [297.0, -12.06, -125.0, 1.1], [284.0, -12.06, -124.0, 2.0], [302.0, -12.06, -112.0, 0.0]]},
+   {"id": "door_lanterns", "kind": "door_lanterns"}],
+  "copper": {"takes": [], "makes": [], "facts": ["event_started", "attended"], "verbs": ["invite", "ask"],
+   "plans": [], "consumers": ["invite", "ask", "gossip"]}}
 ]}

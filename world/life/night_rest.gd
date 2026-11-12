@@ -1,7 +1,9 @@
 extends Node
 ## Bedtime. Residents go home, climb into bed and get up again in the morning.
 ## Family households share a regular bedtime; other adults can be night owls.
-## Those who can't get home (no house, no bed, no route) curl up where they are.
+## Those with no house of their own (overnight visitors, ponies from towns with no houses yet) take
+## the free bed of a vacant house nearby, else a grass spot off the roads and paths (M-LIF-01).
+## Those who can't get to bed otherwise (no bed, no route) curl up where they are.
 ## The living world pauses while the "sleep:" owner holds her navigator.
 ## Share of nights a pony goes to bed at her usual time; the rest stay up late and sleep in
 ## until early afternoon (dev 2026-09-23: "ponies need their beauty sleep"). Nopony skips sleep.
@@ -49,15 +51,36 @@ func _night_key() -> int:
 	return int(clock.day) - (1 if float(clock.hours) < 16.0 else 0)
 
 func _is_night(entry: Dictionary) -> bool:
+	return _is_night_between(float(entry.bed_time), float(entry.wake_time))
+
+func _is_night_between(bed: float, wake: float) -> bool:
 	var h := float(clock.hours)
-	var bed := float(entry.bed_time); var wake := float(entry.wake_time)
 	if bed > wake: return h >= bed or h < wake   # evening to morning
 	return h >= bed and h < wake                  # after midnight to the afternoon
 
+## The once-a-second pass over the live ponies (below) is spread over NIGHT_SLICE_TICKS physics
+## ticks (W2 perf pass: up to ~1.3 ms in one tick at bedtime). Each pony is still stepped once a
+## second, in the same order. Driven by hand (physics processing off, as the tests do) a call
+## still runs the whole pass. Rollback: NIGHT_SLICE_TICKS = 1.
+const NIGHT_SLICE_TICKS := 6
+var _pass_ids: Array = []
+var _pass_at := 0
+var _pass_chunk := 1
+var _pass_night := 0
+## The unloaded residents' essence nights, sliced the same way (126 residents at the bench spot).
+var _essence_ids: Array = []
+var _essence_at := 0
+var _essence_chunk := 1
+
 func _physics_process(delta: float) -> void:
+	if _essence_at < _essence_ids.size(): _step_essences(_essence_chunk)
+	if _pass_at < _pass_ids.size(): _step_pass(_pass_chunk)
 	_timer -= delta
 	if _timer > 0.0 or population == null or clock == null: return
 	_timer = CHECK_SECONDS
+	# A pass still unfinished (only with very long ticks) completes before the next begins.
+	if _essence_at < _essence_ids.size(): _step_essences(_essence_ids.size())
+	if _pass_at < _pass_ids.size(): _step_pass(_pass_ids.size())
 	_house_count = get_tree().get_node_count_in_group(&"house_interiors")
 	var night := _night_key()
 	var hours: float = float(clock.hours)
@@ -65,8 +88,24 @@ func _physics_process(delta: float) -> void:
 	_sky_visits(hours)
 	if not _bed_requests.is_empty(): _bed_request_step(night)
 	if not _outbound.is_empty(): _outbound_step()
-	_essence_nights(night)
-	for id: String in population.live.keys():
+	var slices := maxi(NIGHT_SLICE_TICKS, 1) if is_physics_processing() else 1
+	var core: RefCounted = ESSENCE.core(population)
+	_essence_ids = core.state.residents.keys() if core != null else []
+	_essence_at = 0
+	_essence_chunk = ceili(float(_essence_ids.size()) / float(slices))
+	_pass_ids = population.live.keys()
+	_pass_at = 0
+	_pass_night = night
+	_pass_chunk = ceili(float(_pass_ids.size()) / float(slices))
+	_step_essences(_essence_chunk)
+	_step_pass(_pass_chunk)
+
+func _step_pass(count: int) -> void:
+	var end := mini(_pass_at + maxi(count, 1), _pass_ids.size())
+	var night := _pass_night
+	for index in range(_pass_at, end):
+		var id: String = _pass_ids[index]
+		if not population.live.has(id): continue
 		var actor: Node3D = population.live[id].get("actor")
 		if not is_instance_valid(actor) or not actor.is_inside_tree(): continue
 		var entry: Dictionary = _state.get(id, {})
@@ -86,6 +125,7 @@ func _physics_process(delta: float) -> void:
 		# An AI go_to_bed owns her until she gets up (_bed_request_step).
 		if _bed_requests.has(id): continue
 		_step(id, entry, actor)
+	_pass_at = end
 
 ## Unloaded residents keep their nights (dev 2026-09-26: the model unloads, the essence lives
 ## on; world/life/essence.gd): at her bedtime her essence leaves any outing, heads home (a
@@ -96,27 +136,41 @@ func _essence_nights(night: int) -> void:
 	var core: RefCounted = ESSENCE.core(population)
 	if core == null: return
 	for id: String in core.state.residents:
-		var resident: Dictionary = core.state.residents[id]
-		var times := _bedtime(id, night)
-		var sleeping := _is_night({"bed_time": times.x, "wake_time": times.y})
-		if not sleeping:
-			if resident.get("asleep", false): resident.erase("asleep")
-			continue
-		if not ESSENCE.unloaded(population, id): continue
-		if not resident.get("asleep", false):
-			resident["asleep"] = true
-			ESSENCE.leave_outing(population, id, "Going home to bed")
-			resident.last_reason = "Asleep at home"
-		# Only a cloud spot already found: _sky_spot() searches the whole tree while it is unloaded.
-		# A walk-in Cloudominium is an ordinary home (ESSENCE.home: inside its door).
-		var cloud := SKY_HOMES.has(id) and _sky_house(id) == null
-		var home: Vector3 = _sky_spots.get(id, Vector3.INF) if cloud else Vector3.INF
-		if home.is_finite(): ESSENCE.remember(population, "home:" + id, home)
-		elif cloud: home = ESSENCE.known(population, "home:" + id)
-		if not home.is_finite(): home = _essence_home(id)
-		if not home.is_finite(): continue   # nowhere known: she curls up where she is
-		var speed: float = ESSENCE.FLY_SPEED if SKY_HOMES.has(id) else ESSENCE.WALK_SPEED
-		ESSENCE.walk(resident, home, speed, CHECK_SECONDS)
+		_essence_night(core.state.residents[id], id, night)
+
+## The next `count` residents of the current essence pass (_physics_process).
+func _step_essences(count: int) -> void:
+	var end := mini(_essence_at + maxi(count, 1), _essence_ids.size())
+	var core: RefCounted = ESSENCE.core(population)
+	if core != null:
+		var residents: Dictionary = core.state.residents
+		for index in range(_essence_at, end):
+			var id: String = _essence_ids[index]
+			var value: Variant = residents.get(id)
+			if value is Dictionary: _essence_night(value as Dictionary, id, _pass_night)
+	_essence_at = end
+
+func _essence_night(resident: Dictionary, id: String, night: int) -> void:
+	var times := _bedtime(id, night)
+	var sleeping := _is_night_between(times.x, times.y)
+	if not sleeping:
+		if resident.get("asleep", false): resident.erase("asleep")
+		return
+	if not ESSENCE.unloaded(population, id): return
+	if not resident.get("asleep", false):
+		resident["asleep"] = true
+		ESSENCE.leave_outing(population, id, "Going home to bed")
+		resident.last_reason = "Asleep at home"
+	# Only a cloud spot already found: _sky_spot() searches the whole tree while it is unloaded.
+	# A walk-in Cloudominium is an ordinary home (ESSENCE.home: inside its door).
+	var cloud := SKY_HOMES.has(id) and _sky_house(id) == null
+	var home: Vector3 = _sky_spots.get(id, Vector3.INF) if cloud else Vector3.INF
+	if home.is_finite(): ESSENCE.remember(population, "home:" + id, home)
+	elif cloud: home = ESSENCE.known(population, "home:" + id)
+	if not home.is_finite(): home = _essence_home(id)
+	if not home.is_finite(): return   # nowhere known: she curls up where she is
+	var speed: float = ESSENCE.FLY_SPEED if SKY_HOMES.has(id) else ESSENCE.WALK_SPEED
+	ESSENCE.walk(resident, home, speed, CHECK_SECONDS)
 
 func _bedtime(id: String, night: int) -> Vector2:
 	var row: Array = _bedtimes.get(id, [])
@@ -228,7 +282,7 @@ func _step(id: String, entry: Dictionary, actor: Node3D) -> void:
 		return
 	# A chat comes first, as for a day step (dev 2026-11-04: "she keeps trying to leave even if she's
 	# like ok i wont leave"). Bed can wait until the chat ends or he walks off.
-	if entry.phase in ["", "going"] and _talking(id):
+	if entry.phase in ["", "going", "outside"] and _talking(id):
 		var chat_nav := _nav(actor)
 		if entry.phase == "going" and chat_nav.command_owner.begins_with(OWNER):
 			chat_nav.stay()
@@ -242,40 +296,57 @@ func _step(id: String, entry: Dictionary, actor: Node3D) -> void:
 	# its door (world/characters/navigation/house_travel.gd sky_trip).
 	if SKY_HOMES.has(id) and _sky_house(id) == null and _sky_step(id, entry, actor): return
 	var house: Node3D = _home_house(id) if population.has_method("home_house") else null
-	entry["shared_bed"] = house != null and house.bed_shared(id)
-	var bed_ok: bool = house != null and house.has_method("ensure_bed") and house.ensure_bed(id) != null
+	# Her bed in that house: her own (her id), or a guest's whole free bed ("") in a vacant house.
+	var bed_key := id
+	if house == null and not SKY_HOMES.has(id):
+		house = _guest_house(id, entry, actor)
+		if house != null: bed_key = ""
+	elif house != null and entry.has("guest_house"):
+		# Her own house streamed in after she took a guest bed: hers wins, and _wake must not read
+		# the guest house's bed as hers.
+		_drop_guest_house(entry)
+	entry["shared_bed"] = house != null and house.bed_shared(bed_key)
+	var bed_ok: bool = house != null and house.has_method("ensure_bed") and house.ensure_bed(bed_key) != null
+	if not bed_ok and bed_key.is_empty():
+		_drop_guest_house(entry)
+		house = null
 	# A save/streamed actor can already be on her mattress. Sending her to the floor-side
 	# marker makes her try to walk off the bed indefinitely (its height is outside the
 	# approach's arrival tolerance). The same applies if she steps onto it on the way in.
-	if bed_ok and entry.phase in ["", "going"] and house.on_mattress(actor.global_position, id):
+	if bed_ok and entry.phase in ["", "going"] and house.on_mattress(actor.global_position, bed_key):
 		_nav(actor).command_owner = OWNER + id
-		_tuck_in(id, entry, actor, house)
+		_tuck_in(bed_key, entry, actor, house)
 		return
+	# M-AI-19: Anon already lies in her bed at her bedtime. She joins him there (the bed's cuddle rest;
+	# bedtime takes her again when he gets up), and never climbs into the lane he lies in.
+	if bed_ok and entry.phase in ["", "going"] and _anon_in_bed(id, entry, actor, house, bed_key): return
 	match entry.phase:
 		"":
 			var nav := _nav(actor)
 			nav.stay(); nav.command_owner = OWNER + id
 			if not bed_ok:
 				if house != null: return
-				_sleep_here(entry, actor); return
-			if not _seen(actor) and actor.global_position.distance_to(house.bed_side(id)) > 3.0:
+				_sleep_out(id, entry, actor); return
+			if not _seen(actor) and actor.global_position.distance_to(house.bed_side(bed_key)) > 3.0:
 				# Nobody is watching: skip the walk, she is already tucked in.
-				_tuck_in(id, entry, actor, house); return
-			nav.go_to(house.bed_side(id), nav.Gait.WALK)
+				_tuck_in(bed_key, entry, actor, house); return
+			nav.go_to(house.bed_side(bed_key), nav.Gait.WALK)
 			entry.phase = "going"; entry.until = Time.get_ticks_msec() * .001 + 300.0
+		"outside":
+			_grass_walk(id, entry, actor)
 		"going":
 			var nav := _nav(actor)
 			if not bed_ok:
-				if house == null: _sleep_here(entry, actor)
+				if house == null: _sleep_out(id, entry, actor)
 				return
 			if not nav.command_owner.begins_with(OWNER):
-				nav.stay(); nav.command_owner = OWNER + id; nav.go_to(house.bed_side(id), nav.Gait.WALK)
-			var side: Vector3 = house.bed_side(id)
+				nav.stay(); nav.command_owner = OWNER + id; nav.go_to(house.bed_side(bed_key), nav.Gait.WALK)
+			var side: Vector3 = house.bed_side(bed_key)
 			# dev 2026-09-25: "standing at their bed but cannot get in". The walk often ends a little
 			# short of the exact side marker (a bed against a wall, the grid's nearest cell), and the
 			# old 0.7 m target left her standing there re-requesting the same walk forever. Climb in
 			# from anywhere reasonably near the bed, and whenever the walk has stopped close to it.
-			var rest_at: Vector3 = house.bed_rest(id).origin
+			var rest_at: Vector3 = house.bed_rest(bed_key).origin
 			var here := actor.global_position
 			var to_side := Vector2(here.x - side.x, here.z - side.z).length()
 			var to_bed := Vector2(here.x - rest_at.x, here.z - rest_at.z).length()
@@ -283,19 +354,23 @@ func _step(id: String, entry: Dictionary, actor: Node3D) -> void:
 			var stopped: bool = not nav._has_target or nav.state in [nav.State.ARRIVED, nav.State.UNREACHABLE, nav.State.BLOCKED, nav.State.IDLE]
 			var stuck_walk: bool = nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED]
 			if level and (to_side < 1.3 or to_bed < 1.8 or (stopped and (to_side < 2.6 or to_bed < 3.0))):
-				_climb(id, entry, actor, house)
+				_climb(bed_key, entry, actor, house)
 			elif stuck_walk and Time.get_ticks_msec() * .001 < float(entry.get("retry_at", 0.0)):
-				pass
+				# M-LIF-03 (logs Nov 4-7: Octavia, stranded on a flowerbed outside Vinyl's house, retried
+				# "Destination is disconnected" 24 times while Anon was within 45 m): after two failed
+				# walks she is in bed the moment she is out of his sight, not only once he is 45 m away.
+				if int(entry.retries) >= 2 and not _in_view(actor): _tuck_in(bed_key, entry, actor, house)
 			elif stuck_walk or Time.get_ticks_msec() * .001 > float(entry.until):
 				# No sleeping on the ground outside while she has a bed: keep trying, and the
 				# moment nobody is near to watch, she is simply home in bed.
 				entry.retries += 1
 				entry["retry_at"] = Time.get_ticks_msec() * .001 + RETRY_SECONDS
-				print("[night] %s cannot reach her bed (navigator state %d, try %d): %s" % [id, int(nav.state), entry.retries, nav.reason])
-				if not _seen(actor): _tuck_in(id, entry, actor, house)
+				if int(entry.retries) <= 3 or int(entry.retries) % 10 == 0:
+					print("[night] %s cannot reach her bed (navigator state %d, try %d): %s" % [id, int(nav.state), entry.retries, nav.reason])
+				if not _seen(actor) or (int(entry.retries) >= 2 and not _in_view(actor)): _tuck_in(bed_key, entry, actor, house)
 				# Watched in her own house (player bug board #19: Fluttershy sat on the floor for
 				# hours beside an unreachable bed): after two failed walks she hops in from here.
-				elif entry.retries >= 2 and level and house.contains(here): _climb(id, entry, actor, house)
+				elif entry.retries >= 2 and level and house.contains(here): _climb(bed_key, entry, actor, house)
 				else: nav.go_to(side, nav.Gait.WALK); entry.until = Time.get_ticks_msec() * .001 + 60.0
 			elif not nav._has_target and not stuck_walk: nav.go_to(side, nav.Gait.WALK)
 		"asleep":
@@ -334,6 +409,19 @@ func _seen(actor: Node3D) -> bool:
 	var camera := preload("res://world/player_view.gd").camera(self)
 	if camera == null: return false
 	return camera.global_position.distance_to(actor.global_position) < 45.0
+
+## Stricter than _seen, for a pony whose bed walk keeps failing: within 45 m, on screen and not
+## behind a wall (one ray to her chest). Used only after failed walks, once a second at most.
+func _in_view(actor: Node3D) -> bool:
+	var camera := preload("res://world/player_view.gd").camera(self)
+	if camera == null or not camera.is_inside_tree(): return false
+	var scale: Variant = actor.get("body_scale")
+	var chest := actor.global_position + Vector3.UP * .6 * (float(scale) if scale != null else 1.0)
+	if camera.global_position.distance_to(chest) > 45.0 or not camera.is_position_in_frustum(chest): return false
+	var skip: Array[RID] = []
+	if actor is CollisionObject3D: skip.append((actor as CollisionObject3D).get_rid())
+	var query := PhysicsRayQueryParameters3D.create(camera.global_position, chest, 1, skip)
+	return actor.get_world_3d().direct_space_state.intersect_ray(query).is_empty()
 
 ## A short hop onto the mattress, then lie down.
 func _climb(id: String, entry: Dictionary, actor: Node3D, house: Node3D) -> void:
@@ -518,6 +606,158 @@ func _sleep_here(entry: Dictionary, actor: Node3D) -> void:
 	_nav(actor).stay()
 	_begin_sleep(entry, actor)
 
+## M-LIF-01 (thread 43693759/43693788: Blueblood and Cloudy Quartz asleep in the middle of the road).
+## A pony with no house of her own takes the whole free bed of a vacant house nearby: no residents,
+## not reserved (the player's home, Trixie's wagon, the cottage, the hut), one guest each, the bed
+## key "" (house_beds.gd: the house's first bed, no lane). Looked for once a night; kept while the
+## house stays vacant. No inn: none is built (art).
+const GUEST_HOUSE_RANGE := 120.0
+var _guest_claims := {}   # house instance id -> guest id, for tonight
+
+func _guest_house(id: String, entry: Dictionary, actor: Node3D) -> Node3D:
+	var held: Variant = entry.get("guest_house")
+	if is_instance_valid(held) and _vacant(held as Node3D, id): return held as Node3D
+	if entry.has("guest_house"): _drop_guest_house(entry)
+	if entry.get("guest_checked", false): return null
+	entry["guest_checked"] = true
+	var options: Array = []
+	for node: Node in get_tree().get_nodes_in_group("house_interiors"):
+		var house := node as Node3D
+		if house == null or not _vacant(house, id): continue
+		var d := house.global_position.distance_to(actor.global_position)
+		if d <= GUEST_HOUSE_RANGE: options.append([d, house])
+	options.sort_custom(func(a: Array, b: Array) -> bool: return float(a[0]) < float(b[0]))
+	for row: Array in options.slice(0, 3):
+		var house: Node3D = row[1]
+		if house.ensure_bed("") == null or not house.bed_side("").is_finite(): continue
+		_guest_claims[house.get_instance_id()] = id
+		entry["guest_house"] = house; entry["house"] = house; entry["bed"] = ""
+		print("[night] %s has no house here: sleeping in the vacant %s" % [id, str(house.label()) if house.has_method("label") else str(house.name)])
+		return house
+	return null
+
+## For an AI [go_to_bed] by a pony with no house of her own (pony_action_executor.gd _bed_for, hook
+## for W3): tonight's guest house (bed key ""), found the same way as at bedtime; null when none.
+func guest_house_for(id: String) -> Node3D:
+	if population == null or not population.live.has(id): return null
+	var actor: Variant = population.live[id].get("actor")
+	if not is_instance_valid(actor): return null
+	var entry: Dictionary = _state.get(id, {})
+	if entry.is_empty():
+		entry = {"night": _night_key(), "phase": "", "decided": false, "chosen": false}
+		var times := _bedtime(id, int(entry.night))
+		entry.merge({"actor": actor, "bed_time": times.x, "wake_time": times.y, "retries": 0, "until": 0.0})
+		_state[id] = entry
+	return _guest_house(id, entry, actor as Node3D)
+
+func _vacant(house: Node3D, guest: String) -> bool:
+	if not house.is_inside_tree() or not house.has_method("ensure_bed") or not house.has_method("bed_side"): return false
+	if house.has_meta("reserved_for") or bool(house.get_meta("shared_player_home", false)): return false
+	if house.get("furnish") == false: return false
+	var sleepers: Variant = house.get("_sleepers")
+	if not sleepers is Array or not (sleepers as Array).is_empty(): return false
+	# The address book too: a house that streamed in a moment ago may not have its sleepers yet.
+	if population != null and population.has_method("residents_of") and house.has_method("place_id") \
+			and not (population.residents_of(house.place_id()) as Array).is_empty(): return false
+	var claimed := str(_guest_claims.get(house.get_instance_id(), ""))
+	if claimed.is_empty() or claimed == guest: return true
+	# Another guest's claim lasts while her night entry still holds this house.
+	var other: Dictionary = _state.get(claimed, {})
+	return other.get("guest_house") != house
+
+func _drop_guest_house(entry: Dictionary) -> void:
+	var held: Variant = entry.get("guest_house")
+	if is_instance_valid(held): _guest_claims.erase((held as Node).get_instance_id())
+	for key: String in ["guest_house", "house", "bed"]: entry.erase(key)
+
+## No bed for her anywhere: a grass spot off the roads and paths nearby (the walk grid's trail
+## weights, as navigation reads them), on natural ground, out of houses and water, with room for her
+## lying body; she walks there (or is simply there, unwatched) and sleeps. No spot: where she is.
+const GRASS_RINGS := [2.5, 4.0, 6.0, 9.0, 13.0, 18.0]
+const GRASS_DIRECTIONS := 12
+const GRASS_TRAIL_MAX := 0.1
+const GRASS_APART := 1.6
+
+func _sleep_out(id: String, entry: Dictionary, actor: Node3D) -> void:
+	if not entry.has("grass"): entry["grass"] = _grass_spot(id, actor)
+	var spot: Vector3 = entry.grass
+	var here := actor.global_position
+	if not spot.is_finite() or Vector2(spot.x - here.x, spot.z - here.z).length() < .8:
+		_sleep_here(entry, actor); return
+	if not _seen(actor):
+		actor.reset_motion(Transform3D(actor.global_basis, spot + Vector3.UP * .05))
+		_sleep_here(entry, actor); return
+	var nav := _nav(actor)
+	nav.stay(); nav.command_owner = OWNER + id
+	nav.go_to(spot, nav.Gait.WALK)
+	entry.phase = "outside"; entry.until = Time.get_ticks_msec() * .001 + 120.0
+
+func _grass_walk(id: String, entry: Dictionary, actor: Node3D) -> void:
+	var nav := _nav(actor)
+	var spot: Vector3 = entry.get("grass", Vector3.INF)
+	if not spot.is_finite(): _sleep_here(entry, actor); return
+	if not nav.command_owner.begins_with(OWNER):
+		nav.stay(); nav.command_owner = OWNER + id; nav.go_to(spot, nav.Gait.WALK)
+	var here := actor.global_position
+	var near := Vector2(spot.x - here.x, spot.z - here.z).length() < 1.0
+	var stuck: bool = nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED]
+	if near or nav.state == nav.State.ARRIVED:
+		_sleep_here(entry, actor)
+	elif stuck or Time.get_ticks_msec() * .001 > float(entry.until):
+		# Unwatched she is simply there; watched, she curls up where the walk ended (as before).
+		if not _in_view(actor): actor.reset_motion(Transform3D(actor.global_basis, spot + Vector3.UP * .05))
+		_sleep_here(entry, actor)
+	elif not nav._has_target: nav.go_to(spot, nav.Gait.WALK)
+
+func _grass_spot(id: String, actor: Node3D) -> Vector3:
+	if not actor.is_inside_tree(): return Vector3.INF
+	var service: Variant = _walk_service(actor)
+	var space := actor.get_world_3d().direct_space_state
+	var skip: Array[RID] = []
+	if actor is CollisionObject3D: skip.append((actor as CollisionObject3D).get_rid())
+	var scale: Variant = actor.get("body_scale")
+	var size := float(scale) if scale != null else 1.0
+	var room := BoxShape3D.new(); room.size = Vector3(.5, .5, .9) * size
+	var query := PhysicsShapeQueryParameters3D.new(); query.shape = room; query.collision_mask = 1; query.exclude = skip
+	var taken: Array[Vector3] = []
+	for other: String in _state:
+		if other != id and _state[other].has("grass"): taken.append(_state[other].grass)
+	var here := actor.global_position
+	for ring: float in GRASS_RINGS:
+		for k in GRASS_DIRECTIONS:
+			var p := here + Vector3.FORWARD.rotated(Vector3.UP, TAU * (float(k) + ring * .37) / GRASS_DIRECTIONS) * ring
+			var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(p + Vector3.UP * 3.0, p + Vector3.DOWN * 6.0, 1, skip))
+			if hit.is_empty() or (hit.normal as Vector3).y < .9 or not _natural(hit.collider): continue
+			var at: Vector3 = hit.position
+			if absf(at.y - here.y) > 3.0 or preload("res://world/buildings/house_interior.gd").at(get_tree(), at) != null: continue
+			if not space.intersect_ray(PhysicsRayQueryParameters3D.create(at + Vector3.UP * 3.0, at + Vector3.DOWN * .3, WATER_MASK)).is_empty(): continue
+			var apart := true
+			for other: Vector3 in taken: apart = apart and other.distance_to(at) >= GRASS_APART
+			if not apart: continue
+			if service != null:
+				var off_path := true
+				for d: Vector3 in [Vector3.ZERO, Vector3(.8, 0, 0), Vector3(-.8, 0, 0), Vector3(0, 0, .8), Vector3(0, 0, -.8)]:
+					if float(service.trail_weight_at(at + d)) > GRASS_TRAIL_MAX: off_path = false; break
+				if not off_path or (actor.get("profile") != null and not bool(service.is_walkable(at, actor.profile))): continue
+			query.transform = Transform3D(actor.global_basis.orthonormalized(), at + Vector3.UP * (.06 + room.size.y * .5))
+			if not space.intersect_shape(query, 1).is_empty(): continue
+			return at
+	return Vector3.INF
+
+## The walk grid her navigator plans on (its trail weights are the road and path masks); null when
+## none is ready. Fixtures override it.
+func _walk_service(actor: Node3D) -> Object:
+	var nav := _nav(actor)
+	var service: Variant = nav.get("_service") if nav != null else null
+	if not is_instance_valid(service) or not (service as Object).has_method("trail_weight_at"): return null
+	return service as Object
+
+## Grass, not a road, plaza, flowerbed or roof: the terrain itself (shared_nap_grass.gd's rule).
+static func _natural(collider: Variant) -> bool:
+	if not is_instance_valid(collider) or not collider is Node: return false
+	var node := collider as Node
+	return node.is_class("Terrain3D") or "terrain" in String(node.name).to_lower() or bool(node.get_meta("nap_ground", false))
+
 ## Her AI chose to get up (wake_up(), pony_action_executor.gd). True when she was asleep or on
 ## her way to bed tonight; she may turn in again ten minutes later if it is still night.
 func wake_up(id: String) -> bool:
@@ -610,6 +850,11 @@ func _sky_visits(hours: float) -> void:
 		if visit.get("day", -1) != day:
 			var roll := float(absi(hash(id + "visit" + str(day))) % 1000) / 1000.0
 			visit = {"day": day, "go": roll < .75, "at": 13.0 + roll * 3.5, "phase": ""}
+			# A loaded save already holds today's visit (M-SAV-03, game_saves.gd sky_visits): she
+			# does not go up a second time on the same day.
+			var resumed: Variant = population.get("resumed_sky_visits")
+			if resumed is Dictionary and int((resumed as Dictionary).get(id, -1)) == day:
+				visit.phase = "done"; visit.go = false
 			_visits[id] = visit
 		var nav := _nav(actor)
 		var spot := _sky_spot(id)
@@ -739,6 +984,18 @@ func send_to_bed(id: String, house: Node3D, bed: String) -> bool:
 	if nav == null or house.ensure_bed(bed) == null: return false
 	var side: Vector3 = house.bed_side(bed)
 	if not side.is_finite(): return false
+	# M-AI-19 (thread 43686931: "she doesn't realise I'm already in bed"): Anon lies in that very bed.
+	# Getting in is joining him (the bed's cuddle rest, shared_bed.gd accept), never climbing into a
+	# lane he lies in. If she cannot join him there (unwilling, too far, no room), the request fails.
+	var rest := _player_rest_on(house.ensure_bed(bed))
+	if rest != null:
+		var before := str(nav.command_owner)
+		nav.stay(); nav.command_owner = ""
+		if rest.has_method("accept") and bool(rest.call("accept", actor)):
+			print("[night] %s joins Anon in bed (%s)" % [id, "own bed" if bed == id else "bed in " + str(house.name)])
+			return true
+		nav.command_owner = before
+		return false
 	var now := Time.get_ticks_msec() * .001
 	var times := _bedtime(id, _night_key())
 	var request := {"house": house, "bed": bed, "phase": "going", "retries": 0, "until": now + 90.0 + actor.global_position.distance_to(side) / 1.2,
@@ -750,6 +1007,49 @@ func send_to_bed(id: String, house: Node3D, bed: String) -> bool:
 	else: nav.go_to(side, nav.Gait.WALK)
 	print("[night] %s going to bed (%s)" % [id, "own bed" if bed == id else "bed in " + str(house.name)])
 	return true
+
+## True while Anon lies in her bed and this tick is handled: she joined him, walks over, or waits
+## beside the bed (an offer every few seconds) instead of climbing in on top of him.
+func _anon_in_bed(id: String, entry: Dictionary, actor: Node3D, house: Node3D, bed_key: String) -> bool:
+	var rest := _player_rest_on(house.ensure_bed(bed_key))
+	if rest == null: return false
+	var nav := _nav(actor)
+	var now := Time.get_ticks_msec() * .001
+	var side: Vector3 = house.bed_side(bed_key)
+	var away := Vector2(actor.global_position.x - side.x, actor.global_position.z - side.z).length()
+	# The bed's cuddle accepts only from nearby (shared_bed.gd eligible, 8 m): no stop-and-ask on the way.
+	if away < 8.0 and now >= float(entry.get("join_try", 0.0)):
+		entry["join_try"] = now + 5.0
+		var before := str(nav.command_owner)
+		nav.stay(); nav.command_owner = ""
+		if rest.has_method("accept") and bool(rest.call("accept", actor)):
+			entry.phase = ""
+			print("[night] %s joins Anon in her bed" % id)
+			return true
+		nav.command_owner = before if not before.is_empty() else OWNER + id
+	if away > 3.0:
+		# She walks over. Never tucked in here while he lies in this bed (unwatched, or after failed
+		# walks, bedtime puts her straight on the mattress: on top of him); a walk that fails waits.
+		var stuck: bool = nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED]
+		if entry.phase == "" or not nav.command_owner.begins_with(OWNER) or (not nav._has_target and not stuck):
+			nav.stay(); nav.command_owner = OWNER + id; nav.go_to(side, nav.Gait.WALK)
+			entry.phase = "going"; entry.until = now + 300.0
+		return true
+	nav.stay(); nav.command_owner = OWNER + id
+	entry.phase = ""
+	return true
+
+## The bed's cuddle rest (shared_bed.gd, installed on first use) while Anon lies on it; else null.
+func _player_rest_on(bed_node: Node3D) -> Node:
+	if bed_node == null or not bed_node.has_meta("bed_rest"): return null
+	var rest: Variant = bed_node.get_meta("bed_rest")
+	if not is_instance_valid(rest): return null
+	var seats: Variant = (rest as Object).get("seats")
+	if not seats is Array or (seats as Array).is_empty() or not is_instance_valid((seats as Array)[0]): return null
+	var seat: Node = (seats as Array)[0]
+	var who: Variant = seat.get_meta("occupant") if seat.has_meta("occupant") else null
+	if not is_instance_valid(who) or not bool((who as Node).get_meta("couch_sleeping", false)): return null
+	return rest as Node
 
 func _bed_request_step(night: int) -> void:
 	var now := Time.get_ticks_msec() * .001

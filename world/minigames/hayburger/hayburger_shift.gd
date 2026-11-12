@@ -30,7 +30,19 @@ const MENU: Array[Dictionary] = [
 	{"title": "Crunchy Hayburger", "recipe": ["bun", "patty", "lettuce", "lid"]},
 	{"title": "Tomato Melt", "recipe": ["bun", "patty", "tomato", "cheese", "lid"]},
 	{"title": "The Works", "recipe": ["bun", "patty", "lettuce", "tomato", "cheese", "lid"]},
+	# Order variants (M-ACT-02; thread 2026-10-31: "Lyra asks for just hay, Rarity asks for only
+	# the vegetables, Fluttershy asks for bread", three patties, a nothingburger). Rolled after the
+	# base menu (VARIANT_CHANCE, or FAN_CHANCE for a pony in "fans", by customer id or display
+	# name), from their own seeded generator so the base tickets of a seed stay the same.
+	{"title": "Just Hay", "recipe": ["patty"], "variant": true, "fans": ["lyra", "lyra_heartstrings"]},
+	{"title": "Veggie Stack", "recipe": ["bun", "lettuce", "tomato", "lid"], "variant": true, "fans": ["rarity"]},
+	{"title": "Triple Hay Stack", "recipe": ["bun", "patty", "patty", "patty", "lid"], "variant": true, "fans": ["big_mcintosh", "rainbow_dash", "applejack"]},
+	{"title": "Nothingburger", "recipe": ["bun", "lid"], "variant": true, "fans": ["fluttershy", "derpy", "derpy_hooves"]},
 ]
+## The first BASE_MENU rows are the everyday menu the base roll picks from.
+const BASE_MENU: int = 6
+const VARIANT_CHANCE: float = 0.15
+const FAN_CHANCE: float = 0.5
 
 var external_customers: bool = false
 var reward_sink: Callable
@@ -187,7 +199,9 @@ func act(action: String) -> bool:
 		"take_patty":
 			if _grill_state not in ["ready", "held"]:
 				return _reject("Only a golden, ready patty can go on a burger.")
-			if _tray.size() != 1 or _tray[0] != "bun":
+			# A bun then one patty, or wherever the first ticket wants a patty next (just hay,
+			# three patties).
+			if (_tray.size() != 1 or _tray[0] != "bun") and not _fits_front("patty"):
 				return _reject("Put a fresh bottom bun on the tray first.")
 			_tray.append("patty")
 			_empty_grill()
@@ -200,7 +214,9 @@ func act(action: String) -> bool:
 			_notify("ingredient", "Bottom bun ready. Add a golden hay patty next.")
 			return true
 		"lettuce", "tomato", "cheese", "lid":
-			if not _tray.has("patty"):
+			# Toppings need a patty, unless the first ticket is built without one (vegetables only,
+			# a nothingburger).
+			if (not _tray.has("patty") or _tray[0] != "bun") and not _fits_front(action):
 				return _reject("Start with a bottom bun and a cooked hay patty.")
 			if _tray.has("lid"):
 				return _reject("The top bun closes this burger. Serve it or clear it.")
@@ -245,9 +261,11 @@ func snapshot() -> Dictionary:
 func _serve() -> bool:
 	if _orders.is_empty():
 		return _reject("No customer at the counter yet. Another will be along soon.")
-	if not _tray.has("lid"):
-		return _reject("Finish the burger with its top bun before serving.")
 	var order: Dictionary = _orders[0]
+	var wanted: Array[String] = []
+	wanted.assign(order["recipe"])
+	if not _tray.has("lid") and _tray != wanted:
+		return _reject("Finish the burger with its top bun before serving.")
 	var completed_order: Dictionary = _snapshot_order(order)
 	var recipe: Array[String] = []
 	recipe.assign(order["recipe"])
@@ -289,7 +307,10 @@ func _add_automatic_order() -> void:
 
 func _add_order(customer_id: String, display_name: String) -> void:
 	# The first three tickets teach plain, cheese, then two vegetables.
-	var menu_index: int = _customer_count if _customer_count < 3 else _rng.randi_range(0, MENU.size() - 1)
+	var menu_index: int = _customer_count if _customer_count < 3 else _rng.randi_range(0, BASE_MENU - 1)
+	if _customer_count >= 3:
+		var variant: int = variant_for(customer_id, display_name, _seed_value, _shift_number, _customer_count)
+		if variant >= 0: menu_index = variant
 	var menu_item: Dictionary = MENU[menu_index]
 	var recipe: Array[String] = []
 	recipe.assign(menu_item["recipe"])
@@ -301,6 +322,32 @@ func _add_order(customer_id: String, display_name: String) -> void:
 		"patience_max": patience, "deadline": _elapsed + patience,
 	})
 	_customer_count += 1
+
+
+## The MENU index of an order variant for this customer's ticket, or -1 for the base menu. Its own
+## generator (seed, shift, ticket number, customer), so the base roll's sequence is unchanged.
+static func variant_for(customer_id: String, display_name: String, seed_value: int, shift_number: int, ticket: int) -> int:
+	var roll := RandomNumberGenerator.new()
+	roll.seed = hash("hayburger_variant:%d:%d:%d:%s" % [seed_value, shift_number, ticket, customer_id])
+	var who := display_name.to_lower().strip_edges().replace(" ", "_")
+	var variants: Array[int] = []
+	for index: int in range(BASE_MENU, MENU.size()):
+		var fans: Array = MENU[index].get("fans", [])
+		if customer_id in fans or who in fans:
+			return index if roll.randf() < FAN_CHANCE else -1
+		variants.append(index)
+	if variants.is_empty() or roll.randf() >= VARIANT_CHANCE: return -1
+	return variants[roll.randi_range(0, variants.size() - 1)]
+
+
+## True when the tray plus `piece` is still the first ticket's recipe from the bottom up.
+func _fits_front(piece: String) -> bool:
+	if _orders.is_empty(): return false
+	var recipe: Array = _orders[0]["recipe"]
+	if _tray.size() + 1 > recipe.size(): return false
+	for index: int in range(_tray.size()):
+		if _tray[index] != recipe[index]: return false
+	return recipe[_tray.size()] == piece
 
 
 func _snapshot_order(order: Dictionary) -> Dictionary:

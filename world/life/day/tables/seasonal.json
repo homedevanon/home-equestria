@@ -1,0 +1,29 @@
+{
+	"_what": "Seasonal day-plan rows (M-SEA-19, W2-SEAS-H 2026-11-08), merged into day_tables.json by day_planner.gd (world/life/day/tables/*.json). Every row carries when.season so it rolls only in its season; the handler (world/life/day/actions/seasonal/) also refuses when the snow, leaves, ice or sun are not there that day, and the runner then drops the step.",
+	"actions": {
+		"snow_play": {"weight": 2.0, "handler": "seasonal/snow_play", "hours": [9, 16], "when": {"season": "winter"}, "target": "snow_field", "minutes": [20, 40], "phrase": "play in the snow at {target}", "reasons": "snow_play"},
+		"build_snowman": {"weight": 1.0, "handler": "seasonal/build_snowman", "hours": [9, 15.5], "when": {"season": "winter"}, "target": "snow_field", "minutes": [20, 35], "phrase": "build a snowman at {target}", "reasons": "snowman"},
+		"skate": {"weight": 0.8, "handler": "seasonal/skate", "hours": [10, 16], "when": {"season": "winter"}, "target": "ice_spot", "minutes": [15, 30], "phrase": "go skating near {target}", "reasons": "skate"},
+		"rake_leaves": {"weight": 1.2, "handler": "seasonal/rake_leaves", "hours": [8, 17], "when": {"season": "autumn"}, "target": "leaf_spot", "minutes": [15, 30], "phrase": "rake leaves at {target}", "reasons": "rake"},
+		"pick_flowers": {"weight": 1.5, "handler": "seasonal/pick_flowers", "hours": [8.5, 17], "when": {"season": "spring"}, "target": "flower_meadow", "minutes": [15, 30], "phrase": "pick flowers at {target}", "reasons": "flowers"},
+		"sunbathe": {"weight": 1.2, "handler": "seasonal/sunbathe", "hours": [10.5, 16], "when": {"season": "summer"}, "target": "sunny_spot", "posture": ["lie_down"], "minutes": [20, 40], "phrase": "sunbathe at {target}", "reasons": "sunbathe"},
+		"swim": {"weight": 1.0, "handler": "seasonal/swim", "hours": [11, 17.5], "when": {"season": "summer"}, "target": "riverside", "posture": ["sit", "lie_down"], "minutes": [20, 40], "phrase": "cool off by the river at {target}", "reasons": "swim"}
+	},
+	"targets": {
+		"snow_field": {"places": ["landmark:fountain_01", "landmark:schoolhouse_theatre_01", "landmark:town_hall", "landmark:windmill_01", "landmark:appleacres_barned_01", "landmark:airballoon_01"]},
+		"ice_spot": {"places": ["landmark:bridge_01", "landmark:bridge_02", "landmark:bridge_03", "landmark:bridge_04"]},
+		"leaf_spot": {"places": ["landmark:fountain_01", "landmark:town_hall", "landmark:goldenoaklibrary_01", "landmark:schoolhouse_theatre_01", "landmark:appleacres_barned_01"]},
+		"flower_meadow": {"places": ["landmark:windmill_01", "landmark:airballoon_01", "landmark:appleacres_barned_01", "landmark:bridge_04", "landmark:fountain_01"]},
+		"sunny_spot": {"places": ["landmark:fountain_01", "landmark:windmill_01", "landmark:airballoon_01", "landmark:bridge_02", "landmark:appleacres_barned_01"]},
+		"riverside": {"places": ["landmark:bridge_01", "landmark:bridge_02", "landmark:bridge_03", "landmark:bridge_04"]}
+	},
+	"reasons": {
+		"snow_play": ["because the snow is perfect for snowballs", "for a snowball fight", "because she can't resist fresh snow", "with whoever turns up"],
+		"snowman": ["because the snow is just right for it", "to give the town a new friend", "to beat last year's"],
+		"skate": ["now the water's frozen solid", "to practise her figure eights", "for the fun of it"],
+		"rake": ["the leaves are piling up", "to make a pile worth jumping in", "before the wind scatters them again"],
+		"flowers": ["for a bouquet", "to brighten up her house", "as a gift for a friend", "because spring is finally here"],
+		"sunbathe": ["because the sun is lovely", "to soak up some warmth", "to work on her tan"],
+		"swim": ["because it's so hot out", "to cool her hooves", "to watch the fish"]
+	}
+}

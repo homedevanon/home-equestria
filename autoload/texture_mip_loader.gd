@@ -95,11 +95,13 @@ func _load(path: String, original_path: String, _use_sub_threads: bool, _cache_m
 	var image: Image = null
 	if data_format == DATA_FORMAT_IMAGE:
 		var size := chain_offset(w, h, format, -1)
-		var data := f.get_buffer(size)
-		if data.size() != size: return null
+		# Only the kept levels are read: the dropped top level is about three quarters of the bytes.
 		var offset := chain_offset(w, h, format, levels)
+		f.seek(f.get_position() + offset)
+		var data := f.get_buffer(size - offset)
+		if data.size() != size - offset: return null
 		var small_w := maxi(1, w >> levels); var small_h := maxi(1, h >> levels)
-		image = Image.create_from_data(small_w, small_h, true, format, data.slice(offset))
+		image = Image.create_from_data(small_w, small_h, true, format, data)
 	elif data_format == DATA_FORMAT_PNG or data_format == DATA_FORMAT_WEBP:
 		for level in mipmaps + 1:
 			var size := int(f.get_32())

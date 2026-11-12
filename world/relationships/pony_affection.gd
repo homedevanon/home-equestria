@@ -80,6 +80,9 @@ func mouth_point() -> Vector3:
 ## by_her: her own intention, rechecked for adult/willing status; no reaction event about him.
 func begin(value: String, point: Vector3, by_her := false) -> bool:
 	if value not in ["kiss","hug"]:return false
+	# A spa client on the table is a customer, not a date (M-SPA-03; spa_customers._end_affection
+	# stays the fallback): no kiss or hug, and no bonds contact recorded first.
+	if is_instance_valid(mare) and mare.has_meta("spa_client"):return false
 	var runtime: Node=(mare.get_meta("relationship_runtime") if mare.has_meta("relationship_runtime") else null)
 	if value=="kiss" and by_her:
 		if mare.sleeping or mare.identity.filly or _young_player() or _buck_time>=0 or runtime==null:return false

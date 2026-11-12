@@ -138,6 +138,10 @@ var hotbar: Node3D
 var _track: Dictionary = {}
 var _eat_time: Dictionary = {}
 var _desktop_eating := false
+## Test switch only: a headless run cannot capture the mouse (it always reports VISIBLE), so the
+## desktop click fixtures (tools/inventory/test_desktop_shop_click.gd) set this to drive the real
+## click path. The game never sets it.
+var _assume_captured := false
 var grab_router: Node
 var desktop_presentation: Node
 var _desktop_pose_owned := false
@@ -740,18 +744,28 @@ func _release_case():
 	return _held_part._release_case()
 func _refresh_holding():
 	return _held_part._refresh_holding()
+var _error_serial := 0
 func _error():
 	case.ui.message=inventory.last_error if not inventory.last_error.is_empty() else "That slot cannot accept this item."
 	var insufficient: bool = case.ui.message == "insufficient funds!"
 	if hotbar != null: hotbar.set_message(case.ui.message, insufficient)
 	if insufficient: case.ui.flash_message()
 	case.ui.refresh()
+	# The open panel's line expires with the hotbar's (W1-INPUT-UI), unless something replaced it.
+	_error_serial += 1
+	var serial := _error_serial
+	var shown: String = case.ui.message
+	if is_inside_tree():
+		get_tree().create_timer(4.0).timeout.connect(func() -> void:
+			if is_instance_valid(self) and serial == _error_serial and is_instance_valid(case) and is_instance_valid(case.ui) and case.ui.message == shown:
+				case.ui.message = ""; case.ui.refresh())
 
 func _clear_purchase_error() -> void:
 	if case.ui.message == "insufficient funds!": case.ui.message = ""; case.ui.refresh()
 	if hotbar != null and hotbar.message == "insufficient funds!": hotbar.set_message("")
 
 func _input(event: InputEvent):
+	if event is InputEventKey and preload("res://world/ui/typing_guard.gd").active(): return  # typing never drives the game
 	if not _desktop or case==null:return
 	# The last bite can remove the held object before button-up reaches this node.
 	if event is InputEventMouseButton and not event.pressed and event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
@@ -796,7 +810,7 @@ func _input(event: InputEvent):
 			case.close();get_viewport().set_input_as_handled();return
 		if not customizer.opened and not event.shift_pressed and event.physical_keycode>=KEY_1 and event.physical_keycode<KEY_1+HOTBAR.SLOTS:
 			_quick_slot(event.physical_keycode-KEY_1);get_viewport().set_input_as_handled();return
-		if not case.visible and not customizer.opened and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED:
+		if not case.visible and not customizer.opened and _mouse_captured():
 			# Q throws what is in hand (dev 2026-09-30); Shift+Q sets it down gently in front.
 			# Seated, lying or sitting on the ground, Q stands you up instead (desktop_player.gd, dev 2026-10-22).
 			if event.physical_keycode==KEY_Q and held.has("desktop") and not (_q_stands() and event.is_action("stand_up")):
@@ -818,7 +832,7 @@ func _input(event: InputEvent):
 	# Holding something, a click uses it (dev 2026-09-30: "clicking should be interact/use", Q
 	# throws): left and right click alike. A thing with no use of its own lets the click through
 	# to the world (a door, a seat) for the interactor.
-	if event is InputEventMouseButton and not case.visible and not customizer.opened and Input.mouse_mode==Input.MOUSE_MODE_CAPTURED and held.has("desktop"):
+	if event is InputEventMouseButton and not case.visible and not customizer.opened and _mouse_captured() and held.has("desktop"):
 		var use_click:bool=event.button_index in [MOUSE_BUTTON_LEFT,MOUSE_BUTTON_RIGHT]
 		if use_click and not COOKING.offer(self,"desktop").is_empty():
 			if event.pressed:COOKING.activate(self,"desktop")
@@ -832,6 +846,11 @@ func _input(event: InputEvent):
 		var gift_to:Node=get_tree().get_first_node_in_group("hand_feeding")
 		if use_click and gift_to!=null and CATALOG.has_tag(str(held.desktop.get_meta("item_id","")),"giftable") and gift_to.desktop_target()!=null:
 			if event.pressed:gift_to.desktop_offer()
+			get_viewport().set_input_as_handled();return
+		# A good for sale in view: the hint reads "Click · Buy" (world/ui/interaction_hints.gd), so the
+		# click buys it into the hand, the held thing going back in the briefcase first as E does
+		# (thread 43668855: with something in hand such a click ate it or did nothing).
+		if use_click and event.pressed and event.button_index==MOUSE_BUTTON_LEFT and _desktop_click_buy():
 			get_viewport().set_input_as_handled();return
 		if use_click and held.desktop.get_meta("item_id", "") == "goods:folded-blanket":
 			if event.pressed: _lay_out_blanket("desktop")
@@ -1005,7 +1024,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and not event.pressed and event.button_index == MOUSE_BUTTON_LEFT and STATION_INPUT.engaged("desktop"):
 		STATION_INPUT.offer(self,"desktop",false);return
 	if not event is InputEventMouseButton or not event.pressed or event.button_index != MOUSE_BUTTON_LEFT:return
-	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED or _quick_blocked() or hand_busy("desktop"):return
+	if not _mouse_captured() or _quick_blocked() or hand_busy("desktop"):return
 	if FLIGHT_INPUT.reserves_mouse(event,player_body):return
 	if is_instance_valid(player_body) and "controls_locked" in player_body and player_body.controls_locked:return
 	var focus:Control=get_viewport().gui_get_focus_owner()
@@ -1014,7 +1033,34 @@ func _unhandled_input(event: InputEvent) -> void:
 		COOKING.activate(self,"desktop");get_viewport().set_input_as_handled();return
 	if STATION_INPUT.offer(self,"desktop",true):get_viewport().set_input_as_handled();return
 	var offer:Dictionary=desktop_look_target()
-	if _desktop_look_pick(offer):get_viewport().set_input_as_handled()
+	# A click on a good for sale is the purchase's, bought or refused with a reason on the hotbar;
+	# a refusal no longer falls through to the interactor (sitting on a bench by the stall).
+	if _desktop_look_pick(offer) or _for_sale(offer):get_viewport().set_input_as_handled()
+
+func _mouse_captured() -> bool:
+	return _assume_captured or Input.mouse_mode==Input.MOUSE_MODE_CAPTURED
+
+## A desktop look target that is bought rather than picked up: a shop good or food for sale.
+func _for_sale(look: Dictionary) -> bool:
+	var target: Variant = look.get("target")
+	if not is_instance_valid(target): return false
+	var kind := str(look.get("kind", ""))
+	return kind == "shop" or (kind == "food" and bool((target as Node).get_meta("food_for_sale", false)))
+
+## Desktop, holding something, a left click on a good for sale: the held thing goes back in the
+## briefcase and the good is bought into the hand. A refused purchase puts a quick-slot item back
+## in hand. True when the click was for a good (bought, or refused with a reason shown).
+func _desktop_click_buy() -> bool:
+	var look: Dictionary = desktop_look_target()
+	if not _for_sale(look) or not can_swap_take(look): return false
+	var reselect: int = int(_selected_slots.desktop) if equipped_only("desktop") else -1
+	if not _store_held("desktop"): return true # _store_held showed "No room in the briefcase."
+	if not _desktop_look_pick(look) and reselect >= 0:
+		# Selecting a slot clears the hotbar line; the refusal's reason stays on it.
+		var said: String = str(hotbar.message) if hotbar != null else ""
+		_select_slot("desktop", reselect, camera.global_transform)
+		if hotbar != null and not said.is_empty(): hotbar.set_message(said, said == "insufficient funds!")
+	return true
 
 ## Shift+Q places on the visible support under the aim. Item accounting commits
 ## before its pose changes; a blocked/full/failed write keeps the item in hand.

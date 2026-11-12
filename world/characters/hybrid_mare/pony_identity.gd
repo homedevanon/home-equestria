@@ -57,6 +57,10 @@ static var _eyelid_palette: Dictionary = {}
 @export var tail_scale := 1.0
 ## Extra hair-GLB nodes to show (hat, hair tie); everything not mane/tail/LOD is hidden otherwise.
 @export var accessories: Array[String] = []
+## Where a rigid accessory of the hair scene sits, moved from its exported place: node name to
+## metres in the pony's own frame (x right, y up, -z forward). Applejack's hat is lifted so her
+## forelock no longer comes through its crown (dev 2026-11-11, "fit AJ's hat too").
+@export var accessory_offsets: Dictionary = {}
 @export var heart_colors: Array[Color] = [Color("ff5c8a"), Color("ff2f5f"), Color("ff86b0")]
 @export var blush_color := Color(1.0, 0.42, 0.58)
 ## Horn magic aura. Alpha 0 = the canonical colour from world/characters/magic_colors.json

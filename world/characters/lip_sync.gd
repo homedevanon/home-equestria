@@ -3,7 +3,11 @@ extends RefCounted
 ## Timed mouth shapes for a speech clip: [{start, end, value}] with Rhubarb's
 ## letters A-H and X (see PonyMouth.VISEMES).
 ##
-## Primary: Rhubarb Lip Sync (Daniel Wolf, MIT) run as a subprocess on the wav; see
+## First choice since 2026-11-10: the in-process recogniser (lip_sync_native.gd), which reads the
+## samples in about a hundredth of the clip's length, on every platform the game ships on, Quest
+## included. ai_config "lip_sync/engine" = "rhubarb" switches it off.
+##
+## Second: Rhubarb Lip Sync (Daniel Wolf, MIT) run as a subprocess on the wav; see
 ## rhubarb_path() for where it is looked for (bin/rhubarb/README.md for bundling). The phonetic recogniser takes ~0.2x realtime
 ## (0.6-0.9 s for a 3.5 s line) and is language-independent. It is the default for every line: the
 ## voice waits for the cues, and the English pocketSphinx recogniser (with the line's text) took about
@@ -21,6 +25,7 @@ const RHUBARB_CANDIDATES := [
 	"/usr/local/bin/rhubarb",
 	"/usr/bin/rhubarb",
 ]
+const NATIVE := preload("res://world/characters/lip_sync_native.gd")
 const WINDOW := 0.04
 const AMPLITUDE_LEVELS := {"X": 0.08, "B": 0.3, "C": 0.6}   # RMS / peak RMS below -> letter, else D
 
@@ -28,6 +33,14 @@ static var _threads: Array[Thread] = []
 
 
 static var _configured_rhubarb: Variant = null
+static var _configured_engine: Variant = null
+
+
+## "auto" (the in-process recogniser first) or "rhubarb" (skip it), from ai_config "lip_sync/engine".
+static func engine() -> String:
+	if _configured_engine == null:
+		_configured_engine = str(preload("res://world/ai/ai_config.gd").load_config().get_value("lip_sync/engine", "auto"))
+	return str(_configured_engine)
 
 
 ## Rhubarb executable, first found of: $RHUBARB, ai_config "lip_sync/rhubarb_path",
@@ -61,6 +74,9 @@ const ENGLISH_RECOGNISER := false
 static func analyse(wav_path: String, dialog := "") -> Array:
 	var baked := chatter_cues(wav_path)
 	if not baked.is_empty(): return baked
+	if engine() != "rhubarb":
+		var heard := NATIVE.analyse_clip(load_wav(wav_path))
+		if not heard.is_empty(): return heard
 	var exe := rhubarb_path()
 	if exe == "":
 		return amplitude_cues(load_wav(wav_path))

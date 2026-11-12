@@ -141,6 +141,7 @@ static func spoken_time(hours: float) -> String:
 
 # ------------------------------------------------------------------ input
 func _input(event: InputEvent) -> void:
+	if event is InputEventKey and preload("res://world/ui/typing_guard.gd").active(): return  # typing never drives the game
 	if _done or game == null or _cover == null: return
 	if event is InputEventMouseButton and event.pressed:
 		var button := (event as InputEventMouseButton).button_index

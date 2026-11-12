@@ -12,7 +12,7 @@ config_version=5
 
 config/name="Home: Equestria"
 config/description="Cozy VR life-sim in Equestria."
-config/version="0.3.0-maredev"
+config/version="0.3.1-maredev"
 run/main_scene="res://world/ui/title_screen.tscn"
 config/use_custom_user_dir=true
 config/custom_user_dir_name="home-equestria-public"
@@ -138,6 +138,58 @@ season_flowers={
 "type": "float",
 "value": 1.0
 }
+season_snow_cover={
+"type": "float",
+"value": 0.0
+}
+season_snow_fresh={
+"type": "float",
+"value": 0.0
+}
+season_leaf_drop={
+"type": "float",
+"value": 0.0
+}
+season_leaf_litter={
+"type": "float",
+"value": 0.0
+}
+season_leaf_turn={
+"type": "float",
+"value": 0.0
+}
+season_blossom={
+"type": "float",
+"value": 0.0
+}
+season_spring={
+"type": "float",
+"value": 0.0
+}
+season_wetness={
+"type": "float",
+"value": 0.0
+}
+season_ice={
+"type": "float",
+"value": 0.0
+}
+season_climate_map={
+"type": "sampler2D",
+"value": ""
+}
+season_climate_rect={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+snow_trail_map={
+"type": "sampler2D",
+"value": "res://world/seasons/baked/black_1x1.tres"
+}
+snow_trail_rect={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
 interior_light={
 "type": "color",
 "value": Color(0.45, 0.57, 0.8, 1)
@@ -153,6 +205,10 @@ vegetation_color_rect={
 vegetation_color_enabled={
 "type": "bool",
 "value": false
+}
+vegetation_twig_atlas={
+"type": "sampler2D",
+"value": "res://world/foliage/textures/winter_twigs_atlas.png"
 }
 diffuse_curve={
 "type": "sampler2D",
@@ -177,6 +233,14 @@ outline_color={
 sky_time={
 "type": "float",
 "value": 0.0
+}
+look_cloud_shadow={
+"type": "float",
+"value": 0.0
+}
+sky_daylight={
+"type": "float",
+"value": 1.0
 }
 sky_eye={
 "type": "vec3",

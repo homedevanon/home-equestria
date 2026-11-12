@@ -1,8 +1,12 @@
 // "Toon Style 3D Water Shader - No textures needed" by Megalithium, CC0.
 // https://godotshaders.com/shader/toon-style-3d-water-shader-no-textures-needed/
-// Based on NekotoArts' Wind Waker water. Vendored unchanged for Home: Equestria;
-// see THIRD_PARTY.md.
+// Based on NekotoArts' Wind Waker water. Vendored for Home: Equestria, which adds (W2-SEAS-G,
+// 2026-11-08) still-water ice and river ice rims from the season_ice global x climate A, and rain
+// ripple rings while `rain_amount` > 0. Both are written by res://world/seasons/ice_slabs.gd; with
+// their defaults (ice_kind 0, rain_amount 0) the water draws exactly as before.
 shader_type spatial;
+
+#include "res://world/seasons/season.gdshaderinc"
 
 // Water color and foam color
 uniform vec4 WATER_COL : source_color = vec4(0.04, 0.38, 0.88, 1.0);
@@ -31,6 +35,21 @@ uniform float foam_edge_softness = 0.05;
 uniform float foam_smoothness = 0.03;
 uniform float foam_distortion_speed = 0.5;
 uniform float foam_distortion_amount = 0.1;
+
+// Ice (world/seasons/ice_slabs.gd). 0 never freezes (sea, zone water); 1 still water (lake,
+// canals): a skim creeps out from the banks, then a whole sheet while a walkable slab lies on it;
+// 2 flowing water (rivers): only a rim at each bank freezes, the middle keeps flowing.
+uniform int ice_kind = 0;
+// 1 while ice_slabs.gd holds a walkable slab on this surface: the sheet is whole and waves stop.
+uniform float ice_solid = 0.0;
+// Rivers: fraction of the ribbon width (UV.x) frozen at each bank at full ice.
+uniform float ice_rim = 0.22;
+// 0 a flat ice colour (Quality water_ice_look = flat), 1 milky/clear patches and cracks.
+uniform float ice_detail = 1.0;
+// Rain falling now (weather params.rain, 0..1). 0 skips all ripple work.
+uniform float rain_amount = 0.0;
+// Ripple rings fade out by this view distance (metres): they alias to noise farther away.
+uniform float ripple_distance = 40.0;
 
 
 // Math constants
@@ -85,11 +104,80 @@ float calculate_wave_height(vec2 position, float time) {
     return (wave_x + wave_y) * 0.5 * wave_amplitude;
 }
 
-// Vertex shader (unchanged)
+varying vec3 water_world;
+varying float water_ice;
+
+// How frozen the water is here: season ice x the biome's "ice allowed" (climate A).
+float water_ice_amount(vec2 xz) {
+    if (ice_kind == 0 || season_ice <= 0.001) return 0.0;
+    return season_ice * season_climate(xz, 3);
+}
+
+// Vertex shader: frozen still water lies flat (no wave work under a whole sheet).
 void vertex() {
     vec4 world_position = MODEL_MATRIX * vec4(VERTEX, 1.0);
-    float wave = calculate_wave_height(world_position.xz, TIME + time_offset);
-    VERTEX.y += wave;
+    water_world = world_position.xyz;
+    water_ice = water_ice_amount(world_position.xz);
+    float calm = 0.0;
+    if (ice_kind == 1) calm = ice_solid > 0.5 ? 1.0 : 0.7 * smoothstep(0.1, 0.6, water_ice);
+    if (calm < 0.999) {
+        float wave = calculate_wave_height(world_position.xz, TIME + time_offset);
+        VERTEX.y += wave * (1.0 - calm);
+    }
+}
+
+// World xz folded to keep the hash arguments small (one straight seam every 1024 m reads as a crack).
+vec2 ice_xz(vec2 xz) {
+    return mod(xz, 1024.0);
+}
+
+// Still water: 1 under a whole sheet; before that a skim reaching out from the shallow banks
+// (depth_diff ~ metres of water along the view ray) that never closes over the middle.
+float still_ice_cover(float ice, float depth_diff, vec2 xz) {
+    if (ice_solid > 0.5) return 1.0;
+    if (ice <= 0.001) return 0.0;
+    float reach = smoothstep(0.08, 0.6, ice) * 0.8;
+    float shore = clamp(depth_diff * 0.25, 0.0, 1.0) + (smooth_noise(xz * 0.15) - 0.5) * 0.3;
+    return 1.0 - smoothstep(reach - 0.06, reach + 0.02, shore);
+}
+
+// Rivers: a frozen rim at each bank (UV.x runs 0..1 across the ribbon).
+float river_ice_rim(float ice, float across, vec2 xz) {
+    if (ice <= 0.001) return 0.0;
+    float rim = ice_rim * smoothstep(0.1, 0.8, ice);
+    float edge = min(across, 1.0 - across) + (smooth_noise(xz * 0.3) - 0.5) * 0.05;
+    return 1.0 - smoothstep(rim - 0.015, rim + 0.015, edge);
+}
+
+// White-blue ice: milky and clear patches, two scales of thin white cracks (iso-lines of the
+// same value noise the foam uses).
+vec3 ice_colour(vec2 xz) {
+    vec3 milky = vec3(0.78, 0.88, 0.95);
+    if (ice_detail < 0.5) return milky;
+    vec2 p = ice_xz(xz);
+    float patches = smooth_noise(p * 0.08) * 0.6 + smooth_noise(p * 0.31) * 0.4;
+    vec3 c = mix(vec3(0.52, 0.70, 0.84), milky, smoothstep(0.3, 0.7, patches));
+    float c1 = abs(smooth_noise(p * 0.22) - 0.5);
+    float c2 = abs(smooth_noise(p * 0.9 + 37.0) - 0.5);
+    float crack = (1.0 - smoothstep(0.0, 0.025, c1)) * 0.8 + (1.0 - smoothstep(0.0, 0.035, c2)) * 0.45;
+    return mix(c, vec3(0.96, 0.98, 1.0), clamp(crack, 0.0, 1.0));
+}
+
+// One layer of rain rings: a drop per ~0.6 m cell (fewer in light rain), each ring growing and
+// fading on its own clock, kept inside its cell.
+float ripple_layer(vec2 p, float seed, float t) {
+    vec2 id = floor(p);
+    float h = noise(id + seed);
+    if (h > rain_amount * 0.8 + 0.1) return 0.0;
+    vec2 centre = vec2(0.35) + 0.3 * vec2(noise(id + seed + 3.7), noise(id + seed + 9.1));
+    float age = fract(t * (0.9 + h * 0.6) + h * 7.0);
+    float d = length(fract(p) - centre);
+    return (1.0 - smoothstep(0.0, 0.05, abs(d - age * 0.32))) * (1.0 - age);
+}
+
+float rain_ripples(vec2 xz, float t) {
+    vec2 p = ice_xz(xz) * 1.6;
+    return clamp(ripple_layer(p, 0.0, t) + ripple_layer(p + vec2(0.5, 0.31), 13.1, t * 1.13), 0.0, 1.0);
 }
 
 // Circle function for water effects 
@@ -211,9 +299,6 @@ vec4 water(vec2 uv, vec3 cdir, float iTime) {
 }
 
 void fragment() {
-    // Calculate basic water effect
-    vec4 water_color = water(UV * tile, vec3(0, 1, 0), TIME * distortion_speed);
-    
     // Get the depth of the pixel in the scene
     float scene_depth = texture(DEPTH_TEXTURE, SCREEN_UV).r;
     
@@ -231,20 +316,45 @@ void fragment() {
     // Calculate depth difference
     float depth_diff = linear_scene_depth - linear_water_depth;
     
-    // Calculate foam
-    float foam = calculate_foam(UV, depth_diff, TIME);
+    // Ice cover here (0 open water .. 1 ice); never computed for the sea.
+    float iced = 0.0;
+    if (ice_kind == 1) iced = still_ice_cover(water_ice, depth_diff, water_world.xz);
+    else if (ice_kind == 2) iced = river_ice_rim(water_ice, UV.x, water_world.xz);
     
-    // Calculate water opacity based on depth
-    float water_opacity = clamp(depth_diff * water_depth_factor, 0.0, 1.0);
-    
-    // Mix water color with the scene behind it
     vec4 background = texture(SCREEN_TEXTURE, SCREEN_UV);
-    vec4 final_color = mix(background, water_color, water_opacity * water_transparency);
+    vec4 final_color = background;
+    if (iced < 0.999) {
+        // Calculate basic water effect (skipped under whole ice: the costly part)
+        vec4 water_color = water(UV * tile, vec3(0, 1, 0), TIME * distortion_speed);
+        
+        // Calculate foam
+        float foam = calculate_foam(UV, depth_diff, TIME);
+        
+        // Calculate water opacity based on depth
+        float water_opacity = clamp(depth_diff * water_depth_factor, 0.0, 1.0);
+        
+        // Mix water color with the scene behind it
+        final_color = mix(background, water_color, water_opacity * water_transparency);
+        
+        // Add foam
+        final_color = mix(final_color, FOAM_COL, foam);
+        
+        // Rain rings on open water near the eye
+        if (rain_amount > 0.001) {
+            float fade = 1.0 - smoothstep(ripple_distance * 0.5, ripple_distance, linear_water_depth);
+            if (fade > 0.0) {
+                float rings = rain_ripples(water_world.xz, TIME) * fade * (1.0 - iced) * clamp(rain_amount * 1.5, 0.0, 1.0);
+                final_color.rgb = mix(final_color.rgb, FOAM_COL.rgb, rings * 0.55);
+            }
+        }
+    }
+    if (iced > 0.001) {
+        vec3 ice_rgb = mix(background.rgb, ice_colour(water_world.xz), 0.9);
+        final_color = mix(final_color, vec4(ice_rgb, 1.0), iced);
+    }
     
-    // Add foam
-    final_color = mix(final_color, FOAM_COL, foam);
-    
-    // Set final color and alpha
+    // Set final color and alpha (ice is a little glossy; open water keeps the default roughness)
     ALBEDO = final_color.rgb;
     ALPHA = final_color.a;
+    ROUGHNESS = mix(1.0, 0.25, iced);
 }

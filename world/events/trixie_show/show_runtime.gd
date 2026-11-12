@@ -34,6 +34,15 @@ const STAGE_CENTRE := Vector3(10.584, -16.584, -85.118)
 const STAGE_FRONT := Vector2(6.585, -79.615)
 const STAGE_FLOOR := -14.96
 const STAGE_GROUND := -16.18
+## Those four are the stage as authored (scenery yaw STAGE_YAW). A show reads the live stage node
+## (ai_id STAGE_ID) when it starts and moves them with it, so a stage moved by a mod or a layout
+## change gets the show on its boards, not behind it (M-MEC-02, 2026-11-08); no node keeps these.
+const STAGE_ID := "schoolhouse_theatre_01"
+const STAGE_YAW := -2.19911
+var stage_centre := STAGE_CENTRE
+var stage_front_xz := STAGE_FRONT
+var stage_floor := STAGE_FLOOR
+var stage_ground := STAGE_GROUND
 ## Trixie's body comes out on stage once Anon is this close (the population's own pony range).
 const SPAWN_RANGE := 240.0
 ## Her patter is only generated while Anon could hear it; "Anon watched" needs this close.
@@ -48,7 +57,8 @@ const BUZZ_SECONDS := 150.0
 ## Fireworks go up over the stage this often until the curtain.
 const FIREWORK_EVERY := 12.0
 ## What Anon pays Trixie for a show of his own (bit_payments.gd, dev 2026-10-28). Paid shows play
-## at any hour; the daily roll still books its own.
+## on any day within WINDOW and out of the rain (own_show_block, 2026-11-08); the daily roll still
+## books its own.
 const SHOW_PRICE := 50
 const MARKER_ID := "activity:trixie_show"
 
@@ -64,21 +74,23 @@ var _loading: Dictionary = {} # Spawn requester -> threaded resource request sti
 func setup(host: Node) -> void:
 	game = host
 	add_to_group("hush_zones")
+	# asks.gd asks event drivers whether an invitation still makes sense (invite_block).
+	add_to_group("event_drivers")
 
 ## Ponies this close to the stage start no chats of their own and walk up to nopony while
 ## Trixie performs (dev 2026-10-28: "make everypony by the stage shut the fuck up").
 const HUSH_RADIUS := 28.0
 func hushes(at: Vector3) -> bool:
 	if show.is_empty() or str(show.get("phase", "")) not in ["perform", "bows"]: return false
-	return Vector2(at.x - STAGE_FRONT.x, at.z - STAGE_FRONT.y).length() < HUSH_RADIUS
+	return Vector2(at.x - stage_front_xz.x, at.z - stage_front_xz.y).length() < HUSH_RADIUS
 
 func facing() -> Vector3:
-	var f := Vector3(STAGE_FRONT.x - STAGE_CENTRE.x, 0.0, STAGE_FRONT.y - STAGE_CENTRE.z)
+	var f := Vector3(stage_front_xz.x - stage_centre.x, 0.0, stage_front_xz.y - stage_centre.z)
 	return f.normalized()
 
 ## Ground point at the middle of the stage's front edge.
 func stage_front() -> Vector3:
-	return Vector3(STAGE_FRONT.x, STAGE_GROUND, STAGE_FRONT.y)
+	return Vector3(stage_front_xz.x, stage_ground, stage_front_xz.y)
 
 ## Where Trixie stands to perform, on the stage floor a little behind the front edge. The deck's
 ## real height comes from a ray (the scenery door height sits below the boards).
@@ -90,15 +102,50 @@ var _deck_cache := {}
 func deck_height(at: Vector3) -> float:
 	var key := Vector2i(roundi(at.x * 4.0), roundi(at.z * 4.0))
 	if _deck_cache.has(key): return _deck_cache[key]
-	var y := STAGE_FLOOR
+	var y := stage_floor
 	if is_inside_tree():
-		var ray := PhysicsRayQueryParameters3D.create(Vector3(at.x, STAGE_GROUND + 8.0, at.z), Vector3(at.x, STAGE_GROUND - 2.0, at.z))
+		var ray := PhysicsRayQueryParameters3D.create(Vector3(at.x, stage_ground + 8.0, at.z), Vector3(at.x, stage_ground - 2.0, at.z))
 		ray.collision_mask = 1
 		var hit := get_viewport().world_3d.direct_space_state.intersect_ray(ray)
 		if not hit.is_empty() and not (hit.collider is CharacterBody3D):
 			y = float(hit.position.y)
 			_deck_cache[key] = y
 	return y
+
+## Moves the stage points with the live stage node (ai_id STAGE_ID), or back to the authored
+## values when there is none. Once per show start; the deck cache follows. The node's yaw and
+## position against STAGE_YAW/STAGE_CENTRE give the move; only a turn about up is followed. In the
+## vanilla world the stage node (rnl_scenery.scn) stands 1.77 m above STAGE_CENTRE.y, the scenery
+## json's height (same x/z and yaw), so floor and ground follow it up; the deck ray (deck_height) finds the boards either way.
+func locate_stage(node: Node3D = null) -> void:
+	if node == null: node = _stage_node()
+	stage_centre = STAGE_CENTRE; stage_front_xz = STAGE_FRONT; stage_floor = STAGE_FLOOR; stage_ground = STAGE_GROUND
+	_deck_cache.clear()
+	if node == null or not node.global_transform.is_finite(): return
+	var yaw := node.global_basis.orthonormalized().get_euler().y
+	var authored := Transform3D(Basis(Vector3.UP, STAGE_YAW), STAGE_CENTRE)
+	var live := Transform3D(Basis(Vector3.UP, yaw), node.global_position)
+	var moved := live * authored.affine_inverse()
+	if moved.origin.length() < 0.01 and absf(angle_difference(yaw, STAGE_YAW)) < 0.001: return
+	stage_centre = node.global_position
+	var front := moved * Vector3(STAGE_FRONT.x, STAGE_GROUND, STAGE_FRONT.y)
+	stage_front_xz = Vector2(front.x, front.z)
+	stage_floor = STAGE_FLOOR + moved.origin.y
+	stage_ground = STAGE_GROUND + moved.origin.y
+	# The ground at the front edge is the terrain's own (the shipped stage stands 1.77 m above the
+	# authored height; tools/mechanics/probe_trixie_ground.gd measured it).
+	if WorldTerrain.instance != null:
+		var ground: float = WorldTerrain.instance.height_at(Vector3(front.x, stage_ground, front.z))
+		if is_finite(ground) and absf(ground - stage_ground) < 3.0: stage_ground = ground
+	# Only a stage moved across the ground is news (a mod or a layout change), not a height fit.
+	if Vector2(moved.origin.x, moved.origin.z).length() > 0.05 or absf(angle_difference(yaw, STAGE_YAW)) > 0.001:
+		print("[show] the stage stands %.1f m and %.0f degrees from its authored place; the show follows it" % [node.global_position.distance_to(STAGE_CENTRE), rad_to_deg(angle_difference(STAGE_YAW, yaw))])
+
+func _stage_node() -> Node3D:
+	if not is_inside_tree(): return null
+	for node: Node in get_tree().get_nodes_in_group("ai_observable"):
+		if node is Node3D and node.is_inside_tree() and str(node.get_meta("ai_id", "")) == STAGE_ID: return node as Node3D
+	return null
 
 func _state() -> Dictionary:
 	var context: Node = game.get("world_context") if game != null else null
@@ -183,6 +230,7 @@ func _camera() -> Node3D:
 ## plays on stage wherever Anon is; `_watched` is kept for the console and labs that pass it.
 func start(_watched := false) -> bool:
 	if not show.is_empty() or game == null: return false
+	locate_stage()
 	var clock := get_node_or_null("/root/TimeOfDay")
 	var day := int(clock.day) if clock != null else 0
 	var state := _state()
@@ -215,6 +263,8 @@ func paid_show(paid: int, asked: bool) -> String:
 	if active(): return "[Your stage show is already on at the schoolhouse.]"
 	if credit < SHOW_PRICE: return "[A stage show costs %d bits; Anon has paid you %d toward one so far.]" % [SHOW_PRICE, credit]
 	if not asked: return "[That covers a stage show (%d bits) whenever Anon asks for one.]" % SHOW_PRICE
+	var blocked := own_show_block()
+	if not blocked.is_empty(): return "[No show right now: %s. His bits stay toward a later one.]" % blocked
 	if not _start_paid(): return "[You cannot put on a show right now.]"
 	state.paid_bits = credit - SHOW_PRICE
 	_save()
@@ -226,7 +276,7 @@ func paid_show(paid: int, asked: bool) -> String:
 func ai_start(check_only := false) -> bool:
 	if active() or game == null: return false
 	var state := _state()
-	if state.is_empty(): return false
+	if state.is_empty() or not own_show_block().is_empty(): return false
 	var clock := get_node_or_null("/root/TimeOfDay")
 	var paid := int(state.get("paid_bits", 0)) >= SHOW_PRICE
 	if not paid and not off_cooldown(int(clock.day) if clock != null else 0, int(state.get("last_day", -1000))): return false
@@ -236,6 +286,25 @@ func ai_start(check_only := false) -> bool:
 		state.paid_bits = int(state.paid_bits) - SHOW_PRICE
 		_save()
 	return true
+
+## Why Trixie cannot put on a show of her own now, "" when she can: like the town's shows, hers
+## play between 16:30 and 19:00 (WINDOW) and never in rain, snow or hail (M-MEC-03, 2026-11-08).
+func own_show_block() -> String:
+	var clock := get_node_or_null("/root/TimeOfDay")
+	if clock != null:
+		var h := float(clock.hours)
+		if h < WINDOW.x or h >= WINDOW.y: return "your shows are only between half past four and seven in the evening"
+	if _raining(): return "not in this weather"
+	return ""
+
+## Trixie's invitations (asks.gd invite, town_calendar invitable): none to her show on a day the
+## weather spoils it (raining now, or a wet day by weather.gd's daily roll) unless it is already on.
+func invite_block(event_id: String) -> String:
+	if event_id != "trixie_show" or active(): return ""
+	if _raining(): return "Trixie's show is off in this weather"
+	var weather: Node = game.get_node_or_null("Weather") if game != null else null
+	if weather != null and weather.has_method("wet_day") and bool(weather.call("wet_day")): return "Rain is due today; Trixie's show may not go on"
+	return ""
 
 ## A paid show leaves the weekly cooldown alone, so the town's own shows still come.
 func _start_paid() -> bool:
@@ -252,7 +321,7 @@ func _publish_marker(on: bool) -> void:
 	var markers: Array[Dictionary] = []
 	if on:
 		markers.append({"id": MARKER_ID, "name": "Trixie's show", "kind": "activity", "activity": "trixie_show", "icon_id": TRIXIE,
-			"flash": int(float(show.get("time", 0.0)) * 2.0) % 2 == 0, "position": Vector2(STAGE_CENTRE.x, STAGE_CENTRE.z)})
+			"flash": int(float(show.get("time", 0.0)) * 2.0) % 2 == 0, "position": Vector2(stage_centre.x, stage_centre.z)})
 	for map_view: Node in get_tree().get_nodes_in_group("world_map_views"):
 		map_view.set_activity_markers("trixie_show", markers)
 
@@ -267,7 +336,7 @@ func _beacon() -> void:
 
 func _near_stage(range_m: float) -> bool:
 	var camera := _camera()
-	return camera != null and camera.global_position.distance_to(STAGE_CENTRE) < range_m
+	return camera != null and camera.global_position.distance_to(stage_centre) < range_m
 
 func trixie() -> Node3D:
 	var actor: Variant = show.get("trixie")
@@ -303,7 +372,7 @@ func _offstage() -> void:
 		var core: RefCounted = ESSENCE.core(population)
 		if core != null: core.pause_resident(TRIXIE, true, "Putting on her magic show")
 		var at := stage_front() + facing() * 1.5
-		at.y = WorldTerrain.instance.height_at(at) if WorldTerrain.instance != null else STAGE_GROUND
+		at.y = WorldTerrain.instance.height_at(at) if WorldTerrain.instance != null else stage_ground
 		resident.position = LIFE_CORE.vector(at)
 		resident.last_reason = "Putting on her magic show at the schoolhouse stage"
 
@@ -339,8 +408,8 @@ func _spawn_trixie() -> void:
 	if not owns_show(session): return
 	if packed == null: _end("trixie scene missing"); return
 	var on_stage: bool = show.phase in ["perform", "bows"]
-	var at := stage_mark() if on_stage else STAGE_CENTRE - facing() * 9.0
-	if not on_stage: at.y = WorldTerrain.instance.height_at(at) if WorldTerrain.instance != null else STAGE_GROUND
+	var at := stage_mark() if on_stage else stage_centre - facing() * 9.0
+	if not on_stage: at.y = WorldTerrain.instance.height_at(at) if WorldTerrain.instance != null else stage_ground
 	var region := "ponyville"
 	var actor: Node3D = await game._spawn_resident(TRIXIE, str(population.config.assignments.get(TRIXIE, region)), at, packed, region, requester)
 	if not owns_show(session):
@@ -497,7 +566,7 @@ func _end(reason: String) -> void:
 	if actor != null:
 		# Down off the stage the same way she came up, then back to her day.
 		var down := stage_front() + facing() * 1.5
-		down.y = WorldTerrain.instance.height_at(down) if WorldTerrain.instance != null else STAGE_GROUND
+		down.y = WorldTerrain.instance.height_at(down) if WorldTerrain.instance != null else stage_ground
 		if reason == "done": levitate(actor, down, 1.6)
 		var nav: Node = actor.get_node_or_null("Navigator")
 		if nav != null and str(nav.command_owner).begins_with(OWNER):

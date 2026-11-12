@@ -71,7 +71,11 @@ func consume(side: String) -> void:
 
 func _physics_process(delta: float) -> void:
 	if not available():
-		offers.clear(); armed = {"left":false,"right":false}; down = {"left":true,"right":true}; return
+		# Reset once; on desktop this ran every tick, building two dictionaries (W2 perf pass).
+		if not offers.is_empty() or armed.size() != 2 or armed.get("left") != false or armed.get("right") != false \
+				or down.size() != 2 or down.get("left") != true or down.get("right") != true:
+			offers.clear(); armed = {"left":false,"right":false}; down = {"left":true,"right":true}
+		return
 	_elapsed += delta
 	var refresh := _elapsed >= .08
 	if refresh: _elapsed = 0.0

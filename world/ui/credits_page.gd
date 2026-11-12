@@ -4,6 +4,8 @@ extends PanelContainer
 signal back_requested
 
 const DATA := preload("res://world/ui/credits.gd")
+## The /mlp/ team crest from the 4chan Cup.
+const BOARD_CREST := preload("res://world/ui/credits/mlp_crest.png")
 const SECTIONS := [["Creators", "assets"], ["Libraries", "libraries"], ["Fonts", "fonts"], ["Engine", "engine"], ["Terms", "terms"]]
 var redraw := Callable()
 var back_button: Button
@@ -38,6 +40,15 @@ func setup(page_size: Vector2, text_size: int = 23) -> void:
 	var layout := VBoxContainer.new(); layout.add_theme_constant_override("separation", 12); add_child(layout)
 	var heading := Label.new(); heading.text = "Credits & licences"; heading.theme_type_variation = "Heading"
 	heading.add_theme_font_size_override("font_size", text_size + 13); layout.add_child(heading)
+	# dev 2026-11-08: the board credit stands front and centre, above every tab.
+	var board := HBoxContainer.new(); board.alignment = BoxContainer.ALIGNMENT_CENTER
+	board.add_theme_constant_override("separation", 16); layout.add_child(board)
+	var crest := TextureRect.new(); crest.texture = BOARD_CREST
+	crest.expand_mode = TextureRect.EXPAND_IGNORE_SIZE; crest.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	crest.custom_minimum_size = Vector2.ONE * (text_size * 4); board.add_child(crest)
+	var board_label := Label.new(); board_label.text = DATA.BOARD_CREDIT; board_label.theme_type_variation = "Heading"
+	board_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	board_label.add_theme_font_size_override("font_size", text_size + 9); board.add_child(board_label)
 	var tabs := HBoxContainer.new(); tabs.add_theme_constant_override("separation", 6); layout.add_child(tabs)
 	for section: Array in SECTIONS:
 		var button := _button(tabs, str(section[0]), _show_section.bind(str(section[1])))

@@ -285,7 +285,14 @@ func _update_fists(delta: float) -> void:
 		_trigger[side] = move_toward(float(_trigger[side]), trigger_target, delta / 0.08)
 		var grip := float(_grip[side])
 		var trigger := float(_trigger[side])
-		for entry in _finger_bones[side]:
+		# A settled hand rewrote the same 15 finger rotations every pass: skip it while the curl
+		# inputs are unchanged and the first finger still holds the rotation written last time.
+		var fingers: Array = _finger_bones[side]
+		var key := PackedFloat64Array([grip, trigger, rest_curl, fist_angle, rest_splay])
+		if fingers.is_empty() or (key == (_fist_key[side] as PackedFloat64Array) and _skeleton.get_bone_pose_rotation(int(fingers[0][0])) == (_fist_first[side] as Quaternion)):
+			continue
+		_fist_key[side] = key
+		for entry in fingers:
 			var bone: int = entry[0]
 			var is_index: bool = bool(entry[3])
 			var close := trigger if is_index else maxf(grip, trigger)
@@ -295,6 +302,11 @@ func _update_fists(delta: float) -> void:
 			var pose := rest * Basis(Vector3.UP, splay * float(entry[2])) \
 				* Basis(Vector3.BACK, -curl * float(entry[1]))
 			_skeleton.set_bone_pose_rotation(bone, pose.get_rotation_quaternion())
+		_fist_first[side] = _skeleton.get_bone_pose_rotation(int(fingers[0][0]))
+
+## Last curl inputs and first-finger rotation written per hand (_update_fists).
+var _fist_key: Dictionary = {"left": PackedFloat64Array(), "right": PackedFloat64Array()}
+var _fist_first: Dictionary = {"left": Quaternion(), "right": Quaternion()}
 
 
 ## Visible hands follow tracking, kept outside every pony's coat by a collide-and-slide of the
@@ -471,7 +483,8 @@ var _body_physics_frame := -1
 
 func _process(delta: float) -> void:
 	_body_delta += delta
-	if is_instance_valid(desktop_pose_driver) and not _xr_active():
+	_ik_replay = is_instance_valid(desktop_pose_driver) and not _xr_active()
+	if _ik_replay:
 		var tick := Engine.get_physics_frames()
 		if tick == _body_physics_frame: return
 		_body_physics_frame = tick
@@ -481,11 +494,22 @@ func _process(delta: float) -> void:
 	_process_step(step)
 	if started > 0: CPU_PROFILE.record("anon_body", started)
 
+var _ik_serial := 0
+var _ik_node: Node
+## Desktop only: this pass runs once per physics tick, so the IK may replay it on the frames
+## between. The headset moves the targets every frame and always solves.
+var _ik_replay := false
+
 func _xr_active() -> bool:
 	var vp := get_viewport()
 	return vp != null and vp.use_xr
 
 func _process_step(delta: float) -> void:
+	# Every pass may move the IK targets or the animated base pose: the IK solves again on the next
+	# skeleton update and replays that solve on frames without a pass (valve_body_ik.gd).
+	_ik_serial += 1
+	if _ik_node == null and _skeleton != null: _ik_node = _skeleton.get_node_or_null("BodyIK")
+	if _ik_node != null: _ik_node.set(&"input_serial", _ik_serial if _ik_replay else -1)
 	if _camera == null:
 		return
 	# A non-finite headset pose (tracking drop) must not reach the IK targets;

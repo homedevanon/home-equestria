@@ -3,6 +3,9 @@ extends Node3D
 ## unattended capture mode used to verify visuals without a headset.
 const SHUTDOWN := preload("res://world/shutdown_waits.gd")
 const SOUNDS := preload("res://world/audio/interaction_sounds.gd")
+## Scenario mods (world/modding/scenario.gd, M-MOD-10): world stamp, initial state, start node.
+const SCENARIO := preload("res://world/modding/scenario.gd")
+const TITLE_SCENE := "res://world/ui/title_screen.tscn"
 
 # The physics rig: xr-kit force-driven hands, joint grab, visible Anon body.
 # The old xr_player.tscn (xr-tools ranged pickup) is retired but kept on disk.
@@ -154,6 +157,10 @@ func _ready() -> void:
 	if context_root.is_empty():
 		context_root=context_save_root
 		if DisplayServer.get_name()=="headless":context_root="user://test_context/"+str(OS.get_process_id())
+	# A world with no memory yet (no context.json or its backup) is brand new: a running scenario
+	# stamps it (SCENARIO.begin_world below).
+	var context_file:=context_root.path_join(context_world_id).path_join("context.json")
+	var context_existed:=FileAccess.file_exists(context_file) or FileAccess.file_exists(context_file+".previous")
 	if not world_context.open_world(context_world_id,context_root):push_warning(world_context.error)
 	preload("res://world/props/ponyville_kit/kit_state.gd").install(self)
 	preload("res://world/books/book_library.gd").open_world(world_context.path.get_base_dir())
@@ -219,10 +226,22 @@ func _ready() -> void:
 	var saved_body:Node=player.get_node("Body") if xr_active else player
 	# Held still under the loading screen (a resumed game also until its position is back).
 	saved_body.set_physics_process(false)
+	# Scenario mods: a new world is stamped with the running scenario and gets its initial state
+	# before the arrival story reads the context; a world of another scenario (or a vanilla world
+	# while one runs) is not entered: back to the title, its saves untouched (the menus refuse
+	# them first; this catches --world-id and the autosave resume).
+	var resume_block:String=str(saves.get("scenario_block")) if saves.get("scenario_block") is String else ""
+	var is_new_world:bool=not context_existed and resumed.is_empty() and resume_block.is_empty()
+	var scenario_block:String=resume_block if not resume_block.is_empty() else SCENARIO.begin_world(self,is_new_world)
+	if not scenario_block.is_empty():
+		_leave_for_title(scenario_block)
+		return
 	# A new world begins with the arrival story (world/life/arrival_story.gd): the player wakes
 	# in the Everfree. Placed before the title view so the title returns him there.
 	arrival = preload("res://world/life/arrival_story.gd").new()
 	arrival.name = "ArrivalStory"; add_child(arrival); arrival.prepare(self, resumed)
+	# The scenario's start node ("ScenarioStart"): instead of the opening (skip_opening) or before it.
+	SCENARIO.start_world(self, arrival, is_new_world)
 	# Opening title (world/ui/title_vista.gd): the player waits at a view of Ponyville while the
 	# save's real place is remembered; nothing is saved until Continue.
 	if title_mode:
@@ -288,6 +307,12 @@ func _ready() -> void:
 		ground_rescue.name = "PlayerGroundRescue"; add_child(ground_rescue); ground_rescue.setup(self)
 		var weather := preload("res://world/weather/weather.gd").new()
 		weather.name = "Weather"; add_child(weather); weather.setup(self)
+		# Look overhaul 2026-11-10: warm light and smoke at lit houses, motes in the air (each has its own ENABLED switch).
+		var town_warmth := preload("res://world/look/town_warmth.gd").new(); town_warmth.name = "TownWarmth"; add_child(town_warmth)
+		var air_motes := preload("res://world/vfx/air_motes.gd").new(); air_motes.name = "AirMotes"; add_child(air_motes)
+		var bird_flocks := preload("res://world/vfx/bird_flocks.gd").new(); bird_flocks.name = "BirdFlocks"; add_child(bird_flocks)
+		var cold_breath := preload("res://world/vfx/cold_breath.gd").new(); cold_breath.name = "ColdBreath"; add_child(cold_breath)
+		var season_state := preload("res://world/seasons/season_state.gd").new(); season_state.name = "SeasonState"; add_child(season_state); season_state.setup(self)
 		var fireflies := preload("res://world/life/fireflies.gd").new()
 		fireflies.name = "Fireflies"; add_child(fireflies)
 		var visits := preload("res://world/life/princess_visits.gd").new()
@@ -335,8 +360,11 @@ func _ready() -> void:
 	saves.ready_to_save=not title_active
 	if title_active: title_vista.reveal(cover)
 	else:
-		cover.finish()
+		# PK-014 (W1-PERF-HITCH hook 1): the body's first physics tick (250-275 ms in VR) runs under
+		# the cover, not as the first visible frame.
 		saved_body.set_physics_process(true)
+		if not await SHUTDOWN.physics_frame(self): return
+		cover.finish()
 	var hitch := preload("res://world/debug/hitch_monitor.gd").new()
 	hitch.name = "HitchMonitor"
 	add_child(hitch)
@@ -344,6 +372,14 @@ func _ready() -> void:
 		add_child(load("res://tools/gaea_world_review.gd").new())
 	if runtime_profile != null:
 		runtime_profile.begin(self)
+
+## A world this launch cannot play (scenario mods, world/modding/scenario.gd): nothing is saved,
+## and the title says why.
+func _leave_for_title(reason:String)->void:
+	push_warning("[scenario] world %s not entered: %s"%[context_world_id,reason])
+	SCENARIO.notice="Could not enter that world: %s."%reason
+	if is_instance_valid(saves):saves.ready_to_save=false
+	get_tree().change_scene_to_file.call_deferred(TITLE_SCENE)
 
 func _refresh_activity_markers()->void:
 	if not is_instance_valid(apple_bucking):return

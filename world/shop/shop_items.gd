@@ -39,9 +39,12 @@ const GOODS := {
 	"paper-hearts": ["Writing paper with hearts", 0.22, 10, "Paper with little hearts in the margin, for a letter that means a lot."],
 	# A stand-in model (the painting brush) until a quill is modelled through the Blender MCP.
 	"quill": ["Quill", 0.27, 15, "In VR, hold the quill to the open paper and speak: your words are written down. Say \"scratch that\" to cross out the last sentence."],
+	# The blank canvas an owned easel needs once its first painting is taken off (M-ACT-03,
+	# world/painting/painting_registry.gd CANVAS_ITEM; the price is a proposal for dev).
+	"canvas": ["Blank canvas", 0.62, 5, "A fresh canvas for your easel. Hold it to an easel's empty frame to put it up."],
 }
 ## Goods that stack in one briefcase slot (the rest stack 1).
-const GOODS_STACKS := {"paper-plain": 10, "paper-cream": 10, "paper-floral": 10, "paper-hearts": 10}
+const GOODS_STACKS := {"paper-plain": 10, "paper-cream": 10, "paper-floral": 10, "paper-hearts": 10, "canvas": 5}
 ## Reuse installed authored models; their in-hand size is also their placed size.
 const GOODS_MODELS := {
 	"table-lamp": "res://world/props/lamps/kit/table_lamp.glb",
@@ -54,7 +57,14 @@ const GOODS_MODELS := {
 	"paper-floral": "res://world/props/ponyville_kit/activity/letter.scn",
 	"paper-hearts": "res://world/props/ponyville_kit/activity/letter.scn",
 	"quill": "res://world/painting/models/brush.glb",
+	"canvas": "res://world/painting/models/canvas_portrait.glb",
 }
+## Catalogue tools a stall sells (world/inventory/item_catalog.gd ITEMS ids, not "goods:"): id ->
+## [price in bits (the item_tags.json value), the tool's own collision box with its origin as in
+## its scene]. On the shelf and once bought they are the real tool (its catalogue scene), so has()
+## stays false for them and the briefcase, gift and drop code treat them as before; only the shop
+## asks sellable() (W1-MECHANICS hook 1: the spray bottle that waters a sapling).
+const TOOLS := {"spray-bottle": [8, AABB(Vector3(-0.0425, -0.095, -0.05), Vector3(0.085, 0.23, 0.09))]}
 ## Clothing profile values: part -> [colour index, pattern index, scale index]
 ## (world/customization/clothing_profile.gd PALETTES/PATTERNS/SCALES).
 const OUTFITS := {
@@ -79,9 +89,12 @@ const OUTFITS := {
 const WING_SANDALS := "equipment:wing-sandals"
 ## Pony accessories to give (world/characters/accessories/pony_wardrobe.gd); ids are
 ## "wear:<kind>:<colour index>". She wears a gift whatever the season.
-const WEAR := {"scarf": ["scarf", 50], "beanie": ["detective hat", 50], "sunhat": ["cowpony hat", 50], "socks": ["striped thigh highs", 50],
+const WEAR := {"scarf": ["scarf", 50], "beanie": ["detective hat", 50], "sunhat": ["cowpony hat", 50], "socks": ["striped thigh highs", 50], "plain-socks": ["solid thigh highs", 50], "4cc-scarf": ["/mlp/ cup scarf", 50],
 	"wizard_hat": ["wizard hat", 50], "cape": ["starry cape", 50], "spa-necklace": ["spa pendant", 50], "bowtie": ["bow tie", 50], "necktie": ["necktie", 50], "cowpony-hat": ["cowpony hat", 50], "detective-hat": ["detective hat", 50], "nurse-cap": ["nurse cap", 50],
 	"cat-eye-glasses": ["cat-eye glasses", 50], "aviators": ["aviator glasses", 50], "goggles": ["flight goggles", 50], "headphones": ["headphones", 50]}
+## The player's own: one picture, no colours. Worn by Anon in either form; no town pony takes it
+## (pony_wardrobe.gd CLUB_SCARF_WEARERS: Anonfilly, while her mod is on).
+const CLUB_SCARF := "wear:4cc-scarf:0"
 const FITTED_WEAR := ["spa-necklace", "bowtie", "necktie", "cowpony-hat", "detective-hat", "nurse-cap", "cat-eye-glasses", "aviators", "goggles", "headphones"]
 ## Index-matched with pony_wardrobe.gd COLOURS; the last eight are wardrobe-mirror dyes.
 const WEAR_COLOURS := ["red", "blue", "gold", "green", "purple", "pink", "cream", "charcoal",
@@ -95,11 +108,19 @@ static func has(id: String) -> bool:
 	if SAPLING.is_sapling(id): return true
 	if id.begins_with("wear:"):
 		var parts := id.split(":")
-		if parts.size() == 3 and parts[1] in FITTED_WEAR: return parts[2] == "0"
+		if parts.size() == 3 and (parts[1] in FITTED_WEAR or parts[1] == "4cc-scarf"): return parts[2] == "0"
 		return parts.size() == 3 and WEAR.has(parts[1]) and parts[2].is_valid_int() and int(parts[2]) >= 0 and int(parts[2]) < WEAR_COLOURS.size()
 	if id.begins_with("goods:"): return GOODS.has(id.substr(6))
 	if id.begins_with("outfit:"): return OUTFITS.has(id.substr(7))
 	return false
+
+## What a shop display may stock and sell: every has() id plus the catalogue TOOLS.
+static func sellable(id: String) -> bool:
+	return has(id) or TOOLS.has(id)
+
+## A sold tool's collision box (TOOLS), or an empty AABB.
+static func tool_bounds(id: String) -> AABB:
+	return TOOLS[id][1] if TOOLS.has(id) else AABB()
 
 static func kind(id: String) -> String:
 	return id.get_slice(":", 0) if has(id) else ""
@@ -115,6 +136,7 @@ static func pony_wear(id: String) -> bool:
 ## The line under a price card: who it is for.
 static func form_note(id: String, owned: bool = false) -> String:
 	if wardrobe_only(id): return "In your wardrobe" if owned else "Anon's wardrobe (human)"
+	if id == CLUB_SCARF: return "Yours to wear · human or pony"
 	if pony_wear(id): return "Pony wear · or a gift for a pony"
 	return ""
 
@@ -124,6 +146,12 @@ static func extras(id: String) -> Array[String]:
 	return []
 
 static func definition(id: String) -> Dictionary:
+	if TOOLS.has(id):
+		var catalogue: Dictionary = (load("res://world/inventory/item_catalog.gd") as Script).get_script_constant_map().get("ITEMS", {}).get(id, {})
+		var row := catalogue.duplicate()
+		row.merge({"name": id.capitalize(), "description": "", "stack": 1})
+		row["price_bits"] = int(TOOLS[id][0]); row["shop"] = true
+		return row
 	if CIDER.is_keg(id): return CIDER.definition(id)
 	if SAPLING.is_sapling(id): return SAPLING.definition(id)
 	if id == WING_SANDALS:
@@ -133,6 +161,8 @@ static func definition(id: String) -> Dictionary:
 		return {"name": row[0], "description": row[3], "stack": int(GOODS_STACKS.get(id.substr(6), 1)), "price_bits": row[2], "size_m": row[1], "shop": true}
 	if id.begins_with("wear:") and has(id):
 		var parts := id.split(":")
+		if id == CLUB_SCARF:
+			return {"name": "/mlp/ cup scarf", "description": "The /mlp/ team's supporter scarf: SAFEST HOOVES on one side, GIDDY UP! on the other. Use it to put it on, as Anon or as a pony; take it off at the wardrobe mirror. It is yours: no pony in town will take it.", "stack": 1, "price_bits": WEAR[parts[1]][1], "shop": true}
 		var noun: String = WEAR[parts[1]][0]
 		var name: String = noun.capitalize() if parts[1] in FITTED_WEAR or parts[1] in ["wizard_hat", "cape", "beanie", "sunhat"] else (str(WEAR_COLOURS[int(parts[2])]).capitalize() + " " + noun)
 		if parts[1] in FITTED_WEAR:
@@ -156,6 +186,7 @@ static func outfit(id: String) -> Dictionary:
 	return result
 
 static func scene(id: String) -> PackedScene:
+	if TOOLS.has(id): return load("res://world/inventory/assets/%s.tscn" % id) as PackedScene
 	if not has(id): return null
 	if not _scenes.has(id):
 		var visual: Node3D = VISUAL.new()

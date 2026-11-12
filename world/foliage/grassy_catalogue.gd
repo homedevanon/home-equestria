@@ -36,7 +36,12 @@ static func collar_offset(entry: Dictionary) -> Vector3:
 
 static func scene(entry: Dictionary) -> PackedScene:
 	var path := str(entry.scene)
-	if not _scenes.has(path): _scenes[path] = load(path)
+	if not _scenes.has(path):
+		_scenes[path] = load(path)
+		# Sakura and other flowering trees get their spring blossom (W2-SEAS-D H1): once, before
+		# tree_impostors.fading() duplicates the leaf material, so near/far LODs and crossfades match.
+		var materials := preload("res://world/foliage/vegetation_materials.gd")
+		if _scenes[path] != null and materials.is_blossom(str(entry.get("id", ""))): materials.mark_blossom(_scenes[path])
 	return _scenes[path]
 
 static func woodland_entries() -> Array:

@@ -45,6 +45,15 @@ static func make_room(inventory: Node) -> bool:
 static func full_text(inventory: Node) -> String:
 	return "%d of your things are out of the briefcase, the most there can be. Put some away first." % int(inventory.MAX_LOOSE)
 
+## The hotbar line when a thing from an activity (a catch, a painting, a station's output) could
+## not be placed (briefcase_drops.gd spawn_owned_drop): too many things out, or no briefcase slot.
+static func not_placed_text(inventory: Node, id: String, loose_full: bool) -> String:
+	var name := str(CATALOG.definition(id).get("name", ""))
+	if name.is_empty(): name = "It"
+	if loose_full:
+		return "%s could not be placed: %d of your things are out of the briefcase, the most there can be. Put some away first." % [name, int(inventory.MAX_LOOSE)]
+	return "%s could not be placed: your briefcase is full. Make room first." % name
+
 ## A discarded leftover lying in the world: an empty food container or a photo, set down (not
 ## held, worn, hung at home, laid out or standing open).
 static func leftover(loan: Dictionary) -> bool:

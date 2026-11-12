@@ -17,7 +17,7 @@ func setup(settings: RefCounted, head: Camera3D, player_avatar: Node3D):
 	profile=settings;camera=head
 	viewport=SubViewport.new();viewport.size=Vector2i(1200,760);viewport.disable_3d=true;viewport.gui_disable_input=true
 	viewport.render_target_update_mode=SubViewport.UPDATE_DISABLED;add_child(viewport)
-	ui=VIEW.new();viewport.add_child(ui);ui.dirty.connect(refresh);ui.bind(profile)
+	ui=VIEW.new();viewport.add_child(ui);ui.dirty.connect(refresh);ui.bind(profile);ui.store=get_parent().get("inventory") if get_parent()!=null else null
 	_avatar=player_avatar;_human_avatar=player_avatar
 	ui.height_available = is_instance_valid(_avatar) and _avatar.has_method("begin_height_calibration") and XRServer.primary_interface != null and XRServer.primary_interface.is_initialized()
 	_preview_rect=TextureRect.new();_preview_rect.position=Vector2(672,93);_preview_rect.size=Vector2(480,576)
@@ -54,7 +54,7 @@ func _use_human() -> void:
 	pony_mode=false;_avatar=_human_avatar
 	if mirror!=null:mirror.queue_free();mirror=null
 	ui.remove_child(_preview_rect);ui.free()
-	ui=VIEW.new();viewport.add_child(ui);ui.dirty.connect(refresh);ui.bind(profile);ui.add_child(_preview_rect)
+	ui=VIEW.new();viewport.add_child(ui);ui.dirty.connect(refresh);ui.bind(profile);ui.store=get_parent().get("inventory") if get_parent()!=null else null;ui.add_child(_preview_rect)
 	ui.height_available=is_instance_valid(_avatar) and _avatar.has_method("begin_height_calibration") and XRServer.primary_interface!=null and XRServer.primary_interface.is_initialized()
 func close(save: bool = false):
 	if not opened:return

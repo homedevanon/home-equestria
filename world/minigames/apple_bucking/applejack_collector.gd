@@ -75,7 +75,14 @@ func _deposit_point(tree_id: String) -> Vector3:
 func _physics_process(delta: float) -> void:
 	clock += delta
 	if not is_instance_valid(activity): return
-	if not lease.is_empty() and (not _owned() or _interrupted()): release(); return
+	if not lease.is_empty() and (not _owned() or _interrupted()):
+		# Her own in-place reply tag ([sit], [stand], [approach]...) took her navigator: the lease
+		# takes it back and she carries on collecting (private #336; the spa and Hayburger do the
+		# same). Only looked at when the lease lost her, so no extra work on an ordinary frame. Not
+		# while she is otherwise interrupted (talking with Anon, held...): the lease ends then anyway,
+		# and taking the navigator back first would stand her up and cancel the tag.
+		if is_instance_valid(nav) and not _interrupted() and QUEUE.reclaim_from_model(nav, str(lease.owner)): _resume_after_reclaim()
+		if not _owned() or _interrupted(): release(); return
 	if is_instance_valid(target) and phase not in ["apple", "lower"] and activity.claim_owner(target) != self:
 		target = null; phase = ""
 	if is_instance_valid(target) and phase in ["lift", "basket"]:
@@ -201,6 +208,23 @@ func _physics_process(delta: float) -> void:
 					_mouth_pose.release(str(lease.owner))
 					last_release = "deposit_drop"
 					target = null; phase = ""
+
+## After a reclaim: standing again (a [sit] tag sat her down), a lowering head starts its approach
+## over, a close basket approach is lined up again from where she stands; the tick's own retry then
+## walks her to the apple or basket. Her arrival distance is the lease's again.
+func _resume_after_reclaim() -> void:
+	print("[apple bucking] Applejack keeps collecting: a reply tag had taken her navigation")
+	if actor.has_method("posture_status") and actor.has_method("request_posture"):
+		var status: Dictionary = actor.posture_status()
+		if str(status.get("kind", "stand")) not in ["stand", ""] or str(status.get("requested", "stand")) != "stand": actor.request_posture("stand")
+	if lease.has("arrival"): nav.arrival_distance = float(lease.arrival)
+	if phase == "lower":
+		if _mouth_pose != null: _mouth_pose.release(str(lease.owner))
+		phase = "apple"
+	_basket_close = false
+	approach_goal = Vector3.INF
+	deadline = clock + 90.0
+
 
 ## The held apple is inside the rim's footprint, a little above the opening: a straight drop
 ## lands inside (apple_bucking.gd _basket_contains is the interior, .275 x .215, up to .43).

@@ -343,8 +343,9 @@ func finish(side: String) -> bool:
 	if not REGISTRY.write_png(image.duplicate() as Image, "art_%s.png" % id): return false
 	REGISTRY.add_art(id, orient, label)
 	var item: Node3D = inventory.spawn_owned_drop("art:" + id, pose)
-	# Refused after all: the picture stays on the easel and in its work in progress.
-	if item == null: return _no_room()
+	# Refused after all: the picture stays on the easel and in its work in progress. The drop
+	# already said why (no slot, or the loose cap after tidying), so that line stays.
+	if item == null: return _no_room(true)
 	REGISTRY.clear_wip(key)
 	var hand_pose: Transform3D = pose
 	if side == "desktop":
@@ -363,22 +364,28 @@ func finish(side: String) -> bool:
 	_dirty = false
 	_record_reaction(id, label)
 	SFX.play_event(easel, "prop_blanket", {"intensity": .45})
+	# An owned easel with bought canvases (M-ACT-03): it stands empty until Anon puts up a new
+	# blank canvas (easel_wake.gd mount_canvas_from_hand); the session ends with it.
+	if REGISTRY.needs_bought_canvas(key):
+		REGISTRY.set_bare(key, true)
+		BUILD.refresh_canvas(easel)
+		close.call_deferred(false)
 	return true
 
-## A free briefcase slot and a loose-item place, the limits of briefcase_drops.spawn_owned_drop.
+## A free briefcase slot, the one limit spawn_owned_drop cannot fix itself (at the loose-item cap it
+## puts a leftover back first, briefcase_drops.gd / loose_tidy.gd; W1-INVENTORY hook note).
 func _room_for_painting() -> bool:
 	var store: Variant = inventory.get("inventory")
 	if not store is Object: return true
-	var loans: Variant = (store as Object).get("loans")
-	var limit: Variant = inventory.get("MAX_LOOSE")
-	if loans is Dictionary and limit is int and (loans as Dictionary).size() >= int(limit): return false
 	var slots: Variant = (store as Object).get("slots")
 	if not slots is Array: return true
 	for slot: Variant in slots:
 		if slot is Dictionary and (slot as Dictionary).is_empty(): return true
 	return false
 
-func _no_room() -> bool:
+## `refused`: spawn_owned_drop refused and already showed its own reason; that line is kept.
+func _no_room(refused := false) -> bool:
+	if refused: return false
 	var store: Variant = inventory.get("inventory")
 	if store is Object: (store as Object).set("last_error", "No room in the briefcase for the painting.")
 	if inventory.has_method("_error"): inventory.call("_error")
@@ -538,6 +545,7 @@ static func _ray_sphere(origin: Vector3, direction: Vector3, centre: Vector3, ra
 	return t if (origin + direction * t).distance_to(centre) <= radius else INF
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventKey and preload("res://world/ui/typing_guard.gd").active(): return  # typing never drives the game
 	if not desktop or _closing or not is_instance_valid(inventory): return
 	if Engine.get_process_frames() == _begin_frame and event is InputEventKey: return
 	if FLIGHT_INPUT.reserves_mouse(event, inventory.get("player_body")): return

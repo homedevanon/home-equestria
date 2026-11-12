@@ -65,6 +65,10 @@ var _pending_stream: AudioStreamWAV
 var _debug_mouth := "debugmouth" in preload("res://world/dev_tools.gd").user_args()
 
 
+## 1 when the run has no sound device (tests), 0 when it has, -1 not asked yet. Asked once: the
+## command line was read again every frame of every spoken line.
+static var _silent_driver := -1
+
 func _ready() -> void:
 	var packed: PackedScene = load(model_path)
 	if packed == null:
@@ -184,9 +188,17 @@ func _route_voice(ponese: bool) -> void:
 ## Say a wav (res://, user:// or absolute). `text` is the spoken line; with it
 ## Rhubarb uses its English recogniser for better shapes.
 var _pending_path := ""
+## A line that is still arriving from the voice server ("pcm://utterance/N" from tts_client.gd):
+## played and lip-read by pcm_speech_player.gd while it comes in.
+const PCM_UTTERANCE := preload("res://world/ai/pcm_utterance.gd")
+const PCM_PLAYER := preload("res://world/characters/pcm_speech_player.gd")
+var _pcm_player: Node
 
 func speak(wav_path: String, text := "") -> void:
 	stop_speaking()
+	if PCM_UTTERANCE.is_uri(wav_path):
+		_speak_pcm(wav_path)
+		return
 	var stream := LipSync.load_wav(wav_path)
 	if stream == null or stream.get_length() <= 0.0:
 		speech_failed.emit("Cannot load voice audio")
@@ -226,9 +238,51 @@ func is_speaking() -> bool:
 	return _speech_time >= 0.0
 
 
+func _speak_pcm(path: String) -> void:
+	var utterance: RefCounted = PCM_UTTERANCE.take(path)
+	if utterance == null or voice == null:
+		if utterance != null: utterance.cancel()
+		speech_failed.emit("PCM speech unavailable")
+		return
+	_pending_path = path
+	_cues = []
+	if mouth: mouth.set_viseme("X")
+	_route_voice(false)
+	_pcm_player = PCM_PLAYER.new()
+	_pcm_player.debug = _debug_mouth
+	add_child(_pcm_player)
+	_pcm_player.started.connect(_pcm_started)
+	_pcm_player.finished.connect(_pcm_finished)
+	_pcm_player.failed.connect(_pcm_failed)
+	_pcm_player.begin(utterance, voice)
+	_cues = _pcm_player.cues
+
+
+func _pcm_started() -> void:
+	print("[voice] %s plays %s (streamed)" % [get_parent().name if get_parent() else name, _pending_path.get_file()])
+	_speech_time = 0.0
+	_speech_peak = 0.0
+	set_process(true)
+	speech_started.emit()
+
+
+func _pcm_finished() -> void:
+	stop_speaking()
+	speech_finished.emit()
+
+
+func _pcm_failed(message: String) -> void:
+	stop_speaking()
+	speech_failed.emit(message)
+
+
 func stop_speaking() -> void:
 	_speech_generation += 1
 	_pending_stream = null
+	if is_instance_valid(_pcm_player):
+		_pcm_player.cancel()
+		_pcm_player.queue_free()
+	_pcm_player = null
 	if voice:
 		voice.stop()
 	_speech_time = -1.0
@@ -244,8 +298,14 @@ func _unprofiled_process(delta: float) -> void:
 	if _speech_time < 0.0:
 		set_process(false)
 		return
+	if is_instance_valid(_pcm_player):
+		# The stream player owns the clock and the end of the line.
+		_speech_time = maxf(0.0, _pcm_player.time)
+		_show_mouth()
+		return
 	# Do not let frame time run ahead and finish a real voice that is still playing.
-	var dummy := DisplayServer.get_name() == "headless" or "Dummy" in OS.get_cmdline_args()
+	if _silent_driver < 0: _silent_driver = 1 if DisplayServer.get_name() == "headless" or "Dummy" in OS.get_cmdline_args() else 0
+	var dummy := _silent_driver == 1
 	if voice.playing and not dummy:
 		_speech_time = maxf(0.0,voice.get_playback_position()+AudioServer.get_time_since_last_mix()-AudioServer.get_output_latency())
 		_speech_peak = maxf(_speech_peak, voice.get_playback_position())
@@ -263,6 +323,10 @@ func _unprofiled_process(delta: float) -> void:
 		if incomplete:speech_failed.emit("Voice playback stopped early")
 		else:speech_finished.emit()
 		return
+	_show_mouth()
+
+
+func _show_mouth() -> void:
 	if mouth:
 		var letter := LipSync.viseme_at(_cues, _speech_time)
 		# Lips round before the "oo" sounds (viseme review 2026-11-03): look one cue ahead, but

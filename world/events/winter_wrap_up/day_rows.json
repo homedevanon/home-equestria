@@ -1,0 +1,20 @@
+{
+ "_what": "Winter Wrap Up day-plan rows (W2-SEAS-I 2026-11-08), in the world/life/day/day_tables.json format. They roll only while the town calendar's winter_wrap_up row is in its window (when.event), use existing handlers and poses only (go_to standing, tend's watering, joyride's flight), and belong in the seasonal table (world/life/day/tables/seasonal.json, W2-SEAS-H) once the planner loads extra tables. Earth ponies get their gardens ready, pegasi clear the winter clouds, everypony clears snow around town, Fluttershy wakes the animals.",
+ "actions": {
+  "wrap_up_snow": {"weight": 4.0, "handler": "go_to", "hours": [7, 18], "target": "wrap_up_spots", "posture": ["stand"], "minutes": [20, 40],
+   "when": {"event": "winter_wrap_up"}, "phrase": "clear the snow at {target}", "reasons": "wrap_up"},
+  "wrap_up_gardens": {"weight": 3.0, "handler": "tend", "hours": [7.5, 17], "target": "garden", "minutes": [10, 20],
+   "when": {"spot": "garden", "event": "winter_wrap_up"}, "phrase": "get her {target} ready for spring", "reasons": "wrap_up"},
+  "wrap_up_skies": {"weight": 4.0, "handler": "joyride", "hours": [7, 18], "minutes": [2, 5],
+   "when": {"wings": true, "event": "winter_wrap_up"}, "phrase": "clear the winter clouds", "reasons": "wrap_up"},
+  "wrap_up_animals": {"weight": 6.0, "handler": "go_to", "hours": [7, 17], "target": "animal_homes", "posture": ["stand"], "minutes": [20, 40],
+   "when": {"event": "winter_wrap_up", "only_id": ["fluttershy"]}, "phrase": "wake the animals at {target}", "reasons": "wrap_up"}
+ },
+ "targets": {
+  "wrap_up_spots": {"places": ["landmark:town_hall", "landmark:fountain_01", "landmark:bridge_01", "landmark:bridge_02", "landmark:schoolhouse_01", "landmark:goldenoaklibrary_01", "landmark:trainstation_01"]},
+  "animal_homes": {"places": ["landmark:snazzys_fluttershy_cottage_01", "landmark:bridge_04", "landmark:windmill_01"]}
+ },
+ "reasons": {
+  "wrap_up": ["for Winter Wrap Up", "so spring can come", "because winter won't wrap itself up", "with the rest of her team"]
+ }
+}

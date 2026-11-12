@@ -14,6 +14,10 @@ var _hit_done: bool = false
 var _presentation: Node
 var _contact_pending := false
 const DESKTOP_REACH := 1.05
+## Harvest-basket hints (players asked what the "crates" are for): look range on desktop, hand range in VR.
+const BASKET_LOOK := 2.5
+const BASKET_HAND_NEAR := 1.2
+const BASKET_TEXT := "Apple basket · Fallen apples from its tree go in here"
 
 func setup(owner_activity: Node3D) -> void:
 	activity = owner_activity
@@ -32,7 +36,23 @@ func interaction_hint() -> Dictionary:
 		if camera == null: return {}
 		var presentation: Node = _desktop_presentation()
 		if not is_instance_valid(presentation) or presentation.is_busy(): return {}
-		return _trunk_hint(_ray(camera.global_position, camera.global_position-camera.global_basis.z*_desktop_reach()), "[LMB] Punch trunk · Shake ripe apples", true)
+		# One ray serves both: a harvest basket a little farther off, else a trunk in punching reach.
+		var hit: Dictionary = _ray(camera.global_position, camera.global_position-camera.global_basis.z*maxf(_desktop_reach(), BASKET_LOOK))
+		var basket_id := _basket_id(hit.get("collider") as Node)
+		if not basket_id.is_empty():
+			return {"target":activity.baskets[basket_id], "text":BASKET_TEXT, "point":activity.basket_for(basket_id), "visible_pick":true}
+		if hit.is_empty() or camera.global_position.distance_to(hit.position) > _desktop_reach(): return {}
+		return _trunk_hint(hit, "[LMB] Punch trunk · Shake ripe apples", true)
+	# VR, an orchard apple in hand (harvest_pickup.gd holds it): outline the basket it counts in
+	# (each tree's apples go in that tree's own basket; thread report 2026-11).
+	if activity.player_near_orchard(8.0):
+		for hand_side: String in ["right", "left"]:
+			var apple := _held_apple(hand_side)
+			if apple == null: continue
+			var own := str(apple.get_meta("tree_id", ""))
+			var basket: Node3D = activity.baskets.get(own) as Node3D
+			if is_instance_valid(basket) and apple.global_position.distance_to(basket.global_position) < BASKET_HAND_NEAR:
+				return {"target":basket, "text":"Let go over this basket · Put the apple in", "point":activity.basket_for(own), "visible_pick":true}
 	for hand_side: String in ["right", "left"]:
 		if not available(hand_side): continue
 		var sample: Dictionary = ui.hand_sample(hand_side)
@@ -48,7 +68,29 @@ func interaction_hint() -> Dictionary:
 			var hit: Dictionary = _ray(pose.origin, centre)
 			var hint: Dictionary = _trunk_hint(hit, hand_side.capitalize()+" grip + trigger, punch trunk · Buck ripe apples", true)
 			if not hint.is_empty(): return hint
+		# An empty hand at a harvest basket: what it is for.
+		for id: String in activity.baskets:
+			var basket: Node3D = activity.baskets[id] as Node3D
+			if is_instance_valid(basket) and pose.origin.distance_to(activity.basket_for(id)) < BASKET_HAND_NEAR * 0.5:
+				return {"target":basket, "text":BASKET_TEXT, "point":activity.basket_for(id), "visible_pick":true}
 	return {}
+
+## The tree id whose harvest basket `collider` is, or "".
+func _basket_id(collider: Node) -> String:
+	if collider == null or collider.get_parent() != activity: return ""
+	for id: String in activity.baskets:
+		if activity.baskets[id] == collider: return id
+	return ""
+
+## The orchard apple a VR hand carries (its claim owner keeps `held` per side), or null.
+func _held_apple(side: String) -> RigidBody3D:
+	for body: Variant in activity.loose.values():
+		if not body is RigidBody3D or not is_instance_valid(body): continue
+		var owner: Node = activity.claim_owner(body as RigidBody3D)
+		if owner == null: continue
+		var held: Variant = owner.get("held")
+		if held is Dictionary and (held as Dictionary).get(side) == body: return body as RigidBody3D
+	return null
 
 ## `explain`: a trunk that cannot be bucked says why (a player punched a bare tree at dusk and
 ## nothing happened, thread report 2026-10-31); without it only a buckable trunk counts.

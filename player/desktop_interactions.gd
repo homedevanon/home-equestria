@@ -205,6 +205,16 @@ func _keeps_cradle() -> bool:
 	return is_instance_valid(interactor) and is_instance_valid(interactor.held) and interactor.cradled 		and is_instance_valid(camera) and is_instance_valid(body) and not body.get_meta("knocked_down", false) 		and body.get("flying") != true and _human()
 
 
+## Typing in the chat box (world/ui/chat_box.gd sets the player's "chat_typing" meta) keeps an
+## ordinary carry too (player board #44: Enter dropped the mare he carried): the chat's movement
+## lock is not a reason to let go. Menus, alt-tab, knocked down, flying or pony form still do.
+func _keeps_carry() -> bool:
+	if _keeps_cradle(): return true
+	if not is_instance_valid(body) or not body.get_meta("chat_typing", false) or get_tree().paused: return false
+	return is_instance_valid(interactor) and is_instance_valid(interactor.held) and is_instance_valid(camera) \
+		and not body.get_meta("knocked_down", false) and body.get("flying") != true and _human()
+
+
 ## A carried pony is never let go by the chat box, a menu, the map or alt-tab while he is in
 ## the air or she is held out over a drop (thread 43671981: Starlight fell into the pit outside
 ## Canterlot when he wing-flew with her and typed to her). That release waits until he stands on
@@ -292,10 +302,11 @@ func _unhandled_input(event: InputEvent) -> void:
 func _physics_process(delta: float) -> void:
 	_update_cradle_controls(delta)
 	if not _available():
-		if _keeps_cradle():
+		if _keeps_carry():
+			if not _action.is_empty(): _finish()
 			_present("carry", interactor.held.get_grip_transform("chest").origin, -camera.global_basis.z)
 			return
-		_finish()
+		if not _settled_idle(): _finish()
 		if _carry_waits_for_ground():
 			# Held on until he has landed (_carry_waits_for_ground); the drop below runs then.
 			if is_instance_valid(camera): _present("carry", interactor.held.get_grip_transform("chest").origin, -camera.global_basis.z)
@@ -404,7 +415,8 @@ func interaction_hint() -> Dictionary:
 
 
 func _update_cradle_controls(delta: float) -> void:
-	var on: bool = _available() and is_instance_valid(interactor) and is_instance_valid(interactor.held) and interactor.cradled
+	# Cheap carry checks first: _available() only matters while she is cradled (same result).
+	var on: bool = is_instance_valid(interactor) and is_instance_valid(interactor.held) and interactor.cradled and _available()
 	if not on and not is_instance_valid(_cradle_controls): return
 	if not is_instance_valid(_cradle_controls):
 		_cradle_controls = preload("res://player/cradle_controls.gd").new()
@@ -453,6 +465,13 @@ func _finish() -> void:
 	_clear_hold_pose()
 	_action = ""; _target = null; _offer = {}; _pressed = false
 	_unclaim()
+
+
+## Already finished: _finish() would change nothing (W2 perf pass; it ran every tick while the
+## desktop is unavailable, allocating a fresh _offer each time).
+func _settled_idle() -> bool:
+	return _action.is_empty() and _target == null and not _held_pose and not _pressed and _offer.is_empty() \
+		and OWNER.current(inventory) != self
 
 
 func _clear_hold_pose() -> void:

@@ -30,6 +30,12 @@ const PREVIEW := preload("res://world/saves/save_preview.gd")
 ## Names, tags and stars travel with a checkpoint when it is archived or deleted (world/saves/save_shelf.gd).
 const SHELF := preload("res://world/saves/save_shelf.gd")
 const COTTAGE_RESUME := preload("res://world/buildings/fluttershy/cottage_checkpoint_resume.gd")
+## Scenario mods (world/modding/scenario.gd, M-MOD-10): checkpoints carry their world's scenario
+## stamp (additive "scenario": {id, name}, no format bump; also in the menu header), and a scenario
+## save loads only while that scenario mod runs, a vanilla one only while none does. Title
+## Continue and Load game (stage), in-game Load and F8 (load_save), another world's save
+## (load_world_save) and the resume itself (take_resume) all ask scenario_problem().
+const SCENARIO := preload("res://world/modding/scenario.gd")
 const FORMAT:=5
 static var MIGRATIONS:Dictionary={1:_from_1,2:_from_2,3:_from_3,4:_from_4}
 const MAX_BYTES:=CONTEXT.MAX_BYTES*2
@@ -41,6 +47,9 @@ static var pending:Dictionary={}
 static var requested_world:=""
 static var start_fresh:=false
 static var fresh_start_day := 0
+## Why the last stage() refused its save, in words for the menus ("" for damaged or newer files,
+## which keep their own messages): today only the scenario rule ("Needs the <Name> mod").
+static var last_problem := ""
 const WORLDS_ROOT:="user://worlds"
 
 ## Every checkpoint on disk across worlds (slots, autosave, archives), newest first:
@@ -51,12 +60,21 @@ static func catalogue()->Array[Dictionary]:
 
 ## Home-screen pick: validate the file for its own world and stage it for the game.
 static func stage(entry:Dictionary)->bool:
+	last_problem=""
 	var opened:=open_save(str(entry.path),str(entry.world_id))
 	if opened.doc.is_empty():return false
+	var problem:=scenario_problem(opened.doc)
+	if problem!="":last_problem=problem;push_warning("[saves] %s not loaded: %s"%[str(entry.path).get_file(),problem]);return false
 	# The same journal copy an in-game Load uses (load_save), so both paths restore alike.
 	opened.doc["story_source"]=str(entry.path).get_basename()+".story.db"
 	pending=opened.doc;requested_world=str(entry.world_id);start_fresh=false
 	return true
+
+## "" when a parsed checkpoint may load this launch, else the plain reason (world/modding/scenario.gd
+## compatible()): "Needs the <Name> mod" or "Turn off the <Name> mod to load this". Saves without a
+## stamp (all older ones) are vanilla.
+static func scenario_problem(doc:Dictionary)->String:
+	return str(SCENARIO.check_doc(doc).reason)
 
 static func stage_new_game(day: int = 0)->String:
 	var stamp:=Time.get_datetime_string_from_system(false,true).replace(":","").replace(" ","-")
@@ -74,9 +92,19 @@ var _timer:=0.0
 var _task:=-1
 var _result:=OK
 var _invalid:=false
+## The check that refused the last write (invalid_reason), printed with the failure.
+var _invalid_reason:=""
+## Set by take_resume when the world's resume belongs to another scenario (or to vanilla while a
+## scenario runs): game.gd then goes back to the title instead of entering. The save is untouched.
+var scenario_block:=""
 var _story_error:=""
 var _saved_label:=""
 var _resume_source:=""
+## M-SAV-02 (thread 43688556): this session resumed an older checkpoint than the world's newest
+## autosave/quit save. Before the first autosave write replaces it (and, a minute later, its
+## .previous), that newer autosave moves to the archive, still listed and loadable.
+var _keep_autosave:=false
+var _loaded_at:=0.0
 ## Successful unmarked restore only; scenic title poses must not consume this request.
 var pending_cottage_feet := Vector3.INF
 var _quit_saved:=false
@@ -220,31 +248,39 @@ static func _rail_matches(doc:Dictionary)->bool:
 	return true
 
 static func valid(doc:Variant,world_id:String)->bool:
-	if not doc is Dictionary or format_of(doc)!=FORMAT or doc.get("world_id")!=world_id:return false
-	if not CLOCK.valid_state(doc.get("clock")) or not doc.get("life") is Dictionary or not doc.get("population") is Dictionary:return false
-	if not doc.life.is_empty() and not LIFE.valid(doc.life,world_id):return false
-	if not doc.population.is_empty() and not POPULATION.new().apply_data(doc.population):return false
-	if doc.has("railway") and not RAIL.valid(doc.railway):return false
-	if not doc.life.is_empty() and not _rail_matches(doc):return false
-	if not valid_vector(doc.get("position")) or not CONTEXT._valid_state(doc.get("context"),world_id):return false
-	if not INVENTORY.valid_document(doc.get("inventory")) or not CLOTHES.valid(doc.get("clothes")):return false
-	if not BOOKS.valid_state(doc.get("books", {})): return false
-	if not REGISTRY.valid_state(doc.get("paintings", {})): return false
-	if doc.has("wing_flight") and not preload("res://player/wing_flight.gd").valid(doc.wing_flight): return false
+	return invalid_reason(doc,world_id)==""
+
+## Why valid() refuses `doc` ("" when it is valid): the first failed check, logged with "State could
+## not be saved" so a player report names the part that broke (M-SAV-04). Same checks, same order.
+static func invalid_reason(doc:Variant,world_id:String)->String:
+	if not doc is Dictionary or format_of(doc)!=FORMAT or doc.get("world_id")!=world_id:return "header"
+	if not CLOCK.valid_state(doc.get("clock")):return "clock"
+	if not doc.get("life") is Dictionary or not doc.get("population") is Dictionary:return "life/population shape"
+	if not doc.life.is_empty() and not LIFE.valid(doc.life,world_id):return "life"
+	if not doc.population.is_empty() and not POPULATION.new().apply_data(doc.population):return "population roster"
+	if doc.has("railway") and not RAIL.valid(doc.railway):return "railway"
+	if not doc.life.is_empty() and not _rail_matches(doc):return "rail journeys"
+	if not valid_vector(doc.get("position")):return "player position"
+	if not CONTEXT._valid_state(doc.get("context"),world_id):return "world context"
+	if not INVENTORY.valid_document(doc.get("inventory")):return "inventory"
+	if not CLOTHES.valid(doc.get("clothes")):return "clothes"
+	if not BOOKS.valid_state(doc.get("books", {})): return "books"
+	if not REGISTRY.valid_state(doc.get("paintings", {})): return "paintings"
+	if doc.has("wing_flight") and not preload("res://player/wing_flight.gd").valid(doc.wing_flight): return "wing flight"
 	# Never silently reset spent stock or paid harvests: that would duplicate items/rewards.
-	if doc.has("food") and not FOOD_WORLD.valid_snapshot(doc.food):return false
-	if doc.has("shops") and not SHOP_WORLD.valid_snapshot(doc.shops):return false
-	if doc.has("harvest") and not APPLE_BUCKING.valid_snapshot(doc.harvest):return false
+	if doc.has("food") and not FOOD_WORLD.valid_snapshot(doc.food):return "food"
+	if doc.has("shops") and not SHOP_WORLD.valid_snapshot(doc.shops):return "shops"
+	if doc.has("harvest") and not APPLE_BUCKING.valid_snapshot(doc.harvest):return "harvest"
 	for key in ["yaw","hours","day","saved_at"]:
-		if not doc.get(key) is int and not doc.get(key) is float:return false
-		if not is_finite(float(doc[key])):return false
-	if doc.hours<0 or doc.hours>=24 or doc.day<0:return false
-	if not doc.get("residents") is Dictionary or doc.residents.size()>256:return false
+		if not doc.get(key) is int and not doc.get(key) is float:return key
+		if not is_finite(float(doc[key])):return key
+	if doc.hours<0 or doc.hours>=24 or doc.day<0:return "hours/day range"
+	if not doc.get("residents") is Dictionary or doc.residents.size()>256:return "resident count"
 	for id in doc.residents:
 		var row:Variant=doc.residents[id]
-		if not CONTEXT.valid_id(id) or not row is Dictionary or not row.get("region") is String:return false
-		if not valid_vector(row.get("position")) or not valid_vector(row.get("rotation")):return false
-	return true
+		if not CONTEXT.valid_id(id) or not row is Dictionary or not row.get("region") is String:return "resident "+str(id)
+		if not valid_vector(row.get("position")) or not valid_vector(row.get("rotation")):return "resident "+str(id)+" position"
+	return ""
 
 ## {doc, status, message, notes}: doc is the migrated, usable document or {} (empty slot,
 ## missing, newer build, or damaged beyond its .previous copy, which is then kept aside).
@@ -287,12 +323,17 @@ func snapshot()->Dictionary:
 	if is_instance_valid(host.population):
 		for id in host.population.saved:
 			var row:Dictionary=host.population.saved[id]
+			if not valid_vector(vector(row.position)) or not valid_vector(vector(row.rotation)):continue
 			residents[id]={"region":row.region,"position":vector(row.position),"rotation":vector(row.rotation)}
 			# Restored from the last load and not spawned yet: still out in the world.
 			if row.get("resume") is Dictionary:residents[id].merge({"live":true,"state":row.resume.duplicate(true)})
 		for id in host.population.live:
 			var row:Dictionary=host.population.live[id]
 			if not is_instance_valid(row.actor):continue
+			# M-SAV-04: one pony with a broken (non-finite) transform made every save of the world
+			# fail ("State could not be saved"). She is left out; the load puts her back home.
+			if not valid_vector(vector(row.actor.global_position)) or not valid_vector(vector(row.actor.rotation)):
+				push_warning("[saves] %s left out of the save: non-finite position"%id);residents.erase(id);continue
 			residents[id]={"region":row.region,"position":vector(row.actor.global_position),"rotation":vector(row.actor.rotation),
 				"live":true,"state":_resident_state(id,row.actor)}
 	if host.inventory.has_method("checkpoint_drops"): host.inventory.checkpoint_drops()
@@ -306,6 +347,9 @@ func snapshot()->Dictionary:
 		"residents":residents,"context":host.world_context.snapshot_state(),"story_through":_story_through(),
 		"inventory":inv.document(),"books":BOOKS.snapshot(),"paintings":REGISTRY.snapshot(),
 		"clothes":host.inventory.clothing.saved.duplicate(true)}
+	# The world's scenario stamp (world/modding/scenario.gd), read by menus and load checks.
+	var stamp:=SCENARIO.of_doc(result.context)
+	if not stamp.is_empty():result["scenario"]=stamp
 	# Additive geometry revision. A blocked legacy placement at the original feet
 	# remains eligible next load; ordinary movement or successful repair stamps it.
 	if not pending_cottage_feet.is_finite() or at.distance_to(pending_cottage_feet) > .001:
@@ -321,6 +365,16 @@ func snapshot()->Dictionary:
 	# residents' "live"/"state": older saves lack them and load as before.
 	var day_runner:Node=host.get_node_or_null("DayRunner")
 	if day_runner!=null and day_runner.has_method("checkpoint"):result["day_plans"]=day_runner.checkpoint()
+	# M-SAV-03: a sky-home pony's afternoon trip home already taken today (NightRest._visits) is
+	# not rolled again after a load. Additive: {id: day}.
+	var night_rest:Node=host.get_node_or_null("NightRest")
+	var visits:Variant=night_rest.get("_visits") if night_rest!=null else null
+	if visits is Dictionary:
+		var taken:={}
+		for id:Variant in visits:
+			var visit:Variant=visits[id]
+			if id is String and visit is Dictionary and str(visit.get("phase",""))!="" and int(visit.get("day",-1))==int(clock.day):taken[id]=int(clock.day)
+		if not taken.is_empty():result["sky_visits"]=taken
 	# What the save menus say about it (world/saves/save_catalogue.gd). Additive: no format bump.
 	result["summary"] = {"kind":"autosave","place":_place_text(at)}
 	return result
@@ -341,6 +395,8 @@ func _resident_state(id:String,actor:Node3D)->Dictionary:
 	if owner!="rest_after_command" and (movement.is_empty() or owner!=str(movement.get("id",""))):return {}
 	if str(movement.get("type",""))=="follow" and str(movement.get("target_id",""))=="player":
 		return {"follow":{"formation":str(movement.get("formation","right")),"distance_m":float(movement.get("distance_m",1.5))}}
+	var move:=_saved_move(movement)
+	if not move.is_empty():return {"move":move}
 	var seating:Node=get_tree().get_first_node_in_group("pony_seating")
 	if seating!=null and seating.has_method("phase") and seating.phase(actor)=="seated":return {"rest":"seat"}
 	if actor.has_method("posture_status"):
@@ -348,10 +404,59 @@ func _resident_state(id:String,actor:Node3D)->Dictionary:
 		if requested in ["sit","lie_down"]:return {"rest":requested}
 	return {}
 
+## Movement ids the stories own: they resume through their own saved stage, never from here.
+const STORY_MOVES:=["arrival","visit","encounter"]
+const SAVED_MOVES:=["go_to","lead","approach"]
+
+## M-SAV-03: a walk the player or her AI asked for that was still under way at save time
+## (go_to a place, lead Anon somewhere, approach Anon). Re-issued on load by pony_population._resume.
+static func _saved_move(movement:Dictionary)->Dictionary:
+	var kind:=str(movement.get("type",""))
+	if kind not in SAVED_MOVES or str(movement.get("status","")) in ["completed","failed","cancelled","stopped"]:return {}
+	var id:=str(movement.get("id",""))
+	for prefix:String in STORY_MOVES:
+		if id.begins_with(prefix):return {}
+	var move:={"type":kind,"ai":bool(movement.get("ai",false))}
+	match kind:
+		"go_to":
+			move.location_id=str(movement.get("location_id",""));move.pace=str(movement.get("pace","walk"))
+		"lead":
+			if str(movement.get("target_id",""))!="player":return {}
+			move.location_id=str(movement.get("location_id",""));move.pace=str(movement.get("pace","walk"))
+			move.wait_distance_m=float(movement.get("wait_distance_m",6.0))
+		"approach":
+			if str(movement.get("target_id",""))!="player":return {}
+			move.distance_m=float(movement.get("distance_m",1.5));move.pace=str(movement.get("pace","walk"))
+	return _clean_move(move)
+
+## The same shape from an untrusted document, or {}.
+static func _clean_move(move:Variant)->Dictionary:
+	if not move is Dictionary or str(move.get("type","")) not in SAVED_MOVES:return {}
+	var kind:=str(move.type)
+	var out:={"type":kind,"ai":move.get("ai")==true,"pace":"trot" if move.get("pace")=="trot" else "walk"}
+	if kind in ["go_to","lead"]:
+		var place:Variant=move.get("location_id")
+		if not place is String or place.is_empty() or place.length()>128 or not _place_id_ok(place):return {}
+		out.location_id=place
+	if kind=="lead":
+		var wait:Variant=move.get("wait_distance_m",6.0)
+		out.target_id="player";out.wait_distance_m=clampf(float(wait),3.0,15.0) if (wait is int or wait is float) and is_finite(float(wait)) else 6.0
+	if kind=="approach":
+		var gap:Variant=move.get("distance_m",1.5)
+		out.target_id="player";out.distance_m=clampf(float(gap),1.0,6.0) if (gap is int or gap is float) and is_finite(float(gap)) else 1.5
+	return out
+
+static func _place_id_ok(place:String)->bool:
+	for c in place:
+		if not (c in "abcdefghijklmnopqrstuvwxyz0123456789_:.,-"):return false
+	return true
+
 ## A restored row's "state" from an untrusted document: only shapes _resume (pony_population) knows.
 static func _resume_of(row:Dictionary)->Dictionary:
 	var state:Variant=row.get("state",{})
 	if not state is Dictionary:return {}
+	var moved:=_clean_move(state.get("move"))
+	if not moved.is_empty():return {"move":moved}
 	var follow:Variant=state.get("follow")
 	if follow is Dictionary:
 		var formation:=str(follow.get("formation","right"))
@@ -375,6 +480,17 @@ static func _day_plans(value:Variant)->Dictionary:
 		plans[id]={"day":int(day),"index":int(index)}
 		if row.get("mech") is Dictionary:plans[id].mech=_plan_mech(row.mech)
 	return plans
+
+## Sky-home trips already taken ({id: day}) from an untrusted document.
+static func _sky_visits(value:Variant)->Dictionary:
+	var taken:={}
+	if not value is Dictionary:return taken
+	for id:Variant in value:
+		var day:Variant=value[id]
+		if taken.size()>=16 or not id is String or not CONTEXT.valid_id(id) or not (day is int or day is float):continue
+		if not is_finite(float(day)) or float(day)<0 or float(day)>1e9:continue
+		taken[id]=int(day)
+	return taken
 
 ## The season, events and station work a day card rolled with (DayRunner._rolled_mech; absent in
 ## older saves, which roll from the live answers as before).
@@ -460,6 +576,7 @@ func commit_harvest(receipt:String,amount:int,proposed:Dictionary)->bool:
 		found=true
 		break
 	if not found or expected!=proposed:return false
+	_preserve_autosave(directory.path_join("autosave.json"))
 	var doc:Dictionary=snapshot()
 	doc.harvest=proposed.duplicate(true)
 	busy=true
@@ -511,6 +628,7 @@ func commit_arrival_welcome(proposed: Dictionary) -> bool:
 	var expected: Dictionary = arrival.data.duplicate(true)
 	expected.furnished = true
 	if proposed != expected or int(proposed.get("welcome_items_granted", 0)) != arrival.BASKET.size(): return false
+	_preserve_autosave(directory.path_join("autosave.json"))
 	var doc: Dictionary = snapshot()
 	doc.context.arrival = proposed.duplicate(true)
 	busy = true
@@ -528,6 +646,7 @@ func save_to(path:String,label:String,kind:="")->bool:
 	if busy or restoring or _quit_writing() or not _owned(path):return false
 	if host.world_context._read_only or not host.inventory.inventory.writable or not host.inventory.clothing.writable:
 		message="Cannot save while existing state is unreadable.";changed.emit();return false
+	_preserve_autosave(path)
 	var doc:=snapshot()
 	doc.summary.kind=kind if kind in CATALOGUE.KINDS else ("autosave" if path.get_file()=="autosave.json" else "manual")
 	# SQLite stays on the main thread; its detached copy is only published with an accepted
@@ -551,7 +670,8 @@ func _save_task(path:String,doc:Dictionary,world_id:String,frame:Variant=null,jo
 	if journal_path!="" and FileAccess.file_exists(journal_path):DirAccess.remove_absolute(ProjectSettings.globalize_path(journal_path))
 
 func _write_checkpoint(path:String,doc:Dictionary,world_id:String,frame:Variant,journal_path:String)->void:
-	_invalid=not valid(doc,world_id)
+	_invalid_reason=invalid_reason(doc,world_id)
+	_invalid=_invalid_reason!=""
 	if _invalid:return
 	# Never replace a file a newer build wrote; the player may go back to that build.
 	var current:Variant=SAVE_FILE.parse(path,MAX_BYTES)
@@ -582,7 +702,7 @@ func _write_checkpoint(path:String,doc:Dictionary,world_id:String,frame:Variant,
 		if DirAccess.rename_absolute(ProjectSettings.globalize_path(rollback),ProjectSettings.globalize_path(journal+".previous"))!=OK:
 			_story_error=" The previous journal remains in a recovery file beside the save."
 	if frame!=null:PREVIEW.store(frame,path)
-	CATALOGUE.write_meta(path,CATALOGUE.header_from_doc(doc,path))
+	CATALOGUE.write_meta(path,SCENARIO.stamp_header(CATALOGUE.header_from_doc(doc,path),doc))
 
 func _restore_journal(source:String,target:String)->void:
 	if DirAccess.rename_absolute(ProjectSettings.globalize_path(source),ProjectSettings.globalize_path(target))!=OK:
@@ -634,14 +754,22 @@ func load_save(path:String)->bool:
 	if busy or restoring or _quit_writing():return false
 	var doc:=read(path)
 	if doc.is_empty():changed.emit();return false
+	var problem:=scenario_problem(doc)
+	if problem!="":message=problem+".";push_warning("[saves] %s not loaded: %s"%[path.get_file(),problem]);changed.emit();return false
 	# Preserve the outfit draft until the player explicitly saves/cancels it.
 	if host.inventory.customizer.opened:message="Close the wardrobe with Save or Cancel before loading.";changed.emit();return false
 	doc["story_source"]=path.get_basename() + ".story.db"
-	pending=doc;restoring=true
+	# The reloaded game.gd opens the world named here; without it a session entered by
+	# --world-id or the title's Continue reopened "default", rejected this checkpoint and
+	# started a new world with the character creator (player board #50; F8 too).
+	var world_before:=requested_world;var fresh_before:=start_fresh
+	pending=doc;requested_world=str(host.context_world_id);start_fresh=false;restoring=true
 	if is_instance_valid(host.director):host.director.interrupt()
 	get_tree().paused=false
 	var result:=get_tree().reload_current_scene()
-	if result!=OK:pending={};restoring=false;message="Could not reload the game.";changed.emit()
+	if result!=OK:
+		pending={};requested_world=world_before;start_fresh=fresh_before
+		restoring=false;message="Could not reload the game.";changed.emit()
 	return result==OK
 
 ## A checkpoint of another world from the saved games panel: this world is quit-saved (as when
@@ -654,7 +782,7 @@ func load_world_save(entry:Dictionary)->bool:
 	var fresh_before:=start_fresh;var day_before:=fresh_start_day
 	if not stage(entry):
 		pending=saved_before;requested_world=world_before
-		message="That save cannot be loaded (damaged or from a newer version).";changed.emit();return false
+		message=(last_problem+".") if last_problem!="" else "That save cannot be loaded (damaged or from a newer version).";changed.emit();return false
 	if not save_before_quit():
 		pending=saved_before;requested_world=world_before
 		start_fresh=fresh_before;fresh_start_day=day_before
@@ -672,9 +800,17 @@ func load_world_save(entry:Dictionary)->bool:
 func take_resume()->Dictionary:
 	var doc:=pending;pending={}
 	_resume_source=""
+	_keep_autosave=false
+	if not doc.is_empty() and not _same_file(str(doc.get("story_source","")),directory.path_join("autosave.story.db")):
+		_keep_autosave=true;_loaded_at=_number(doc.get("saved_at"))
 	var fresh:=start_fresh;start_fresh=false
 	if doc.is_empty() and not fresh and "--new-game" not in preload("res://world/dev_tools.gd").user_args():
 		_resume_source=directory.path_join("autosave.json");doc=read(_resume_source)
+	# A resume of another scenario (or vanilla while one runs) is never applied nor archived: the
+	# world is not entered at all (game.gd), and the save waits for the right mods.
+	scenario_block=scenario_problem(doc) if not doc.is_empty() else ""
+	if scenario_block!="":
+		message=scenario_block+".";_resume_source="";push_warning("[saves] not resumed: "+scenario_block);changed.emit();return {}
 	if not doc.is_empty() and not valid(doc,host.context_world_id):_resume_failed();return {}
 	return doc
 
@@ -775,10 +911,12 @@ func restore_residents(doc:Dictionary)->void:
 			# Out in the world at save time (newer saves): back on that spot, doing that (pony_population.resuming).
 			if row.get("live")==true:host.population.saved[id]["resume"]=_resume_of(row)
 		if "resumed_plans" in host.population:host.population.resumed_plans=_day_plans(doc.get("day_plans",{}))
+		if "resumed_sky_visits" in host.population:host.population.resumed_sky_visits=_sky_visits(doc.get("sky_visits",{}))
 
 func _process(delta:float)->void:
 	if _task>=0 and WorkerThreadPool.is_task_completed(_task):
 		WorkerThreadPool.wait_for_task_completion(_task);_task=-1;busy=false;_preview_pending=null
+		if _invalid:push_warning("[saves] state could not be saved: invalid %s"%_invalid_reason)
 		message=("State could not be saved." if _invalid else (_saved_label+" saved." if _result==OK else ("Not saved: that file is from a newer version of the game." if _result==ERR_ALREADY_EXISTS else "Save failed; previous file preserved.")))+_story_error;changed.emit()
 	# Runs while the pause menu pauses the world (to finish a save); no autosaves then.
 	if get_tree().paused or not ready_to_save or not is_instance_valid(host) or not is_instance_valid(host.inventory):return
@@ -796,6 +934,7 @@ func save_before_quit()->bool:
 	if host.world_context._read_only or not host.inventory.inventory.writable or not host.inventory.clothing.writable:return false
 	var started:=Time.get_ticks_msec()
 	var path:=directory.path_join("autosave.json")
+	_preserve_autosave(path)
 	var doc:=snapshot()
 	doc.summary.kind="quit"
 	var journal:=_stage_story(path)
@@ -812,8 +951,23 @@ func save_before_quit()->bool:
 	_quit_thread.wait_to_finish()
 	var saved:=not _invalid and _result==OK
 	_quit_saved=saved
-	print("[saves] autosave on quit: %s in %d ms"%["saved" if saved else "FAILED (%s)"%("invalid" if _invalid else error_string(_result)),Time.get_ticks_msec()-started])
+	print("[saves] autosave on quit: %s in %d ms"%["saved" if saved else "FAILED (%s)"%("invalid "+_invalid_reason if _invalid else error_string(_result)),Time.get_ticks_msec()-started])
 	return saved
+
+static func _same_file(a:String,b:String)->bool:
+	return ProjectSettings.globalize_path(a).simplify_path()==ProjectSettings.globalize_path(b).simplify_path()
+
+## Called on the main thread before anything writes autosave.json (rolling, quit and the two
+## commit paths). Once per session; only when the file on disk is newer than the loaded save.
+func _preserve_autosave(path:String)->void:
+	if not _keep_autosave or path.get_file()!="autosave.json":return
+	_keep_autosave=false
+	if not FileAccess.file_exists(path) or float(FileAccess.get_modified_time(path))<=_loaded_at+1.0:return
+	var current:Variant=SAVE_FILE.parse(path,MAX_BYTES)
+	# A newer build's autosave keeps its existing protection (the write is refused instead).
+	if not current is Dictionary or format_of(current)>FORMAT or _number(current.get("saved_at"))<=_loaded_at:return
+	var target:=directory.path_join("archive").path_join("autosave_before_load_%s_%d.json"%[SAVE_FILE.stamp(),Time.get_ticks_usec()])
+	if _archive_checkpoint(path,target):print("[saves] the newer autosave was kept in the archive as ",target.get_file())
 
 func _quit_writing()->bool:
 	return _quit_thread!=null and _quit_thread.is_alive()

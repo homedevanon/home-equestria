@@ -65,6 +65,10 @@ const SIGNATURES := {
 ## [go_to_bed: here] spellings: the bed in the house where Anon is; anything else is her own bed.
 const BED_HERE := ["here", "this", "this_bed", "that", "that_bed", "there", "player", "anon", "his", "his_bed", "your", "yours", "your_bed", "anons_bed", "anon's_bed"]
 const PLAYER_NAMES := ["me", "you", "anon", "him", "the player", "anonymous"]
+## The configured player name (AI Settings player_name, lower case), reread when the user config
+## file changes; see is_player_name().
+static var _own_name := ""
+static var _own_name_stamp := -1
 const RANGES := {"duration_s": [0.2, 600.0], "distance_m": [1.0, 6.0], "wait_distance_m": [3.0, 15.0]}
 const ALIASES := {"lookat": "look_at", "look": "look_at", "goto": "go_to", "walk_to": "go_to", "go": "go_to", "flyto": "fly_to",
 	"summon": "call_pony", "call": "call_pony", "send": "send_pony", "go_to_pony": "approach",
@@ -120,7 +124,7 @@ const TAG_HELP := {
 	"wake_up": "[wake_up] wake up, or get up out of a bed or off a couch",
 	"go_home": "[go_home] go home to rest a while (say goodbye first)",
 	"go_to_bed": "[go_to_bed] walk to your own bed, climb in and lie there (asleep at night) until you get up; [go_to_bed: here] the bed in the house where Anon is",
-	"relationship_offer": "[relationship_offer: KIND, ACTIVITY] ask Anon for a relationship step (ACTIVITY walk/fishing/orchard/meal/visit, or place plus a LOCATION)",
+	"relationship_offer": "[relationship_offer: KIND, ACTIVITY] ask Anon for a relationship step (ACTIVITY walk/meal/visit/orchard/fishing, or place plus a LOCATION)",
 	"relationship_answer": "[relationship_answer: OFFER_ID, yes] or no: answer Anon's invitation",
 	"agreed": "[agreed: KIND] you both said yes to a step: Anon asked you for it in his own words and you accept, or he said yes to your offer (KIND dating/date/outing/move_in/engagement/marriage)",
 	"request_space": "[request_space] ask Anon to give you some space", "buck_player": "[buck_player] buck Anon away (only real, lasting anger at unwelcome contact)",
@@ -185,7 +189,7 @@ static func decode_tags(text: String, actor: String, turn: int, context: Diction
 				for part in value.split(",", false):
 					var item := part.strip_edges().to_lower().replace(" ", "_").replace("-", "_")
 					if SHOW_TAGS.has(item): moves.append(SHOW_TAGS[item])
-					elif item in PLAYER_NAMES or item == "player": audience = "player"
+					elif item == "player" or is_player_name(item): audience = "player"
 					elif context.get("targets", {}).has(item): audience = item
 				if moves.is_empty(): moves = ["loop", "barrel_roll", "dive"]
 			else: moves = [figure]
@@ -236,6 +240,19 @@ static func decode_tags(text: String, actor: String, turn: int, context: Diction
 	return {"speech": speech, "actions": actions, "impression": preload("res://world/ai/impressions/pony_impressions.gd").sanitize(impression),
 		"dropped": dropped, "tags": true, "control_only": not silent and actions.is_empty() and CONTROLS.sanitize(speech).is_empty() and not text.strip_edges().is_empty()}
 
+## A word naming the player in a tag: PLAYER_NAMES or his configured name, in any case, with spaces
+## or underscores (M-AI-05: a renamed player was not recognised in [follow: Name]).
+static func is_player_name(word: String) -> bool:
+	var key := word.strip_edges().to_lower()
+	if key in PLAYER_NAMES: return true
+	var config_path: String = load("res://world/ai/ai_config.gd").USER_PATH
+	var stamp := FileAccess.get_modified_time(config_path) if FileAccess.file_exists(config_path) else 0
+	if stamp != _own_name_stamp:
+		_own_name_stamp = stamp
+		var config: RefCounted = load("res://world/ai/ai_config.gd").load_config()
+		_own_name = str(config.get_value("player_name", "Anon")).strip_edges().to_lower().replace("_", " ")
+	return not _own_name.is_empty() and key.replace("_", " ") == _own_name
+
 static func _tag_action(type: String, value: String, turn: int, index: int) -> Dictionary:
 	var action := {"id": "t%d-%d-%s" % [turn, index, type], "type": type}
 	var args: Array = []
@@ -248,9 +265,9 @@ static func _tag_action(type: String, value: String, turn: int, index: int) -> D
 		else: action.duration_s = 30.0
 		return action
 	# Forgiving shapes: [follow] and [lead: PLACE] mean the player; "me"/"anon" name him too.
-	var lone_place: bool = type == "lead" and args.size() == 1 and str(args[0]).to_lower() not in PLAYER_NAMES + ["player"]
+	var lone_place: bool = type == "lead" and args.size() == 1 and str(args[0]).to_lower() != "player" and not is_player_name(str(args[0]))
 	if type in ["follow", "lead"] and (args.is_empty() or lone_place): args.push_front("player")
-	if type in ["follow", "lead", "approach", "look_at", "circle_over"] and not args.is_empty() and str(args[0]).to_lower() in PLAYER_NAMES: args[0] = "player"
+	if type in ["follow", "lead", "approach", "look_at", "circle_over"] and not args.is_empty() and is_player_name(str(args[0])): args[0] = "player"
 	# [meet: town hall, tomorrow at 3pm]: day and time written as one argument.
 	if type == "meet" and args.size() == 2 and not MEET_TIME.find_time(str(args[1])).is_empty():
 		var said := str(args[1])

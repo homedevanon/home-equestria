@@ -6,13 +6,46 @@ extends RefCounted
 ## pony on the same day always gets the same card. docs/DAY_PLANS.md describes the table format.
 
 const TABLES_PATH := "res://world/life/day/day_tables.json"
+## Extra table files (seasonal.json from the seasons work, mods' own rows), merged over the main
+## table in file-name order: "actions", "targets" and "reasons" add or replace whole rows,
+## "overrides" merge per pony. Read once, with the main table.
+const EXTRA_DIR := "res://world/life/day/tables/"
+const MERGED_KEYS := ["actions", "targets", "reasons"]
 static var _tables := {}
 
 static func tables() -> Dictionary:
 	if _tables.is_empty():
 		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(TABLES_PATH))
 		_tables = parsed if parsed is Dictionary else {"day": {}, "actions": {}, "targets": {}, "reasons": {}}
+		for file: String in extra_files(): merge_table(_tables, JSON.parse_string(FileAccess.get_file_as_string(EXTRA_DIR + file)))
 	return _tables
+
+## The *.json files in EXTRA_DIR, sorted (an exported pack lists them the same way).
+static func extra_files() -> PackedStringArray:
+	var files := PackedStringArray()
+	if not DirAccess.dir_exists_absolute(EXTRA_DIR): return files
+	for file: String in DirAccess.get_files_at(EXTRA_DIR):
+		if file.get_extension().to_lower() == "json": files.append(file)
+	files.sort()
+	return files
+
+## Merges one extra table into `into` (see EXTRA_DIR). A file that is not an object, or a section
+## that is not one, is skipped.
+static func merge_table(into: Dictionary, extra: Variant) -> void:
+	if not extra is Dictionary: return
+	var table: Dictionary = extra
+	for key: String in MERGED_KEYS:
+		if not table.get(key) is Dictionary: continue
+		if not into.get(key) is Dictionary: into[key] = {}
+		(into[key] as Dictionary).merge(table[key] as Dictionary, true)
+	if table.get("overrides") is Dictionary:
+		if not into.get("overrides") is Dictionary: into["overrides"] = {}
+		var overrides: Dictionary = into["overrides"]
+		for pony: Variant in table.overrides:
+			var row: Variant = table.overrides[pony]
+			if not row is Dictionary: continue
+			if not overrides.get(pony) is Dictionary: overrides[pony] = {}
+			(overrides[pony] as Dictionary).merge(row as Dictionary, true)
 
 ## info: {"wings": bool, "friends": [ids], "others": [ids], "wake": hour, "bed": hour (may be
 ## past 24 for a night owl), "season", "events": [ids], "station_needs": [ids] (the mechanics hub,

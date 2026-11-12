@@ -78,6 +78,71 @@ const AMBIENT_DAY_ENERGY := 0.85
 ## Colour is authored in sRGB; Environment converts it to linear irradiance.
 const AMBIENT_NIGHT_ENERGY := 0.22
 
+# --- Look overhaul, stage 1: light and air (dev 2026-11-10) -------------------
+## The moods the old rules got wrong, measured on the baseline sheets
+## (captures/look-2026-11-10): cloud cover turned the fill light neutral grey and cut the colour
+## by 22 %, so every snowfall was flat grey and a snowy sunset went brown; golden hour had a warm
+## sun AND a warm fill, so shade had no opposite hue and the grass went olive; and the blue hour
+## after sunset was already full night, with a black sky and black land.
+## Rollback: LOOK_MOODS = false restores every old rule exactly. House interiors and the window
+## cards keep reading the old fill (interior_light) either way.
+const LOOK_MOODS := true
+## Golden hour: the sun is orange, so the shade keeps the sky's cool violet-blue.
+const LOOK_GOLDEN_FILL := Color(0.60, 0.55, 0.84)
+const LOOK_GOLDEN_EXPOSURE := 0.18
+## Blue hour: for a while after sunset and before sunrise the sky still lights the land deep blue.
+const LOOK_TWILIGHT_FILL := Color(0.36, 0.42, 0.96)
+const LOOK_TWILIGHT_ENERGY := 0.26
+const LOOK_TWILIGHT_HAZE := Color(0.10, 0.16, 0.42)
+## How much of the day sky's colour and brightness the dome keeps at the peak of the blue hour.
+const LOOK_TWILIGHT_SKY := 0.24
+## Cloud cover: a cool blue-grey light that keeps its colour (was neutral grey 0.72, 0.74, 0.78).
+const LOOK_OVERCAST_FILL_DAY := Color(0.60, 0.69, 0.90)
+const LOOK_OVERCAST_FILL_NIGHT := Color(0.44, 0.50, 0.86)
+const LOOK_OVERCAST_HAZE_DAY := Color(0.62, 0.70, 0.86)
+const LOOK_OVERCAST_HAZE_NIGHT := Color(0.12, 0.17, 0.38)
+const LOOK_OVERCAST_SATURATION := 0.94   # was 0.78
+const LOOK_OVERCAST_FILL_ENERGY := 0.86  # was 0.72
+const LOOK_OVERCAST_EXPOSURE := 0.90     # was 0.78
+const LOOK_OVERCAST_SHADOW_FADE := 0.70  # was 0.85
+## Under full cloud this share of the sunset glow is kept off the land, the haze and the dome
+## (grey cloud times orange glow is the brown sky).
+const LOOK_OVERCAST_GOLDEN_CUT := 0.75
+## Winter over SEASON_GRADES: bluer shade and haze, and nearly full colour so the blue shows.
+const LOOK_WINTER_GRADE := {"ambient": Color(0.86, 0.95, 1.14), "fog": Color(0.90, 0.97, 1.10), "saturation": 0.97}
+
+## Air: distance has to look like distance. The old ramp left the first 30 % of the view (3.6 km
+## on High) with no haze at all. Now haze starts LOOK_HAZE_BEGIN metres out and rises quickly, then
+## slowly: about 14 % at 300 m, 29 % at 1 km, 50 % at 3 km, and FOG_MAX at the far clip as before.
+## More of it takes the sky's colour in that direction (aerial perspective), so far ridges go warm
+## toward a low sun and blue away from it. Rollback: LOOK_HAZE = false.
+const LOOK_HAZE := true
+const LOOK_HAZE_BEGIN := 120.0
+const LOOK_HAZE_CURVE := 0.45
+const LOOK_HAZE_AERIAL := 0.55
+
+## Snow in the air: at weather_snow 1 the haze reaches full strength this many metres out and
+## begins at arm's length; its colour is the fill light on white snow. Rollback: LOOK_SNOW_AIR = false.
+const LOOK_SNOW_AIR := true
+const LOOK_SNOW_AIR_RANGE := 520.0
+## Falling snow closes the sky too: no stars, sunset band or cloud edges behind it, and the far
+## hills melt into it instead of standing as a cut-out. Share of the sky the snow air covers at
+## weather_snow 1 (clear weather keeps the engine value below).
+const LOOK_SNOW_AIR_SKY := 0.92
+const FOG_SKY_AFFECT := 0.12
+
+## Cloud shadows on the ground (world/terrain/gaea_fragment.gdshaderinc reads look_cloud_shadow):
+## how dark the shade under a cloud gets in full sun. None at night or under full cloud.
+## Rollback: LOOK_CLOUD_SHADOWS = false.
+const LOOK_CLOUD_SHADOWS := true
+const LOOK_CLOUD_SHADOW_STRENGTH := 0.42
+var _cloud_shadow_written := -1.0
+var _daylight_written := -1.0
+
+## 1 at the heart of the blue hour (sun a little under the horizon), 0 by day and in full night.
+static func twilight_amount(elevation: float) -> float:
+	return smoothstep(-0.50, -0.20, elevation) * (1.0 - smoothstep(-0.10, 0.10, elevation))
+
 # --- Regional look ----------------------------------------------------------
 ## Biome presets select lighting_profiles.json entries. The same painted weights that
 ## dress the ground and vegetation drive these multipliers, independent of zone residency.
@@ -122,6 +187,8 @@ const SKY_GLOBALS := {
 	&"sky_eye": [RenderingServer.GLOBAL_VAR_TYPE_VEC3, Vector3.ZERO],
 	&"sky_cloud_offset": [RenderingServer.GLOBAL_VAR_TYPE_VEC2, Vector2.ZERO],
 	&"sky_cloud_shape": [RenderingServer.GLOBAL_VAR_TYPE_VEC3, Vector3(0.45, 1.0, 0.0)],
+	&"look_cloud_shadow": [RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0],
+	&"sky_daylight": [RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 1.0],
 }
 const PLAYER_VIEW := preload("res://world/player_view.gd")
 var _sky_time := 0.0
@@ -131,6 +198,49 @@ var _radiance_age := 0.0
 ## Last value written per sky material parameter by _sky_param: every write re-renders the
 ## cubemap, so unchanged values are not written again.
 var _sky_params: Dictionary = {}
+
+# --- Season grade (W2-SEAS-K 2026-11-08, M-SEA-23; seasons design 6.8) ------------------------
+## A cooler, paler winter and a warmer autumn: multipliers on the sun, ambient and fog colours,
+## the saturation, and a paler winter sky dome. Spring and summer are the unchanged look. A season's
+## grade arrives whole on its first day like its palettes (season_state SEASON_LOOK); only the sun
+## path moves day by day, lowest at midwinter. It tilts the visible sun's orbit (the horizon
+## crossings stay at 06:00 and 18:00), so day length, daylight and bedtimes do not change (D-04).
+## The colours fade out where the climate map has no seasons (desert, badlands, jungle, coast,
+## sea: channel R, D-06), sampled at the camera on the 2 Hz profile step while a grade is active.
+## season_state (group "season_state") is found on the profile step and drives
+## set_season_grade() from its season_changed/day_stepped signals: one call per day step.
+const CLIMATE_MAP := preload("res://world/seasons/climate_map.gd")
+const SEASON_STATE_GROUP := "season_state"
+const SEASON_ORDER := ["spring", "summer", "autumn", "winter"]
+## Peak extra orbit tilt at midwinter: the noon sun drops from about 58 to 50 degrees.
+const WINTER_SUN_DROP_DEG := 8.0
+## Climate weight steps (each step re-applies the grade; the sky dome writes only on change).
+const SEASON_CLIMATE_STEP := 0.05
+## shaders/sky.gdshader's day palette defaults, used when the renderer cannot report them (headless).
+const SKY_PALETTE_FALLBACK := {&"day_zenith": Color(0.18, 0.38, 0.78), &"day_horizon": Color(0.62, 0.78, 0.95)}
+const SEASON_GRADES := {
+	"spring": {},
+	"summer": {},
+	"autumn": {"sun": Color(1.0, 0.95, 0.86), "ambient": Color(1.03, 0.97, 0.88), "fog": Color(1.02, 0.95, 0.86),
+		"saturation": 1.05, "horizon": Color(0.84, 0.76, 0.62), "horizon_mix": 0.18},
+	"winter": {"sun": Color(0.93, 0.96, 1.0), "sun_mul": 0.93, "ambient": Color(0.93, 0.98, 1.06), "fog": Color(0.97, 1.0, 1.05),
+		"saturation": 0.85, "zenith": Color(0.42, 0.58, 0.84), "zenith_mix": 0.3, "horizon": Color(0.82, 0.88, 0.95), "horizon_mix": 0.4},
+}
+## The grade in force: SEASON_GRADES[season] plus "sun_drop_deg" (tests read it).
+var season_grade: Dictionary = {}
+## How many times set_season_grade changed the grade (tests).
+var season_grade_writes := 0
+var _grade_season := ""
+var _grade_progress := -1.0
+var _season_climate := 1.0
+var _season_node: Node
+var _grade_sun := Color.WHITE
+var _grade_sun_mul := 1.0
+var _grade_ambient := Color.WHITE
+var _grade_fog := Color.WHITE
+var _grade_saturation := 1.0
+var _grade_sun_drop := 0.0
+var _sky_palette_base: Dictionary = {}
 
 
 func set_debug_lighting(mode: String) -> void:
@@ -278,13 +388,13 @@ func _build_environment() -> void:
 
 	env.fog_enabled = true
 	env.fog_mode = Environment.FOG_MODE_DEPTH
-	env.fog_depth_curve = FOG_CURVE
+	env.fog_depth_curve = LOOK_HAZE_CURVE if LOOK_HAZE else FOG_CURVE
 	env.fog_sun_scatter = 0.35
 	# Aerial perspective is what sells distance on the low preset, where there is
 	# no GI to give far geometry any atmosphere of its own.
-	env.fog_aerial_perspective = 0.30
+	env.fog_aerial_perspective = LOOK_HAZE_AERIAL if LOOK_HAZE else 0.30
 	# Tinting the sky by the fog colour is what turned a blue noon sky grey.
-	env.fog_sky_affect = 0.12
+	env.fog_sky_affect = FOG_SKY_AFFECT
 
 	# Defaults to 1.0, which lets the fog volume paint over the sky and turns a
 	# clear noon grey. It was the reason High looked worse than Low, which has no
@@ -387,6 +497,14 @@ var _cloud_offset := Vector2.ZERO
 func set_cloud_wind(multiplier: float) -> void:
 	_cloud_wind = multiplier
 
+## Falling snow fills the air (weather.gd LOOK_SNOW_AIR): 0 none .. 1 the view closes to
+## LOOK_SNOW_AIR_RANGE. Snow in the air is lit like the flakes: it takes the fill light's colour.
+var weather_snow := 0.0
+func set_weather_snow(amount: float) -> void:
+	if is_equal_approx(amount, weather_snow): return
+	weather_snow = amount
+	_apply_time()
+
 func set_weather_light(sun_left: float, overcast: float, fog: float) -> void:
 	weather_sun = sun_left; weather_overcast = overcast; weather_fog = fog
 	_apply_time()
@@ -465,7 +583,86 @@ func _process(delta: float) -> void:
 	if _profile_timer > 0.0:
 		return
 	_profile_timer = PROFILE_INTERVAL
+	if not is_instance_valid(_season_node): _seek_season_state()
 	_update_profile()
+
+
+# ------------------------------------------------------------------ season grade
+
+## Sets the seasonal grade for a season and its progress (0 on its first day .. 1). Returns
+## false, and touches nothing, when neither changed.
+func set_season_grade(season: String, progress: float) -> bool:
+	var p := clampf(progress, 0.0, 1.0)
+	if season == _grade_season and is_equal_approx(p, _grade_progress): return false
+	_grade_season = season; _grade_progress = p
+	season_grade = (SEASON_GRADES.get(season, {}) as Dictionary).duplicate()
+	if LOOK_MOODS and season == "winter": season_grade.merge(LOOK_WINTER_GRADE, true)
+	season_grade["sun_drop_deg"] = WINTER_SUN_DROP_DEG * winter_depth(season, p)
+	season_grade_writes += 1
+	_refresh_season_mix()
+	_apply_time()
+	return true
+
+
+## 1 at midwinter, 0 at midsummer, 0.5 at the middle of spring and autumn; smooth over the year.
+static func winter_depth(season: String, progress: float) -> float:
+	var index := SEASON_ORDER.find(season)
+	if index < 0: return 0.0
+	var year := (float(index) + clampf(progress, 0.0, 1.0)) / 4.0
+	return 0.5 + 0.5 * cos(TAU * (year - 0.875))
+
+
+func _seek_season_state() -> void:
+	if not is_inside_tree(): return
+	var node := get_tree().get_first_node_in_group(SEASON_STATE_GROUP)
+	if node == null or not node.has_signal("day_stepped") or not node.has_method("progress"): return
+	_season_node = node
+	node.connect("season_changed", _on_season_step)
+	node.connect("day_stepped", _on_season_step)
+	_on_season_step()
+
+
+func _on_season_step(_value: Variant = null) -> void:
+	if not is_instance_valid(_season_node): return
+	set_season_grade(str(_season_node.call("season")), float(_season_node.call("progress")))
+
+
+## Season colours fade where the climate has no seasons (0..1, stepped by SEASON_CLIMATE_STEP).
+func _set_season_climate(weight: float) -> void:
+	var w := snappedf(clampf(weight, 0.0, 1.0), SEASON_CLIMATE_STEP)
+	if w == _season_climate: return
+	_season_climate = w
+	_refresh_season_mix()
+
+
+## The cached multipliers _apply_time reads, and the sky dome's palette (written only on change).
+func _refresh_season_mix() -> void:
+	var g := season_grade
+	var w := _season_climate
+	_grade_sun = Color.WHITE.lerp(g.get("sun", Color.WHITE), w)
+	_grade_sun_mul = lerpf(1.0, float(g.get("sun_mul", 1.0)), w)
+	_grade_ambient = Color.WHITE.lerp(g.get("ambient", Color.WHITE), w)
+	_grade_fog = Color.WHITE.lerp(g.get("fog", Color.WHITE), w)
+	_grade_saturation = lerpf(1.0, float(g.get("saturation", 1.0)), w)
+	_grade_sun_drop = deg_to_rad(float(g.get("sun_drop_deg", 0.0)))
+	if _sky_material == null: return
+	var neutral := not g.has("zenith") and not g.has("horizon")
+	if neutral and _sky_palette_base.is_empty(): return
+	for key: String in ["zenith", "horizon"]:
+		var param := StringName("day_" + key)
+		var base := _sky_palette_default(param)
+		var target: Color = g.get(key, base)
+		_sky_param(param, base.lerp(target, float(g.get(key + "_mix", 0.0)) * w))
+
+
+func _sky_palette_default(param: StringName) -> Color:
+	if _sky_palette_base.has(param): return _sky_palette_base[param]
+	var value: Variant = RenderingServer.shader_get_parameter_default(_sky_material.shader.get_rid(), param)
+	var base: Color = SKY_PALETTE_FALLBACK.get(param, Color(1, 1, 1))
+	if value is Color: base = value
+	elif value is Vector3: base = Color((value as Vector3).x, (value as Vector3).y, (value as Vector3).z)
+	_sky_palette_base[param] = base
+	return base
 
 
 ## Ground biome weights drive the environment. Blend in time and release the ground
@@ -478,6 +675,7 @@ func _update_profile() -> void:
 		return
 	var pos := camera.global_position
 	_update_forest_shadows(pos)
+	if season_grade.has("sun"): _set_season_climate(CLIMATE_MAP.sample(Vector2(pos.x, pos.z), 0))
 	var influences: Dictionary = {}
 	var field: WorldBiomeField = WorldTerrain.instance.biomes if is_instance_valid(WorldTerrain.instance) else null
 	if field != null:
@@ -632,12 +830,17 @@ func _apply_time() -> void:
 	var daylight := TimeOfDay.daylight()
 	var golden := TimeOfDay.golden_amount()
 	var sun_dir := TimeOfDay.sun_direction()
+	# Season grade: the visible sun's orbit tilts lower toward midwinter (horizon crossings kept).
+	if _grade_sun_drop != 0.0: sun_dir = sun_dir.rotated(Vector3.RIGHT, _grade_sun_drop)
 	var night := 1.0 - daylight
+	var twilight := twilight_amount(TimeOfDay.sun_elevation()) * night if LOOK_MOODS else 0.0
+	# The sunset glow that reaches land, haze and dome: less under cloud.
+	var glow := golden * (1.0 - weather_overcast * LOOK_OVERCAST_GOLDEN_CUT) if LOOK_MOODS else golden
 
 	if sun != null:
 		sun.look_at_from_position(Vector3.ZERO, -sun_dir, Vector3.UP)
-		sun.light_color = SUN_DAY_COLOR.lerp(SUN_GOLDEN_COLOR, golden) * _pcol("sun_tint")
-		sun.light_energy = lerpf(SUN_DAY_ENERGY, SUN_GOLDEN_ENERGY, golden) * daylight * _pmul("sun_mul") * weather_sun
+		sun.light_color = SUN_DAY_COLOR.lerp(SUN_GOLDEN_COLOR, golden) * _pcol("sun_tint") * _grade_sun
+		sun.light_energy = lerpf(SUN_DAY_ENERGY, SUN_GOLDEN_ENERGY, golden) * daylight * _pmul("sun_mul") * weather_sun * _grade_sun_mul
 		# Kept visible even at zero energy: the sky shader indexes lights by
 		# order among *visible* directional lights, so hiding the sun at night
 		# would promote the moon to LIGHT0 and swap the two in the sky.
@@ -646,7 +849,7 @@ func _apply_time() -> void:
 		# moon. Both full four-cascade passes used to run throughout twilight.
 		# Keep lighting colours/energies independent of this shadow handover.
 		# Overcast light is diffuse: shadows fade out under heavy cloud.
-		sun.shadow_opacity = smoothstep(0.30,0.55,daylight) * (1.0 - weather_overcast * 0.85)
+		sun.shadow_opacity = smoothstep(0.30,0.55,daylight) * (1.0 - weather_overcast * (LOOK_OVERCAST_SHADOW_FADE if LOOK_MOODS else 0.85))
 		sun.shadow_enabled = sun.shadow_opacity > 0.0 and Quality.get_value("shadows_enabled", true)
 		# Shafts are strongest at low sun; this is the god-ray dial.
 		sun.light_volumetric_fog_energy = lerpf(2.2, 6.0, golden) * float(_profile.get("sun_mul", 1.0))
@@ -663,13 +866,16 @@ func _apply_time() -> void:
 		_apply_twilight_shadow_budget()
 
 	if _sky_material != null:
-		_sky_param(&"daylight", daylight)
-		_sky_param(&"golden", golden)
+		_sky_param(&"daylight", maxf(daylight, twilight * LOOK_TWILIGHT_SKY))
+		_sky_param(&"golden", glow)
+		# No stars through cloud or snowfall.
+		if LOOK_MOODS: _sky_param(&"star_brightness", 1.4 * (1.0 - clampf(weather_overcast * 1.25, 0.0, 1.0)))
 		# Never fully dark: the night sky has to stay readable enough to walk by.
-		_sky_param(&"exposure", lerpf(0.55, 1.0, daylight))
+		_sky_param(&"exposure", lerpf(0.55, 1.0, maxf(daylight, twilight * 0.6)))
 
 	var fog_color := FOG_NIGHT_COLOR.lerp(FOG_DAY_COLOR, daylight)
-	fog_color = fog_color.lerp(FOG_GOLDEN_COLOR, golden * 0.75) * _pcol("fog_tint")
+	fog_color = fog_color.lerp(LOOK_TWILIGHT_HAZE, twilight * 0.8)
+	fog_color = fog_color.lerp(FOG_GOLDEN_COLOR, glow * 0.75) * _pcol("fog_tint") * _grade_fog
 	env.fog_light_color = fog_color
 
 	# Mist peaks in the hour around sunrise and burns off through the morning, on misty mornings
@@ -677,7 +883,8 @@ func _apply_time() -> void:
 	var dawn_mist: float = golden if TimeOfDay.hours < 12.0 and _misty_morning() else 0.0
 	var density_mul: float = Quality.get_value("fog_density_mul", 1.0)
 	var draw: float = Quality.get_value("draw_distance", 9000.0)
-	env.fog_depth_begin = lerpf(draw * FOG_CLEAR * _pmul("fog_clear_mul"), FOG_DAWN_BEGIN, dawn_mist)
+	var haze_begin: float = (LOOK_HAZE_BEGIN if LOOK_HAZE else draw * FOG_CLEAR) * _pmul("fog_clear_mul")
+	env.fog_depth_begin = lerpf(haze_begin, minf(haze_begin, FOG_DAWN_BEGIN), dawn_mist)
 	var local_fog := clampf(float(_profile.get("local_fog", 0.0)), 0.0, 1.0)
 	# Blend extinction distances reciprocally. Linear kilometre/metre interpolation
 	# leaves a 70% forest biome almost clear out to four kilometres.
@@ -692,35 +899,74 @@ func _apply_time() -> void:
 		env.fog_depth_end = lerpf(env.fog_depth_end, 70.0, thick)
 		env.fog_depth_end = lerpf(env.fog_depth_end, minf(env.fog_depth_end, 1400.0), weather_overcast)
 		env.fog_density = clampf(env.fog_density + haze * 0.5, 0.0, 1.0)
-		env.fog_light_color = env.fog_light_color.lerp(Color(0.62, 0.65, 0.7) * lerpf(0.25, 1.0, daylight), haze)
+		var cloud_haze := Color(0.62, 0.65, 0.7) * lerpf(0.25, 1.0, daylight)
+		if LOOK_MOODS: cloud_haze = LOOK_OVERCAST_HAZE_NIGHT.lerp(LOOK_OVERCAST_HAZE_DAY, daylight)
+		env.fog_light_color = env.fog_light_color.lerp(cloud_haze, haze)
 
 	var vol_mul: float = Quality.get_value("vol_fog_density_mul", 1.0)
 	env.volumetric_fog_density = VOL_FOG_BASE_DENSITY * (1.0 + dawn_mist * DAWN_GLOW) * vol_mul
 	env.volumetric_fog_emission = fog_color * 0.02 * daylight
 
 	_update_lamps(daylight)
+	var cloud_shadow := daylight * weather_sun * (1.0 - weather_overcast) * LOOK_CLOUD_SHADOW_STRENGTH if LOOK_CLOUD_SHADOWS else 0.0
+	if absf(cloud_shadow - _cloud_shadow_written) > 0.01:
+		_cloud_shadow_written = cloud_shadow
+		RenderingServer.global_shader_parameter_set(&"look_cloud_shadow", cloud_shadow)
+	# Spring blossom, petals and young leaf carry a little light of their own by day
+	# (world/foliage/vegetation_color.gdshaderinc vegetation_spring_light); none at night.
+	if absf(daylight - _daylight_written) > 0.01:
+		_daylight_written = daylight
+		RenderingServer.global_shader_parameter_set(&"sky_daylight", daylight)
 
 	var ambient_boost: float = Quality.get_value("ambient_boost", 1.0)
 	var ambient_color := AMBIENT_NIGHT_COLOR.lerp(AMBIENT_DAY_COLOR, daylight)
 	# Region colour remains strong by day, subtler at night so dark-biome tints
 	# cannot erase the common visibility floor.
 	var ambient_tint := Color.WHITE.lerp(_pcol("ambient_tint"), lerpf(0.25, 1.0, daylight))
-	ambient_color = ambient_color.lerp(AMBIENT_GOLDEN_COLOR, golden * 0.6) * ambient_tint
-	env.ambient_light_color = ambient_color
-	env.ambient_light_energy = lerpf(
+	# The fill as the old rules had it. House interiors and the far window cards (interior_light)
+	# keep reading this one, so rooms and lit windows look as they did.
+	var legacy_ambient := ambient_color.lerp(AMBIENT_GOLDEN_COLOR, golden * 0.6) * ambient_tint * _grade_ambient
+	var base_energy := lerpf(
 		AMBIENT_NIGHT_ENERGY, AMBIENT_DAY_ENERGY, daylight) * lerpf(1.0, ambient_boost, daylight) * lerpf(clampf(_pmul("ambient_mul"), 0.95, 1.10), _pmul("ambient_mul"), daylight)
+	if LOOK_MOODS:
+		# Shade opposite the light at sunset, deep blue through the blue hour.
+		ambient_color = ambient_color.lerp(LOOK_GOLDEN_FILL, glow * 0.6).lerp(LOOK_TWILIGHT_FILL, twilight * 0.7)
+		ambient_color = ambient_color * ambient_tint * _grade_ambient
+	else:
+		ambient_color = legacy_ambient
+	env.ambient_light_color = ambient_color
+	env.ambient_light_energy = base_energy + LOOK_TWILIGHT_ENERGY * twilight
 	# The dense Everfree's dark bark falls below the contrast pivot at night.
 	# Neutral night contrast preserves the existing ambient fill instead of clipping it.
 	env.adjustment_contrast = lerpf(float(_profile.get("night_contrast", 1.04)), 1.04, daylight)
-	env.adjustment_saturation = lerpf(1.0, 1.22, daylight) * _pmul("saturation") * lerpf(1.0, 0.78, weather_overcast)
-	# Overcast: flat grey sky light instead of blue fill, a little dimmer.
-	env.ambient_light_color = env.ambient_light_color.lerp(Color(0.72, 0.74, 0.78), weather_overcast * 0.6)
-	env.ambient_light_energy *= lerpf(1.0, 0.72, weather_overcast)
-	env.tonemap_exposure = lerpf(1.0, 0.78, weather_overcast * (1.0 - weather_sun))
+	env.adjustment_saturation = lerpf(1.0, 1.22, daylight) * _pmul("saturation") * lerpf(1.0, LOOK_OVERCAST_SATURATION if LOOK_MOODS else 0.78, weather_overcast) * _grade_saturation
+	if LOOK_MOODS:
+		# Cloud cover: cooler and a little dimmer, but still coloured light.
+		env.ambient_light_color = env.ambient_light_color.lerp(LOOK_OVERCAST_FILL_NIGHT.lerp(LOOK_OVERCAST_FILL_DAY, daylight), weather_overcast * 0.6)
+		env.ambient_light_energy *= lerpf(1.0, LOOK_OVERCAST_FILL_ENERGY, weather_overcast)
+		env.tonemap_exposure = lerpf(1.0, LOOK_OVERCAST_EXPOSURE, weather_overcast * (1.0 - weather_sun)) * (1.0 + LOOK_GOLDEN_EXPOSURE * glow)
+	else:
+		# Overcast: flat grey sky light instead of blue fill, a little dimmer.
+		env.ambient_light_color = env.ambient_light_color.lerp(Color(0.72, 0.74, 0.78), weather_overcast * 0.6)
+		env.ambient_light_energy *= lerpf(1.0, 0.72, weather_overcast)
+		env.tonemap_exposure = lerpf(1.0, 0.78, weather_overcast * (1.0 - weather_sun))
+	env.fog_sky_affect = FOG_SKY_AFFECT
+	if LOOK_SNOW_AIR and weather_snow > 0.001:
+		env.fog_sky_affect = lerpf(FOG_SKY_AFFECT, LOOK_SNOW_AIR_SKY, clampf(weather_snow * 1.5, 0.0, 1.0))
+		# Distances blend by their reciprocals, like the forest fog above.
+		env.fog_depth_begin = 1.0 / lerpf(1.0 / maxf(env.fog_depth_begin, 1.0), 1.0 / 6.0, weather_snow)
+		env.fog_depth_end = 1.0 / lerpf(1.0 / maxf(env.fog_depth_end, 1.0), 1.0 / LOOK_SNOW_AIR_RANGE, weather_snow)
+		env.fog_density = clampf(lerpf(env.fog_density, 0.96, weather_snow), 0.0, 1.0)
+		# White snow in the air, lit by the fill light (and a little by the sun when it is out).
+		var lit := env.ambient_light_color * clampf(env.ambient_light_energy * 1.25, 0.1, 1.0)
+		var snow_air := lit.lerp(Color(0.86, 0.90, 0.97), daylight * 0.55)
+		env.fog_light_color = env.fog_light_color.lerp(snow_air, clampf(weather_snow * 1.3, 0.0, 1.0))
+	ambient_color = legacy_ambient
+	var legacy_energy := base_energy * lerpf(1.0, 0.72, weather_overcast)
 	# Room shells bypass GI to avoid the thin-roof leak. Match the exterior's linear
 	# night irradiance, while retaining the accepted brighter daytime room fill.
-	var inside := (ambient_color * env.ambient_light_energy).lerp(
-		ambient_color.srgb_to_linear() * env.ambient_light_energy, night)
+	var inside := (ambient_color * legacy_energy).lerp(
+		ambient_color.srgb_to_linear() * legacy_energy, night)
 	RenderingServer.global_shader_parameter_set("interior_light", inside)
 	_apply_grade(daylight, golden)
 	if is_instance_valid(debug_lighting): debug_lighting.apply_time(environment, daylight)

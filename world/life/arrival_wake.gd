@@ -119,17 +119,19 @@ func _say(text: String) -> void:
 	if is_instance_valid(_text): _text.text = text
 	if is_instance_valid(_text3d): _text3d.text = text
 
-func _lids(to: float, seconds: float) -> void:
+## False when the world is going away (quit, reload) or this node left the tree: the caller stops.
+func _lids(to: float, seconds: float) -> bool:
 	var from := _closed
 	var t := 0.0
 	while t < seconds:
-		if not await SHUTDOWN.frame(self): return
+		if not await SHUTDOWN.frame(self) or not is_inside_tree(): return false
 		t += get_process_delta_time()
 		_set_closed(lerpf(from, to, smoothstep(0.0, 1.0, t / seconds)))
 	_set_closed(to)
+	return true
 
-func _wait(seconds: float) -> void:
-	await SHUTDOWN.seconds(self, seconds)
+func _wait(seconds: float) -> bool:
+	return await SHUTDOWN.seconds(self, seconds) and is_inside_tree()
 
 ## The whole wake. `feet` is where Anon lies (on the ground), `facing` toward the stump.
 func play(feet: Vector3, facing: Vector3) -> void:
@@ -148,8 +150,8 @@ func play(feet: Vector3, facing: Vector3) -> void:
 	_hide_hud(true)
 	_start_sound()
 	for line: String in _line("black"):
-		_say(line); await _wait(2.4)
-		if not is_inside_tree(): return
+		_say(line)
+		if not await _wait(2.4): return
 	var up := Vector3.UP
 	facing.y = 0.0; facing = facing.normalized() if facing.length() > 0.1 else Vector3.FORWARD
 	var side := facing.cross(up).normalized()
@@ -167,13 +169,12 @@ func play(feet: Vector3, facing: Vector3) -> void:
 	_enter_pose(lying, lying_turn, 5.0, head.y)
 	_say(_line("lying"))
 	# Eyes flutter open: half, shut, a crack, shut, then open.
-	await _lids(0.45, 0.35); await _lids(1.0, 0.2); await _wait(0.35)
-	await _lids(0.7, 0.3); await _lids(1.0, 0.25); await _wait(0.5)
-	await _lids(0.0, 0.7)
-	await _wait(3.6)
-	if not is_inside_tree(): return
-	await _lids(1.0, 0.45)
-	_say(_line("sit")); await _wait(1.1)
+	if not await _lids(0.45, 0.35) or not await _lids(1.0, 0.2) or not await _wait(0.35): return
+	if not await _lids(0.7, 0.3) or not await _lids(1.0, 0.25) or not await _wait(0.5): return
+	if not await _lids(0.0, 0.7) or not await _wait(3.6): return
+	if not await _lids(1.0, 0.45): return
+	_say(_line("sit"))
+	if not await _wait(1.1): return
 	# Sitting up where he lay, looking down past his knees at the stump and its apples. AnonPony
 	# sits on its haunches, looking down at the stump.
 	var seat := feet - facing * 1.05 + up * 0.88
@@ -185,20 +186,19 @@ func play(feet: Vector3, facing: Vector3) -> void:
 		sitting_look = _pose(seat, seat + facing * 2.0 - up * (0.55 * eye) - side * 0.35, up)
 	_enter_pose(sitting, sitting_look, 3.8, seat.y)
 	_say(_line("sitting"))
-	await _lids(0.0, 0.55)
-	await _wait(3.4)
-	if not is_inside_tree(): return
-	await _lids(1.0, 0.4)
-	_say(_line("up")); await _wait(0.9)
+	if not await _lids(0.0, 0.55) or not await _wait(3.4): return
+	if not await _lids(1.0, 0.4): return
+	_say(_line("up"))
+	if not await _wait(0.9): return
 	_stand(feet - facing * (0.7 * eye if pony else 0.75), facing)
 	# Shown where the rig now stands (reset there by PonyForm).
 	if is_instance_valid(_form): _form.set_avatar_shown(true)
-	await _lids(0.0, 0.7)
+	if not await _lids(0.0, 0.7): return
 	_say("")
 	_hide_hud(false)
-	if "controls_locked" in body: body.controls_locked = false
+	if is_instance_valid(body) and "controls_locked" in body: body.controls_locked = false
 	_fade_sound(3.0)
-	await _wait(3.2)
+	if not await _wait(3.2): return
 	running = false
 	queue_free()
 
@@ -259,6 +259,8 @@ func _restore_origin() -> void:
 
 ## Standing: the real player view, placed beside where he lay, facing the stump.
 func _stand(at: Vector3, facing: Vector3) -> void:
+	# M-ARR-02: never read or move the rig once the world has left the tree (quit mid-wake).
+	if not is_inside_tree() or not is_instance_valid(game) or not is_instance_valid(game.player) or not game.player.is_inside_tree(): return
 	var heading := atan2(-facing.x, -facing.z)
 	if room_scale:
 		_restore_origin()

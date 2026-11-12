@@ -190,6 +190,54 @@ func register_seat(seat: Node3D) -> void:
 func unregister_seat(seat: Node3D) -> void:
 	seats.erase(seat)
 
+## The Hayburger's booths (world/buildings/hayburger/hayburger_interior.gd "Booth_*", board #348):
+## one pony seat per bench, on its aisle half, facing the table; she walks to the aisle end of
+## the bench ("front" meta, the sit() rest's approach and landing spot), hops along onto it and
+## sits with the normal sit posture. Built once per room from the booth's own vinyl cushions and
+## tabletop and kept in the room's meta. Only the restaurant's customers use them
+## (hayburger_customers.gd _take_booth): they are not in `seats`, so free_seat_near never offers
+## a booth seat with an approach under the table.
+const BOOTH_ALONG := 0.55        # seat centre from the bench centre, towards the aisle (m)
+const BOOTH_BACK := 0.06         # nearer the backrest than the cushion centre (m)
+const BOOTH_AISLE := 1.68        # the approach spot from the bench centre, past its aisle end (m)
+const BOOTH_CUSHION_TOP := 0.075 # half the vinyl cushion's height
+const BOOTH_SEAT_FLOOR := 0.405  # the cushion centre above the floor
+func booth_seats(room: Node3D) -> Array:
+	if not is_instance_valid(room) or not room.is_inside_tree(): return []
+	if room.has_meta("pony_booth_seats"):
+		var cached: Variant = room.get_meta("pony_booth_seats")
+		if cached is Array: return cached
+	var made: Array = []
+	var centre := room.global_position
+	for booth: Node in room.find_children("Booth_*", "Node3D", true, false):
+		var top: Node3D = null
+		var cushions: Array[Node3D] = []
+		for child: Node in booth.get_children():
+			if not child is Node3D: continue
+			if str(child.name).contains("CreamTabletop"): top = child as Node3D
+			elif str(child.name).contains("VinylSeat"): cushions.append(child as Node3D)
+		if top == null: continue
+		for cushion: Node3D in cushions:
+			var at := cushion.global_position
+			var forward := top.global_position - at
+			forward.y = 0.0
+			if forward.length() < 0.05: continue
+			forward = forward.normalized()
+			var along := forward.cross(Vector3.UP).normalized()
+			if along.dot(Vector3(centre.x - at.x, 0.0, centre.z - at.z)) < 0.0: along = -along
+			var seat := Node3D.new(); seat.name = "PonyBoothSeat"
+			booth.add_child(seat)
+			var point := at + along * BOOTH_ALONG - forward * BOOTH_BACK
+			point.y = at.y + BOOTH_CUSHION_TOP
+			seat.global_transform = Transform3D(Basis.looking_at(forward, Vector3.UP), point)
+			seat.set_meta("depth", 0.45)
+			var floor_at := at + along * BOOTH_AISLE
+			floor_at.y = at.y - BOOTH_SEAT_FLOOR
+			seat.set_meta("front", floor_at)
+			made.append(seat)
+	room.set_meta("pony_booth_seats", made)
+	return made
+
 ## The free player seat nearest `at` within `radius` (any seat node in group "player_seats",
 ## or a town bench seat), for Anon.
 func player_seat_near(at: Vector3, radius: float, who: Object = null, hit_collider: Object = null) -> Node3D:
@@ -282,6 +330,7 @@ func _front(seat: Node3D) -> Vector3:
 	return hit.position if not hit.is_empty() else Vector3(at.x, seat.global_position.y - 0.45, at.z)
 
 func _physics_process(_delta: float) -> void:
+	if _users.is_empty(): return   # no keys() copy on the (usual) empty ticks
 	for key in _users.keys():
 		var entry: Dictionary = _users[key]
 		# Check before typing: assigning a freed pony to a Node3D variable is itself an error

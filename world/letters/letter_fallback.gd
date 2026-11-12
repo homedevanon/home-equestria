@@ -64,6 +64,14 @@ static func detect_meet(text: String, places: Array) -> Dictionary:
 	if place.is_empty(): return {}
 	return {"place": place, "day": day, "time": time}
 
+## M-AI-18: the letter asks her to come to him now ("please come", "come see me", "come over",
+## "come find me", "I need you here"), with no day or time named (that is a meeting).
+const COME_ASK := "\\b(please come|come (see|find|visit|over|here|quick|right away|now|to me|and see)|can you come|could you come|would you come|i need you here|come as soon)\\b"
+static func asks_to_come(text: String) -> bool:
+	var lower := LETTER_TEXT.clean(text).to_lower().replace("’", "'")
+	if _regex(COME_ASK).search(lower) == null: return false
+	return MEET_TIME.find_day(lower).is_empty() or _time(lower).is_empty()
+
 ## The listed place a free-form letter names after at/to/by/near ("at town hall at 3"), or "".
 ## "your house" is her home and "my house" Anon's.
 static func find_place(lower: String, places: Array) -> String:

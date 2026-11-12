@@ -11,10 +11,17 @@ const FOOD := preload("res://world/food/food_interaction.gd")
 const FURNISHING := preload("res://world/housing/home_furnishing.gd")
 const COOKING := preload("res://world/cooking/cooking_input.gd")
 const SHOP_ITEMS := preload("res://world/shop/shop_items.gd")
+const TIDY := preload("res://world/inventory/loose_tidy.gd")
+const SHOP_PURCHASE := preload("res://world/shop/shop_purchase.gd")
 ## Loaded only where an open owned easel exists (world/painting/).
 const EASEL_FOLD := "res://world/painting/easel_fold.gd"
 
 var host: Node3D
+## When each spawn_owned_drop refusal line was last shown. Stations retry a pending output every
+## second (world/mechanics/stations/stations.gd _tick); the same reason is said again only after
+## REFUSAL_REPEAT_MS, so the hotbar does not blink it forever while the briefcase stays full.
+const REFUSAL_REPEAT_MS := 30000
+var _refusals: Dictionary = {}
 
 
 func _init(owner_node: Node3D) -> void:
@@ -67,11 +74,20 @@ func _make_item(token: String, id: String, visual: Node3D) -> RigidBody3D:
 
 ## Physical activity reward: commit ownership and its world placement together,
 ## then expose the body. A rejected transaction never spawns a free duplicate.
+## At the loose-item cap a leftover is tidied first, as buying does (loose_tidy.gd); a catch,
+## painting or station output that still cannot be placed says why on the hotbar instead of
+## vanishing (M-INV-01; the spa's hoof file too, M-SPA-01).
 func spawn_owned_drop(id:String,pose:Transform3D)->RigidBody3D:
 	id = CATALOG.canonical(id)
-	if not pose.is_finite() or not CATALOG.has(id) or host.inventory.loans.size()>=host.MAX_LOOSE:return null
+	if not pose.is_finite() or not CATALOG.has(id):return null
+	if STORE._place(host.inventory.slots,id,-1)<0:
+		_refuse(TIDY.not_placed_text(host,id,false));return null
+	if host.inventory.loans.size()>=host.MAX_LOOSE and not TIDY.make_room(host):
+		_refuse(TIDY.not_placed_text(host,id,true));return null
+	# Tidying can fill the last free slot with the leftover.
 	var slot:int=STORE._place(host.inventory.slots,id,-1)
-	if slot<0:return null
+	if slot<0:
+		_refuse(TIDY.not_placed_text(host,id,false));return null
 	var scene:PackedScene=CATALOG.scene(id)
 	if scene==null:return null
 	var visual:Node3D=scene.instantiate()
@@ -85,6 +101,14 @@ func spawn_owned_drop(id:String,pose:Transform3D)->RigidBody3D:
 	item.freeze=false
 	host.loose[token]=item
 	return item
+
+
+func _refuse(text: String) -> void:
+	var now := Time.get_ticks_msec()
+	if now - int(_refusals.get(text, -REFUSAL_REPEAT_MS)) < REFUSAL_REPEAT_MS: return
+	if _refusals.size() > 16: _refusals.clear()
+	_refusals[text] = now
+	SHOP_PURCHASE._say(host, text)
 
 
 func checkpoint_drops() -> bool:

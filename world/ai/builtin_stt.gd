@@ -34,6 +34,10 @@ var _deadline := 0.0
 var _callback: Callable
 var _output := ""
 var _input := ""
+## The desktop program's output pipes (OS.execute_with_pipe) and what it wrote to stderr, so a
+## program that cannot run says why instead of "could not read this recording".
+var _pipe: Dictionary = {}
+var _stderr_text := ""
 ## Android: no program may run from app storage, so Whisper runs in-process (native/whisper_stt,
 ## player board #13, dev 2026-10-26: on-device whisper for Quest). One loaded model at a time;
 ## loading happens on _loader so a 150 MB model never stalls a frame.
@@ -170,7 +174,8 @@ func _install(windows: bool, in_process := false) -> String:
 	var packed := "windows.zip" if windows else "linux.zip"
 	var marker := _folder.path_join("installed")
 	var signature: String = ("native" if in_process else str(manifest[packed].sha256)) + str(manifest["base.en.bin"].sha256)
-	if FileAccess.file_exists(marker) and FileAccess.get_file_as_string(marker) == signature and (in_process or FileAccess.file_exists(_binary)) and FileAccess.file_exists(_folder.path_join("base.en.bin")): return ""
+	if FileAccess.file_exists(marker) and FileAccess.get_file_as_string(marker) == signature and (in_process or FileAccess.file_exists(_binary)) and FileAccess.file_exists(_folder.path_join("base.en.bin")):
+		return "" if in_process else _probe_program()
 	if in_process: return _install_model(manifest, marker, signature)
 	if FileAccess.get_sha256(ASSETS + packed) != str(manifest[packed].sha256): return "Speech recognition program is incomplete."
 	var zip := ZIPReader.new()
@@ -183,7 +188,8 @@ func _install(windows: bool, in_process := false) -> String:
 		if error != OK: zip.close(); return "Not enough space for speech recognition."
 	zip.close()
 	if not windows and FileAccess.set_unix_permissions(_binary, 493) != OK: return "Cannot make speech recognition executable."
-	return _install_model(manifest, marker, signature)
+	var installed := _install_model(manifest, marker, signature)
+	return installed if not installed.is_empty() else _probe_program()
 
 func _install_model(manifest: Dictionary, marker: String, signature: String) -> String:
 	var source := FileAccess.open(ASSETS + "base.en.bin", FileAccess.READ)
@@ -199,6 +205,37 @@ func _install_model(manifest: Dictionary, marker: String, signature: String) -> 
 	done.store_string(signature); done.close()
 	return ""
 
+## The desktop program must start on this system (installer thread, once per launch): until 0.3.0
+## the bundled Linux whisper-cli needed glibc 2.38, so on Linux Mint 21 (glibc 2.35) every recording
+## ended as "could not read this recording" (thread 43664642). The settings say what is missing.
+## Since 0.3.1 the Linux program is linked statically and needs no system library at all.
+func _probe_program() -> String:
+	var output: Array = []
+	var code := OS.execute(_binary, PackedStringArray(["--help"]), output, true)
+	return "" if code == 0 else program_failure(code, "\n".join(output))
+
+
+## A player-readable reason for a desktop program that stopped without a transcript.
+static func program_failure(code: int, stderr: String) -> String:
+	var where := " Choose a speech server in Settings → Dialogue & microphone instead."
+	if "GLIBC_" in stderr:
+		var wanted := RegEx.create_from_string("GLIBC_([0-9.]+)").search(stderr)
+		return "Built-in speech recognition needs a newer Linux (glibc %s or later, such as Linux Mint 22 or Ubuntu 24.04)." % (wanted.get_string(1) if wanted != null else "2.38") + where
+	if "error while loading shared libraries" in stderr or code == 127:
+		return "Built-in speech recognition is missing a system library (%s)." % _last_line(stderr) + where
+	if code == 132 or "Illegal instruction" in stderr:
+		return "Built-in speech recognition needs a processor with AVX2." + where
+	if code != 0:
+		var detail := _last_line(stderr)
+		return "Built-in speech recognition stopped (exit %d%s); an older processor without AVX2 cannot run it." % [code, (": " + detail) if not detail.is_empty() else ""] + where
+	return "Speech recognition could not read this recording."
+
+
+static func _last_line(text: String) -> String:
+	var lines := text.strip_edges().split("\n", false)
+	return lines[lines.size() - 1].strip_edges().left(120) if not lines.is_empty() else ""
+
+
 ## `prompt`: Whisper's initial prompt, pony and place names to spell (speech_vocabulary.gd).
 func transcribe(wav: PackedByteArray, callback: Callable, prompt := "") -> String:
 	if not available: prepare(); return status
@@ -209,17 +246,21 @@ func transcribe(wav: PackedByteArray, callback: Callable, prompt := "") -> Strin
 	# Unique owned files also isolate simultaneous game instances.
 	_output = _folder.path_join("utterance-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()])
 	_input = _output + ".wav"
-	var file := FileAccess.open(_input, FileAccess.WRITE)
-	if file == null: return "Cannot save the microphone recording."
-	file.store_buffer(wav); file.close()
 	_callback = callback
+	# The in-process recogniser takes the bytes; only the helper program reads the file.
 	if _in_process(): return _transcribe_in_process(chosen, wav, prompt)
+	var file := FileAccess.open(_input, FileAccess.WRITE)
+	if file == null: _callback = Callable(); return "Cannot save the microphone recording."
+	file.store_buffer(wav); file.close()
 	# Bigger models need more of the CPU to answer quickly; leave two cores for the game.
 	var threads := clampi(OS.get_processor_count() - 2, 3, 8)
 	var arguments := PackedStringArray(["-m", chosen, "-f", _input, "-of", _output, "-otxt", "-l", "en", "-t", str(threads), "-np", "-nt", "-ng", "-bs", "1", "-bo", "1"])
 	if not prompt.is_empty(): arguments.append_array(PackedStringArray(["--prompt", prompt]))
-	_pid = OS.create_process(_binary, arguments, false)
+	_pipe = OS.execute_with_pipe(_binary, arguments, false)
+	_stderr_text = ""
+	_pid = int(_pipe.get("pid", -1))
 	if _pid <= 0:
+		_pipe = {}
 		_cleanup(); _callback = Callable(); return "Could not start built-in speech recognition."
 	_deadline = Time.get_ticks_msec() * .001 + 60.0
 	_running_model = model
@@ -303,15 +344,37 @@ func _process(delta: float) -> void:
 			_refresh_status(false)
 	if _in_process(): _native_step(); return
 	if _pid <= 0: return
+	_drain_pipes()
 	if OS.is_process_running(_pid) and Time.get_ticks_msec() * .001 <= _deadline: return
 	var error := ""
 	if OS.is_process_running(_pid): OS.kill(_pid); error = "Speech recognition timed out."
-	elif not FileAccess.file_exists(_output + ".txt"): error = "Speech recognition could not read this recording."
+	elif not FileAccess.file_exists(_output + ".txt"):
+		_drain_pipes()
+		error = program_failure(OS.get_process_exit_code(_pid), _stderr_text)
+		push_warning("[speech] whisper-cli: " + _stderr_text.strip_edges().right(300))
+	_close_pipes()
 	var words := FileAccess.get_file_as_string(_output + ".txt").strip_edges() if error.is_empty() else ""
 	_pid = -1
 	var done := _callback; _callback = Callable()
 	_cleanup(); _running_model = ""; _refresh_status()
 	if done.is_valid(): done.call(words, error)
+
+## Reads what the program wrote so far (non-blocking pipes, only while it runs): a full pipe would
+## stall it, and stderr holds the reason it failed. The last 4 KB of stderr are kept.
+func _drain_pipes() -> void:
+	for key: String in ["stdio", "stderr"]:
+		var pipe: Variant = _pipe.get(key)
+		if not pipe is FileAccess: continue
+		var chunk := (pipe as FileAccess).get_buffer(65536)
+		if key == "stderr" and not chunk.is_empty(): _stderr_text = (_stderr_text + chunk.get_string_from_utf8()).right(4096)
+
+
+func _close_pipes() -> void:
+	for key: String in ["stdio", "stderr"]:
+		var pipe: Variant = _pipe.get(key)
+		if pipe is FileAccess: (pipe as FileAccess).close()
+	_pipe = {}
+
 
 func _cleanup() -> void:
 	for path: String in [_input, _output + ".txt"]:
@@ -321,6 +384,7 @@ func cancel() -> void:
 	_callback = Callable()
 	if _native != null and _native_busy and _loader == null: _native.call("cancel"); _native_busy = false
 	if _pid > 0 and OS.is_process_running(_pid): OS.kill(_pid)
+	_close_pipes()
 	_pid = -1
 	_running_model = ""
 	_cleanup(); _refresh_status()

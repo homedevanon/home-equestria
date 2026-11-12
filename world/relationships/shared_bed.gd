@@ -30,6 +30,14 @@ const EYE_OVER_PILLOW := 0.1
 const BESIDE := 0.44
 ## A bed narrower than this sleeps one; you lie in the middle.
 const MARE_HALF_WIDTH := 0.22
+## Head to the sitting hips along the mattress (where he sits facing the foot before lying back).
+const SIT_ALONG := 0.77
+## M-LIF-06 (player board #56, private #326/#360, 2026-11-08): HEAD_IN, HIP_ALONG, SIT_ALONG,
+## EYE_OVER_HIPS, EYE_OVER_PILLOW and Anon's half of BESIDE are his body at 6 ft 0 in; they scale with
+## his height setting (Settings.anon_height_scale(), 1.0 at 6 ft, so a 6 ft Anon lies exactly as
+## before). A mare's half of BESIDE and her length scale with her own body_scale: an adult stallion
+## (1.2x the size setting) is laid out at his own size when he joins, not refused for being bigger
+## than the setting. Nothing about the contact, the solver or joint limits changes.
 
 var house: Node3D
 ## A bed with no house API behind it (installed by Seating); `house` beds come from ensure_bed.
@@ -48,6 +56,8 @@ var _mare_fits := false
 ## height as Anon" every mare used to be refused outright). Her half of BESIDE and her footprint
 ## grow with it; Anon's half stays.
 var _mare_scale := 1.0
+## Anon's height over the 6 ft Anon these lengths were measured on (1.0 without Settings).
+var _anon := 1.0
 var _mare_rest := Transform3D.IDENTITY
 var _mare_front := Vector3.INF
 var _eye := Vector3.INF
@@ -112,7 +122,8 @@ func refresh() -> void:
 	if not seats[0].free_for() or not _guest.is_empty(): return
 	var lane := _house_lane()
 	_mare_scale = _size_setting()
-	var signature := [_bed.global_transform, _sleeper.get_instance_id() if is_instance_valid(_sleeper) else 0, lane if is_finite(lane) else 99.0, _mare_scale]
+	_anon = _anon_scale()
+	var signature := [_bed.global_transform, _sleeper.get_instance_id() if is_instance_valid(_sleeper) else 0, lane if is_finite(lane) else 99.0, _mare_scale, _anon]
 	if signature != _laid_for:
 		_laid_for = signature
 		_layout()
@@ -161,7 +172,7 @@ func _bed_size() -> Vector3:
 func _layout() -> void:
 	_frame = Transform3D(_bed.global_basis.orthonormalized(), _bed.global_position)
 	_half = _bed_size() * 0.5
-	var head_z := -_half.z + HEAD_IN
+	var head_z := _head_z()
 	var open_side: Vector3 = _bed.get_meta("side_local") if _bed.has_meta("side_local") else Vector3.ZERO
 	_side = 1.0 if open_side.x >= 0.0 else -1.0
 	var shared_lane := _house_lane()
@@ -175,33 +186,58 @@ func _layout() -> void:
 		_lane = -_side * minf(0.48, maxf(_half.x - 0.3, 0.0))
 	else:
 		_lane = -_side * _beside() * 0.5
-	_mare_fits = not is_instance_valid(_sleeper) and absf(_lane + _side * _beside()) + MARE_HALF_WIDTH * _mare_scale <= _half.x
-	# Bigger than canon: her whole length (couch.gd MARE_HALF_LENGTH) must lie on the mattress too.
-	if _mare_fits and _mare_scale > 1.05: _mare_fits = absf(head_z + 0.55) + MARE_HALF_LENGTH * _mare_scale <= _half.z
+	_mare_fits = not is_instance_valid(_sleeper) and scale_fits(_mare_scale)
 	if not _mare_fits and not is_finite(shared_lane) and not is_instance_valid(_sleeper): _lane = 0.0
-	var seat_at := _frame * Vector3(_lane, 0.0, head_z + 0.77)
+	var sit_z := _sit_z()
+	var seat_at := _frame * Vector3(_lane, 0.0, sit_z)
 	_top_y = _top_at(seat_at)
-	var hip_top := _surface(_frame * Vector3(_lane, 0.0, head_z + HIP_ALONG))
+	var hip_top := _surface(_frame * Vector3(_lane, 0.0, minf(head_z + HIP_ALONG * _anon, sit_z)))
 	var head_at := _frame * Vector3(_lane, 0.0, head_z)
-	var eye_y := maxf(hip_top + EYE_OVER_HIPS, _surface(head_at) + EYE_OVER_PILLOW)
+	var eye_y := maxf(hip_top + EYE_OVER_HIPS * _anon, _surface(head_at) + EYE_OVER_PILLOW * _anon)
 	_eye = Vector3(head_at.x, eye_y, head_at.z)
 	_eye_floor = eye_y - 0.06
 	# Sit facing the foot, then lie back with the head toward the pillows.
 	seats[0].global_transform = Transform3D(Basis.looking_at(_frame.basis.z, Vector3.UP), Vector3(seat_at.x, _top_y, seat_at.z))
-	var mare_at := _frame * Vector3(_lane + _side * _beside(), 0.0, head_z + 0.55)
-	# She lands on the physics mattress; pony_posture then sinks her into the drawn bedding.
-	_mare_rest = Transform3D(Basis.looking_at(-_frame.basis.z, Vector3.UP), Vector3(mare_at.x, _top_at(mare_at) + 0.02, mare_at.z))
-	seats[1].global_transform = _mare_rest
-	_exit = _frame * Vector3(-_side * (_half.x + 0.5), 0.02, head_z + 0.77)
+	_lay_mare(_mare_scale)
+	_exit = _frame * Vector3(-_side * (_half.x + 0.5), 0.02, sit_z)
 	# anon_body leans a reclined torso toward company from this frame's x (as on the sofa), and the
 	# interaction hint reads the sofa's cushion band (x +-0.85, z -0.12..0.65, 0.42 up) in it:
 	# stand the frame on the mattress beside you, on her side.
 	var hint_at := _frame * Vector3(_lane + _side * 0.35, 0.0, head_z + 0.42)
 	global_transform = Transform3D(_frame.basis, Vector3(hint_at.x, _top_y - HEIGHT, hint_at.z))
 
-## Centre to centre lying side by side: Anon's half of BESIDE plus hers at the size setting.
-func _beside() -> float:
-	return BESIDE * 0.5 * (1.0 + _mare_scale)
+## Centre to centre lying side by side: Anon's half of BESIDE at his height plus hers at `scale`
+## (the size setting unless given: a joining pony's own body_scale).
+func _beside(scale := -1.0) -> float:
+	return BESIDE * 0.5 * (_anon + (_mare_scale if scale <= 0.0 else scale))
+
+## His reclined eye, in from the headboard end: HEAD_IN at his height, kept on the mattress.
+func _head_z() -> float:
+	return -_half.z + minf(HEAD_IN * _anon, maxf(_half.z - 0.2, HEAD_IN))
+
+## Where he sits facing the foot (and the floor exit beside it): SIT_ALONG at his height, short of
+## the foot end.
+func _sit_z() -> float:
+	return minf(_head_z() + SIT_ALONG * _anon, maxf(_half.z - 0.2, _head_z() + 0.3))
+
+## Whether a pony of body scale `scale` lies beside him on this mattress: her barrel beside his
+## (BESIDE at both sizes) inside the bed's width, and her whole length (couch.gd MARE_HALF_LENGTH)
+## from her spot inside its length. Canon size always fitted the house bed (2.05 x 2.1 m).
+func scale_fits(scale: float) -> bool:
+	if absf(_lane + _side * _beside(scale)) + MARE_HALF_WIDTH * scale > _half.x: return false
+	return scale <= 1.05 or absf(_head_z() + 0.55) + MARE_HALF_LENGTH * scale <= _half.z
+
+## Her spot beside his lane for body scale `scale`: the layout's size, or a joining pony's own.
+func _lay_mare(scale: float) -> void:
+	var mare_at := _frame * Vector3(_lane + _side * _beside(scale), 0.0, _head_z() + 0.55)
+	# She lands on the physics mattress; pony_posture then sinks her into the drawn bedding.
+	_mare_rest = Transform3D(Basis.looking_at(-_frame.basis.z, Vector3.UP), Vector3(mare_at.x, _top_at(mare_at) + 0.02, mare_at.z))
+	if seats.size() > 1 and is_instance_valid(seats[1]): seats[1].global_transform = _mare_rest
+
+## Anon's height setting over the 6 ft Anon (1.0 when the Settings autoload is absent, fixtures).
+func _anon_scale() -> float:
+	var settings: Node = get_node_or_null("/root/Settings")
+	return float(settings.call("anon_height_scale")) if settings != null and settings.has_method("anon_height_scale") else 1.0
 
 ## The ponies' size setting (1.0 canon; 1.0 when the Settings autoload is absent, fixtures).
 func _size_setting() -> float:
@@ -241,9 +277,11 @@ func _scan_mattress() -> void:
 	var inverse := _frame.affine_inverse()
 	for node: Node in get_tree().get_nodes_in_group("ai_characters"):
 		var actor := node as Node3D
-		if actor == null or actor == guest or not actor.has_method("posture_status"): continue
+		if actor == null or actor == guest: continue
+		# Position first (cheap, and rejects nearly every pony), then the method lookup (W2 perf pass).
 		var local := inverse * actor.global_position
 		if absf(local.x) > _half.x + 0.1 or absf(local.z) > _half.z + 0.1 or absf(actor.global_position.y - top) > 0.4: continue
+		if not actor.has_method("posture_status"): continue
 		if actor.posture_status().requested == "lie_down":
 			_sleeper = actor
 			break
@@ -261,7 +299,7 @@ func rest_frame(seat: Node3D) -> Node3D:
 	return frame
 
 func sleep_eye(seat: Node3D) -> Vector3:
-	return _eye if _eye.is_finite() else seat.global_position + Vector3.UP * EYE_OVER_HIPS
+	return _eye if _eye.is_finite() else seat.global_position + Vector3.UP * EYE_OVER_HIPS * _anon
 
 ## Lying down for real in VR: the view stops at a head resting on the bedding.
 func rest_floor(_seat: Node3D) -> float:
@@ -324,16 +362,22 @@ func eligible(actor: Node3D) -> bool:
 	if actor.get_meta("affection_active", false): return false
 	if actor.has_method("action_interruption_reason") and not str(actor.action_interruption_reason()).is_empty(): return false
 	if actor.get("flight") != null and actor.flight.active(): return false
-	# Laid out for the size setting; one bigger than that (an adult stallion) does not fit her spot.
-	if float(actor.get("body_scale")) > 1.05 * _mare_scale: return false
+	# Her own size, measured against this mattress beside him (an adult stallion is 1.2x the size
+	# setting: refused outright before, player board #56). _invite lays her spot out at her size.
+	var body: Variant = actor.get("body_scale")
+	if not scale_fits(float(body) if body != null else 1.0): return false
 	if Time.get_ticks_msec() < int(_cooldowns.get(actor.get_instance_id(), 0)): return false
 	var nav := actor.get_node_or_null("Navigator")
 	if nav == null: return false
 	if "reserved_by" in nav and not str(nav.reserved_by).is_empty(): return false
 	var owner := str(nav.command_owner)
 	var routine := owner.is_empty() or owner == "rest_after_command" or owner.begins_with("life:") or owner.begins_with("bond:") or owner.begins_with("day:")
+	# M-AI-19 (thread 43686931: Fluttershy never joined him already lying in her bed): a chat owns her
+	# navigator as "social:talk", often while she walks up to talk, so her own cuddle() after the
+	# chat was refused. Her AI choosing to join (accept()) counts the chat as routine.
+	var chatting := _accepting and owner.begins_with("social:")
 	var following := _is_player(nav.get("_follow_target")) or not _spoken_follow(actor, nav).is_empty()
-	if not following and (not routine or nav.get("_has_target") == true): return false
+	if not following and not chatting and (not routine or nav.get("_has_target") == true): return false
 	return _willing(actor)
 
 ## Public entry (fixtures, other callers): she walks over and lies down beside you.
@@ -345,7 +389,11 @@ func rest_word() -> String:
 
 ## Her AI chose to join him (cuddle()).
 func accept(actor: Node3D) -> bool:
-	return _guest.is_empty() and _mare_fits and not is_instance_valid(_sleeper) and invite(actor, null)
+	if not _guest.is_empty() or not _mare_fits or is_instance_valid(_sleeper): return false
+	_accepting = true
+	var joined := invite(actor, null)
+	_accepting = false
+	return joined
 
 ## Her capsule's hop from the floor onto her spot clears walls and furniture (the bed never counts).
 func hop_clear(actor: CharacterBody3D, from: Vector3, to: Vector3) -> bool:
@@ -430,6 +478,8 @@ func _invite(actor: Node3D) -> bool:
 	var seating := get_tree().get_first_node_in_group("pony_seating")
 	if seating == null or not bool(seating.get("_ready_done")) or not _mare_fits: return false
 	if not seats[1].free_for(actor) or not actor is CharacterBody3D: return false
+	var body: Variant = actor.get("body_scale")
+	_lay_mare(float(body) if body != null else _mare_scale)
 	var front := _front_for(actor as CharacterBody3D)
 	if not front.is_finite() or not open(): return false
 	var nav: Node = actor.get_node("Navigator")
@@ -461,10 +511,10 @@ func _invite(actor: Node3D) -> bool:
 
 ## Clear floor beside her spot on the open side, else the bed's own side marker, else the foot.
 func _front_for(actor: CharacterBody3D) -> Vector3:
-	var z := (_frame.affine_inverse() * _mare_rest.origin).z
-	var candidates: Array[Vector3] = [_frame * Vector3(_side * (_half.x + 0.55), 0.0, z)]
+	var local := _frame.affine_inverse() * _mare_rest.origin
+	var candidates: Array[Vector3] = [_frame * Vector3(_side * (_half.x + 0.55), 0.0, local.z)]
 	if _bed.has_meta("side_local"): candidates.append(_bed.to_global(Vector3(_bed.get_meta("side_local"))))
-	candidates.append(_frame * Vector3(_lane + _side * _beside(), 0.0, _half.z + 0.6))
+	candidates.append(_frame * Vector3(local.x, 0.0, _half.z + 0.6))
 	var clearance := float(actor.profile.clearance)
 	var radius := float(actor.profile.radius)
 	for at: Vector3 in candidates:
@@ -483,6 +533,8 @@ func _leave() -> void:
 func _finish_guest() -> void:
 	var entry := _guest
 	_guest = {}
+	# Her spot was laid out at her size (_invite): lay the bed out again for the size setting.
+	_laid_for = []
 	if not is_instance_valid(entry.get("actor")):
 		_clear_body_support(null)
 		return
@@ -554,6 +606,7 @@ func _mark_company(reclined: bool) -> void:
 		if actor not in _marked:
 			_marked.append(actor)
 			(actor as Node).set_meta("couch_cuddle", true)
+			(actor as Node).add_to_group(&"couch_cuddle")  # cuddle/player_input.gd READY_GROUP
 		if actor == _guest.get("actor"): actor.expressions.touch("couch", .15, .85)
 		var player: Variant = seats[0].get_meta("occupant") if seats[0].has_meta("occupant") else null
 		if is_instance_valid(player): NAP_COMPANY.attach(actor, player, self)
@@ -562,6 +615,7 @@ func _unmark(actor: Node3D) -> void:
 	_release_company(actor)
 	_marked.erase(actor)
 	if actor.has_meta("couch_cuddle"): actor.remove_meta("couch_cuddle")
+	if actor.is_in_group(&"couch_cuddle"): actor.remove_from_group(&"couch_cuddle")
 	if actor.get("expressions") != null: actor.expressions.release_touch("couch")
 
 func _exit_tree() -> void:

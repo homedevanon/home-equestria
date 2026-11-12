@@ -5,7 +5,7 @@ const PLACEMENT := preload("res://world/navigation/roster_placement.gd")
 const SHUTDOWN := preload("res://world/shutdown_waits.gd")
 const OWNER := preload("res://player/desktop_action_owner.gd")
 const DEV := preload("res://world/dev_tools.gd")
-const HELP := "spawn <pony name> — bring that pony nearby\nbits [amount] — add that many bits (no amount: set balance to 999999)\nnoclip — fly through walls and ground (again: walk)\nfly — fly with collisions (again: walk)\nunstuck — stand on the ground where you are\nhome — back to the Ponyville spawn\ntime <hour> — set the clock (0–24, e.g. time 7.5)\nshow [tomorrow] — Trixie puts on a stage show at the schoolhouse now (or tomorrow at 17:00)\nhelp — show commands\nclear — clear output\nclose — close console"
+const HELP := "spawn <pony id or name> — bring that pony nearby (spawn alone lists every id)\nbits [amount] — add that many bits (no amount: set balance to 999999)\nnoclip — fly through walls and ground (again: walk)\nfly — fly with collisions (again: walk)\nunstuck — stand on the ground where you are\nhome — back to the Ponyville spawn\ntime <hour> — set the clock (0–24, e.g. time 7.5)\nshow [tomorrow] — Trixie puts on a stage show at the schoolhouse now (or tomorrow at 17:00)\nhelp — show commands\nclear — clear output\nclose — close console"
 var game: Node
 var player_body: Node
 var field: LineEdit
@@ -61,9 +61,9 @@ func _input(event: InputEvent) -> void:
 			if get_viewport().gui_get_focus_owner() is LineEdit or get_viewport().gui_get_focus_owner() is TextEdit: return
 			if player_body.controls_locked:
 				if game.xr_active: return
-				var activity := OWNER.current(game.inventory)
+				var activity := OWNER.current(game.get("inventory"))
 				if activity == null or not activity.has_method("owns_control_lock") or not activity.owns_control_lock(): return
-			if not game.xr_active: OWNER.cancel_current(game.inventory)
+			if not game.xr_active: OWNER.cancel_current(game.get("inventory"))
 			if player_body.controls_locked: return
 			_mouse_before = Input.mouse_mode
 			_lock_owned = true; player_body.controls_locked = true
@@ -100,8 +100,9 @@ func _write(text: String) -> void:
 	output.append_text(text + "\n")
 	if spatial != null: spatial.refresh()
 
+## "Dr. Whooves", "dr whooves" and drwhooves are the same key.
 static func name_key(value: String) -> String:
-	return value.to_lower().replace(" ", "").replace("_", "").replace("-", "").strip_edges()
+	return value.to_lower().replace(" ", "").replace("_", "").replace("-", "").replace(".", "").replace("'", "").strip_edges()
 
 func resolve_pony(value: String) -> String:
 	if _catalogue.is_empty(): _catalogue = CATALOGUE.catalogue()
@@ -109,6 +110,27 @@ func resolve_pony(value: String) -> String:
 	for id: String in _catalogue:
 		if key == name_key(id) or key == name_key(CATALOGUE.pony_name(id)): return id
 	return ""
+
+## Every spawnable pony id, sorted (e.g. drwhooves for Dr Hooves).
+func pony_ids() -> Array:
+	if _catalogue.is_empty(): _catalogue = CATALOGUE.catalogue()
+	var ids: Array = _catalogue.keys()
+	ids.sort()
+	return ids
+
+## Up to three ids closest to a name that matched none: containing it first, then by letter pairs.
+func nearest_ponies(value: String) -> Array:
+	var key := name_key(value)
+	if key.is_empty(): return []
+	var scored: Array = []
+	for id: String in pony_ids():
+		var best := 0.0
+		for candidate: String in [name_key(id), name_key(CATALOGUE.pony_name(id))]:
+			var score := 2.0 if candidate.contains(key) or key.contains(candidate) else key.similarity(candidate)
+			best = maxf(best, score)
+		if best >= 0.4: scored.append([best, id])
+	scored.sort_custom(func(a: Array, b: Array) -> bool: return a[0] > b[0] or (a[0] == b[0] and str(a[1]) < str(b[1])))
+	return scored.slice(0, 3).map(func(item: Array) -> String: return str(item[1]))
 
 func _submit(line: String) -> void:
 	field.clear()
@@ -125,7 +147,7 @@ func execute(text: String) -> String:
 	var command := text.get_slice(" ", 0).to_lower()
 	var argument := text.substr(command.length()).strip_edges()
 	match command:
-		"help": return HELP
+		"help": return HELP + "\nPony ids: " + ", ".join(pony_ids())
 		"clear": output.clear(); return ""
 		"close", "exit": close(); return ""
 		"bits":
@@ -165,8 +187,12 @@ func execute(text: String) -> String:
 			if runtime.active(): return "A show is already on."
 			return "Trixie is on her way to the schoolhouse stage." if runtime.start(true) else "Trixie cannot perform right now."
 		"spawn":
+			if argument.is_empty(): return "Spawnable pony ids (spaces or underscores both work):\n" + ", ".join(pony_ids())
 			var id := resolve_pony(argument)
-			if id.is_empty(): return "Unknown pony. Try spawn rainbowdash, spawn cherryberry, spawn celestia or spawn luna."
+			if id.is_empty():
+				var near := nearest_ponies(argument)
+				if near.is_empty(): return "Unknown pony. Type spawn on its own for every id."
+				return "Unknown pony. Did you mean %s? (spawn on its own lists every id)" % " or ".join(near.map(func(pony_id: String) -> String: return "spawn " + pony_id))
 			_busy = true
 			var result := await _spawn(id)
 			_busy = false

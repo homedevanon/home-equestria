@@ -35,6 +35,16 @@ const POLL := 1.0
 ## Retrying her greeting while he stands with her (the director may be busy for a moment).
 const GREET_RETRY_S := 30.0
 const UNKNOWN_PLACE := "Unknown place; ask Anon which place he means"
+## M-AI-18: "come to me" by letter. The meeting place is where Anon was when she read it: a mapped
+## place within NEAR_PLACE_M, else the spot itself as "anon_at:X:Z" (remembered for her essence,
+## essence.gd known places, so an unloaded pony travels there too).
+const SPOT_PREFIX := "anon_at:"
+const NEAR_PLACE_M := 40.0
+## She sets off at once; the meeting hour is when she should be there (travel at about this pace,
+## at least COME_MIN_HOURS from now, rounded up to 5 game minutes). COME_MIN_HOURS stays just past
+## meet_time.gd SOONEST_HOURS (20 min), or a pony close by was refused as "already passed".
+const COME_SPEED := 2.5
+const COME_MIN_HOURS := 0.35
 
 var game: Node
 ## /root/TimeOfDay, or a test double with `day: int` and `hours: float`.
@@ -87,6 +97,8 @@ func propose(pony: String, place: String, day_word: String, time_text: String, s
 		stored.merge({"place": spot.id, "place_label": spot.label, "day": day, "hour": hour, "source": source, "status": "planned",
 			"wait_until": float(day) + (hour + WAIT_HOURS) / 24.0, "player_seen": false, "history": history}, true)
 		if not clean_note.is_empty(): stored.note = clean_note
+		# A moved meeting keeps the usual lead (M-AI-18 come() sets it again for a new call).
+		stored.erase("leave_at")
 		row = stored
 		_record(pony, "appointment", "You and Anon moved your meeting: now at %s %s at %s." % [spot.label, MEET_TIME.day_words(day, _day()), MEET_TIME.clock_text(hour)], "appt:%s:%d" % [row.id, history.size()])
 	else:
@@ -159,6 +171,7 @@ func home_distance(pony: String, place: String) -> float:
 
 ## The meeting point: a house means outside its front door, never inside.
 func place_point(place: String) -> Vector3:
+	if place.begins_with(SPOT_PREFIX): return _spot(place)
 	if not is_inside_tree(): return Vector3.INF
 	var entry := PLACES.find(get_tree(), place)
 	if entry.is_empty():
@@ -192,6 +205,73 @@ func prompt_note(pony: String) -> String:
 		elif str(newest.get("status", "")) == "stood_up" and age <= 2.0:
 			text = "- Anon stood you up at %s on day %d." % [newest.place_label, int(newest.day)]
 	return text.left(PROMPT_CHARS)
+
+## M-AI-18: she read his letter asking her to come and agreed. A meeting where he is now (a mapped
+## place near him, else his spot), at the hour she can be there; her day plan walks her there at
+## once. {"ok", "id", "error", "row"} like propose().
+func come(pony: String, source: String, note := "") -> Dictionary:
+	var player := _player_position()
+	if not player.is_finite(): return {"ok": false, "id": "", "error": "Anon's whereabouts are unknown", "row": {}}
+	var place := _place_near(player)
+	var there := place_point(place)
+	var from := _pony_point(pony)
+	var hours := COME_MIN_HOURS
+	if from.is_finite() and there.is_finite():
+		hours = maxf(hours, _flat(from, there) / COME_SPEED / 60.0 * (24.0 / maxf(_day_length_minutes(), 1.0)))
+	# Meetings keep meet_time.gd's hours: before 06:00 she comes at 06:00; after 21:00 not today.
+	var at := maxf(ceilf((_hours() + hours) * 12.0) / 12.0, MEET_TIME.EARLIEST)
+	if at > MEET_TIME.LATEST: return {"ok": false, "id": "", "error": "Too late in the day to come now", "row": {}}
+	var made := propose(pony, place, "today", MEET_TIME.clock_text(at), source, note)
+	if not bool(made.get("ok", false)): return made
+	if place.begins_with(SPOT_PREFIX):
+		var population: Node = game.get("population") if game != null else null
+		if population != null: ESSENCE.remember(population, place, there)
+	# She leaves now, not the usual lead before the hour (appointment_steps.gd step_for "leave_at").
+	var rows: Variant = _rows(true)
+	if rows is Dictionary and (rows as Dictionary).has(str(made.id)):
+		var stored: Dictionary = rows[str(made.id)]
+		stored.leave_at = _hours()
+		made.row = stored.duplicate(true)
+		_changed()
+		_refresh_day(pony)
+	return made
+
+## A mapped place within NEAR_PLACE_M of `at` (nearest first), else "anon_at:X:Z".
+func _place_near(at: Vector3) -> String:
+	var best := ""
+	var best_d := NEAR_PLACE_M
+	if is_inside_tree():
+		for e: Dictionary in PLACES.entries(get_tree()):
+			# A region ("Ponyville") is no meeting point; landmarks and houses are.
+			if str(e.get("kind", "")).begins_with("region"): continue
+			var p: Variant = e.get("position")
+			if not p is Vector3 or not (p as Vector3).is_finite(): continue
+			var d := _flat(p, at)
+			if d < best_d: best = str(e.id); best_d = d
+	return best if not best.is_empty() else "%s%d:%d" % [SPOT_PREFIX, roundi(at.x), roundi(at.z)]
+
+## The ground point of an "anon_at:X:Z" spot, or INF.
+static func _spot(place: String) -> Vector3:
+	var parts := place.trim_prefix(SPOT_PREFIX).split(":")
+	if parts.size() != 2 or not parts[0].is_valid_int() or not parts[1].is_valid_int(): return Vector3.INF
+	var at := Vector3(float(parts[0].to_int()), 0.0, float(parts[1].to_int()))
+	var height := 0.0
+	if is_instance_valid(WorldTerrain.instance):
+		var h: float = WorldTerrain.instance.height_at(at)
+		if is_finite(h): height = h
+	at.y = height
+	return at
+
+## Her body, else her essence.
+func _pony_point(pony: String) -> Vector3:
+	var actor := _actor(pony)
+	if actor != null: return actor.global_position
+	var population: Node = game.get("population") if game != null else null
+	return ESSENCE.position(ESSENCE.record(population, pony)) if population != null else Vector3.INF
+
+func _day_length_minutes() -> float:
+	var minutes: Variant = clock.get("day_length_minutes") if clock != null else null
+	return float(minutes) if (minutes is float or minutes is int) and float(minutes) > 0.0 else 60.0
 
 # --- Window tracking ----------------------------------------------------------------------------
 
@@ -248,8 +328,13 @@ func tick() -> void:
 func _met(r: Dictionary) -> void:
 	var pony := str(r.pony)
 	var why := str(r.get("note", ""))
-	if why.is_empty(): why = "you agreed by letter" if str(r.source).begins_with("letter:") else "you agreed when you talked"
-	var text := "[Observed situation, not player speech] Anon has come to meet you at %s as you two agreed (%s). Greet him and start what you planned. One or two short sentences." % [r.place_label, why]
+	# M-AI-16 (player board #49: Dash came "but said she never got the letter"): a meeting made by
+	# letter says so, with what it was about; the letter itself stays pinned through the meeting.
+	var by_letter := str(r.source).begins_with("letter:")
+	var letter_note := ""
+	if why.is_empty(): why = "you agreed by letter" if by_letter else "you agreed when you talked"
+	elif by_letter: letter_note = "; you arranged it in your letters, so you got his letter"
+	var text := "[Observed situation, not player speech] Anon has come to meet you at %s as you two agreed (%s)%s. Greet him and start what you planned. One or two short sentences." % [r.place_label, why, letter_note]
 	_greet[pony] = {"text": text, "until": Time.get_ticks_msec() * .001 + GREET_RETRY_S}
 	var bonds := _bonds()
 	if bonds != null and bonds.has_method("kept_appointment"): bonds.kept_appointment(pony, str(r.id))
@@ -307,6 +392,7 @@ func _resolve(r: Dictionary, status: String) -> void:
 
 ## {"id", "label"} for an id or a free-form name over the mapped places, or {}.
 func _place(place: String) -> Dictionary:
+	if place.begins_with(SPOT_PREFIX) and _spot(place).is_finite(): return {"id": place, "label": "the spot where Anon wrote from"}
 	if not is_inside_tree() or place.strip_edges().is_empty(): return {}
 	var ids: Array = []
 	var labels := {}

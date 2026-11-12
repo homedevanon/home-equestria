@@ -33,6 +33,10 @@ var _line_brows: Dictionary = {}
 var brow_visuals: Array[MeshInstance3D] = []
 var brow_amount := 0.0
 
+## The amount last written to every brow mesh: an unchanged value is not written again (each
+## write marks the instance's shader parameters for upload; this ran 20 to 60 times a second per pony).
+var _brow_written := -1.0
+
 func bind_brow_visual(mesh: MeshInstance3D) -> void:
 	if mesh not in brow_visuals: brow_visuals.append(mesh)
 	_write_brow_ink(mesh)
@@ -49,6 +53,8 @@ func _apply_brow_ink() -> void:
 	brow_amount = 0.0
 	for weight: float in eyes.expression_brows.values(): brow_amount = maxf(brow_amount, weight)
 	if brow_amount < 0.0001: brow_amount = 0.0
+	if brow_amount == _brow_written: return
+	_brow_written = brow_amount
 	for mesh: MeshInstance3D in brow_visuals:
 		if is_instance_valid(mesh): _write_brow_ink(mesh)
 var _line_eyes: Dictionary = {}

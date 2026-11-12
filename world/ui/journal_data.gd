@@ -118,15 +118,28 @@ static func scenes_of(entries: Array) -> Array:
 
 ## The scenes `chosen` (pony ids; empty = everypony) take part in on `day` (-1 = every day), newest
 ## first, each with only its entries about them: what they said, what was said to them and the
-## player's words to nopony in particular. `moments` false leaves the moments out.
-static func filtered(scenes: Array, chosen: Array, day: int, moments: bool) -> Array:
+## player's words to nopony in particular. `moments` false leaves the moments out. `query` (the
+## page's search box) keeps only the lines that hold every word of it, in the words said or in
+## the name of who said them or was spoken to; letter case does not count.
+static func filtered(scenes: Array, chosen: Array, day: int, moments: bool, query := "") -> Array:
 	var shown: Array = []
+	var words := query.to_lower().split(" ", false)
+	var names := {}
 	for i in range(scenes.size() - 1, -1, -1):
 		var scene: Dictionary = scenes[i]
 		if day >= 0 and int(scene.day) != day: continue
 		var kept: Array = []
 		for entry: Dictionary in scene.entries:
 			if entry.kind == "moment" and not moments: continue
+			if not words.is_empty():
+				var text := str(entry.text).to_lower()
+				for who: String in [str(entry.speaker), str(entry.listener)]:
+					if not names.has(who): names[who] = name_of(who).to_lower()
+					text += " " + str(names[who])
+				var found := true
+				for word: String in words:
+					if not text.contains(word): found = false; break
+				if not found: continue
 			if chosen.is_empty() or str(entry.speaker) in chosen or str(entry.listener) in chosen \
 					or (str(entry.speaker) == PLAYER and str(entry.listener) in NOBODY) or (entry.kind == "moment" and str(entry.speaker) == ""):
 				kept.append(entry)

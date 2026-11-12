@@ -107,7 +107,39 @@ static func timed_words(text:String,duration:float) -> Array:
 		cursor+=maxf(2.0,token.get_string().length())
 	return result
 
+## Voice clients that can play a line while the server still renders it (tts_client.gd). With
+## one, the first sound no longer waits for the end of the clip, so short sentences travel
+## together: fewer requests, no gap between them (breeze-tts-pny mod by nak, MIT, 2026-11-10).
+const AUDIO_TARGET := 160
+const AUDIO_MAX := 400
+const TINY_AUDIO := 48
+static var _stream_clients := {}
+
+static func note_stream_client(id:int, streaming:bool) -> void:
+	if streaming:_stream_clients[id]=true
+	else:_stream_clients.erase(id)
+
+static func grouping() -> bool:
+	return not _stream_clients.is_empty()
+
+## One speaker's sentences gathered toward AUDIO_TARGET characters. An opening shorter than
+## TINY_AUDIO stays with the sentence after it; a long piece splits at a space near AUDIO_MAX.
+static func grouped_parts(text:String) -> Array[String]:
+	var result:Array[String]=[]
+	var pending:=""
+	for sentence:String in split(text):
+		if not pending.is_empty() and pending.length()+sentence.length()+1>AUDIO_TARGET and pending.length()>=TINY_AUDIO:
+			result.append(pending);pending=""
+		pending+=(" " if not pending.is_empty() else "")+sentence
+		while pending.length()>AUDIO_MAX:
+			var end:=pending.rfind(" ",AUDIO_MAX)
+			if end<=0:break # An unusually long word stays whole.
+			result.append(pending.left(end));pending=pending.substr(end+1)
+	if not pending.is_empty():result.append(pending)
+	return result
+
 static func audio_parts(text:String) -> Array[String]:
+	if grouping():return grouped_parts(text)
 	var result:Array[String]=[]
 	for sentence in split(text):
 		while sentence.length()>400:

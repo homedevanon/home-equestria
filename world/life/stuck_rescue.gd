@@ -46,7 +46,8 @@ func _physics_process(delta: float) -> void:
 	_stall_timer -= delta
 	if _stall_timer <= 0.0 and population != null:
 		_stall_timer = 1.0
-		_check_stalls()
+		_begin_stall_pass()
+	if _stall_at < _stall_ids.size(): _check_stall_slice()
 	_timer -= delta
 	if _timer>0.0 or population==null or clock==null or clock.paused: return
 	_timer = .25
@@ -88,45 +89,70 @@ func recover(id: String, actor: CharacterBody3D, home: Node3D) -> bool:
 	return true
 
 ## Once a second over the live residents: bookkeeping only, physics queries only for a stall.
+## The once-a-second stall pass over every live pony is spread over STALL_SLICE_TICKS physics
+## ticks (W2 perf pass: ~0.5 ms in one tick with 45 ponies, a slowest-frames spike). Each pony is
+## still checked once a second, in the same order. Rollback: STALL_SLICE_TICKS = 1.
+const STALL_SLICE_TICKS := 6
+var _stall_ids: Array = []
+var _stall_at := 0
+var _stall_chunk := 1
+
 func _check_stalls() -> void:
+	_begin_stall_pass()
+	_stall_chunk = _stall_ids.size()
+	_check_stall_slice()
+
+func _begin_stall_pass() -> void:
 	for id: String in _stalls.keys():
 		if not population.live.has(id): _stalls.erase(id)
-	for id: String in population.live.keys():
-		var value: Variant = population.live[id].get("actor")
-		if not is_instance_valid(value) or not value is CharacterBody3D or not (value as Node).is_inside_tree():
-			_stalls.erase(id); continue
-		var actor := value as CharacterBody3D
-		var nav: Node = actor.get_node_or_null("Navigator")
-		var goal := _goal(nav) if nav != null and "profile" in actor and _trying(actor, nav) else Vector3.INF
-		var at := actor.global_position
-		var row: Dictionary = _stalls.get(id, {})
-		var far := goal.is_finite() and (Vector2(at.x - goal.x, at.z - goal.z).length() > GOAL_FAR or absf(at.y - goal.y) > 1.2)
-		if row.is_empty() or int(row.actor) != actor.get_instance_id() or at.distance_to(row.at) >= PROGRESS:
-			_stalls[id] = {"actor": actor.get_instance_id(), "at": at, "since": _clock, "still": _clock, "retry": float(row.get("retry", 0.0))}
-			continue
-		# Under a bridge a pony may well have given up or dozed off by now, so this asks for neither
-		# a goal nor that she is awake.
-		if nav != null and "profile" in actor and _clock - float(row.still) >= STALL_SECONDS and _clock >= float(row.get("deck_retry", 0.0)) and _placeable(actor) and _unseen(actor, at):
-			var deck := _bridge_deck_above(actor, at)
-			if deck.is_finite():
-				var night: Node = get_parent().get_node_or_null("NightRest")
-				if night != null: night.release_for_recovery(id, actor)
-				if "sleeping" in actor: actor.set("sleeping", false)
-				_set_down(actor, nav, deck)
-				row.at = deck; row.since = _clock; row.still = _clock
-				print("[pony] %s was trapped under a bridge; set back on its deck at %s" % [actor.name, deck.round()])
-				continue
-			row.deck_retry = _clock + RETRY_SECONDS
-		if not far:
-			row.since = _clock
-			continue
-		if _clock - float(row.since) < STALL_SECONDS or _clock < float(row.retry) or not _unseen(actor, at): continue
-		row.retry = _clock + RETRY_SECONDS
-		var spot := _reachable_spot(actor, nav, goal)
-		if not spot.is_finite(): continue
-		_set_down(actor, nav, spot)
-		row.at = spot; row.since = _clock
-		print("[pony] %s made no progress for %.0f s out of sight; set down on a route point at %s" % [actor.name, STALL_SECONDS, spot.round()])
+	_stall_ids = population.live.keys()
+	_stall_at = 0
+	_stall_chunk = ceili(float(_stall_ids.size()) / float(maxi(STALL_SLICE_TICKS, 1)))
+
+func _check_stall_slice() -> void:
+	var end := mini(_stall_at + maxi(_stall_chunk, 1), _stall_ids.size())
+	for i in range(_stall_at, end):
+		var id: String = _stall_ids[i]
+		if not population.live.has(id): _stalls.erase(id); continue
+		_check_stall(id)
+	_stall_at = end
+
+func _check_stall(id: String) -> void:
+	var value: Variant = population.live[id].get("actor")
+	if not is_instance_valid(value) or not value is CharacterBody3D or not (value as Node).is_inside_tree():
+		_stalls.erase(id); return
+	var actor := value as CharacterBody3D
+	var nav: Node = actor.get_node_or_null("Navigator")
+	var goal := _goal(nav) if nav != null and "profile" in actor and _trying(actor, nav) else Vector3.INF
+	var at := actor.global_position
+	var row: Dictionary = _stalls.get(id, {})
+	var far := goal.is_finite() and (Vector2(at.x - goal.x, at.z - goal.z).length() > GOAL_FAR or absf(at.y - goal.y) > 1.2)
+	if row.is_empty() or int(row.actor) != actor.get_instance_id() or at.distance_to(row.at) >= PROGRESS:
+		_stalls[id] = {"actor": actor.get_instance_id(), "at": at, "since": _clock, "still": _clock, "retry": float(row.get("retry", 0.0))}
+		return
+	# Under a bridge a pony may well have given up or dozed off by now, so this asks for neither
+	# a goal nor that she is awake.
+	if nav != null and "profile" in actor and _clock - float(row.still) >= STALL_SECONDS and _clock >= float(row.get("deck_retry", 0.0)) and _placeable(actor) and _unseen(actor, at):
+		var deck := _bridge_deck_above(actor, at)
+		if deck.is_finite():
+			var night: Node = get_parent().get_node_or_null("NightRest")
+			if night != null: night.release_for_recovery(id, actor)
+			if "sleeping" in actor: actor.set("sleeping", false)
+			_set_down(actor, nav, deck)
+			row.at = deck; row.since = _clock; row.still = _clock
+			print("[pony] %s was trapped under a bridge; set back on its deck at %s" % [actor.name, deck.round()])
+			return
+		row.deck_retry = _clock + RETRY_SECONDS
+	if not far:
+		row.since = _clock
+		return
+	if _clock - float(row.since) < STALL_SECONDS or _clock < float(row.retry) or not _unseen(actor, at): return
+	row.retry = _clock + RETRY_SECONDS
+	var spot := _reachable_spot(actor, nav, goal)
+	if not spot.is_finite(): return
+	_set_down(actor, nav, spot)
+	row.at = spot; row.since = _clock
+	print("[pony] %s made no progress for %.0f s out of sight; set down on a route point at %s" % [actor.name, STALL_SECONDS, spot.round()])
 
 ## Nopony else's to place: not held, seated, flying or thrown.
 func _placeable(actor: CharacterBody3D) -> bool:

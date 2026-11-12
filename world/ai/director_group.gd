@@ -14,13 +14,26 @@ const CHATTINESS := preload("res://world/ai/chattiness.gd")
 const CHATTER := preload("res://world/ai/chatter_topics.gd")
 const ADDRESSEE := preload("res://world/ai/addressee.gd")
 const FILTERS := preload("res://world/ai/reply_filters.gd")
+const CONTROLS := preload("res://world/ai/speech_controls.gd")
 ## Longest wait for bodies to turn before the first line; longer only while one walks up to the other.
 const FACING_TIMEOUT := 4.0
 const FACING_WALK_TIMEOUT := 10.0
 
+## How long a group exchange may wait for a local model's reply (thread 43693039: Gemma 4 on a
+## home server took about two minutes per group turn, past pony_group_conversation.gd's 150 s
+## "Exchange became stale", so every reply was thrown away unseen). The request itself gives up at
+## llm_client.gd LOCAL_TIMEOUT; this adds slack for the reply's last bytes.
+const LOCAL_WAIT_SECONDS := LLM.LOCAL_TIMEOUT + 30.0
+## A pony Anon talked with this recently is still in his conversation (_group_candidates).
+const CHAT_PARTNER_SECONDS := 120.0
+
 var host: Node
 var _ambient_roll_wait := 1.0
 var _heard_serial := 0
+## Why the exchange stopped being valid (empty while valid), and why the last group reply was not
+## played: printed to the log, read by tools/ai/test_group_reply_drops.gd.
+var invalid_why := ""
+var dropped_why := ""
 
 
 func _init(owner_node: Node) -> void:
@@ -32,16 +45,53 @@ static func _distance_only_group_reason(reason: String) -> bool:
 
 
 func _group_turn_valid() -> bool:
+	invalid_why = ""
 	# A distant first member must not hide a removed/touched later member in the
 	# group's early-return distance checks.
 	for id: String in host.group.members:
 		var node: Node3D = host.characters.get(id, {}).get("node")
-		if not is_instance_valid(node) or not node.is_inside_tree() or not node.is_visible_in_tree(): return false
+		if not is_instance_valid(node) or not node.is_inside_tree() or not node.is_visible_in_tree():
+			invalid_why = id + " left"; return false
 		if host.group.ambient:
-			if GROUP.interaction_stamp(node) != host.group.guard.get(id, []): return false
-			if node.has_method("action_interruption_reason") and node.action_interruption_reason() != "": return false
+			if GROUP.interaction_stamp(node) != host.group.guard.get(id, []):
+				invalid_why = id + " was touched or picked up"; return false
+			if node.has_method("action_interruption_reason") and node.action_interruption_reason() != "":
+				invalid_why = id + ": " + str(node.action_interruption_reason()); return false
 	var reason: String = host.group.invalid_reason(host.characters, host.player_head, host.awareness, host._now())
-	return reason.is_empty() or _distance_only_group_reason(reason)
+	if reason.is_empty() or _distance_only_group_reason(reason): return true
+	# A local model may still be writing the reply: the exchange waits for it (LOCAL_WAIT_SECONDS).
+	if reason == "Exchange became stale" and host.state == "thinking" and _local_model() and host._now() - host.group.started_at <= LOCAL_WAIT_SECONDS: return true
+	invalid_why = reason
+	return false
+
+
+func _local_model() -> bool:
+	return is_instance_valid(host.llm) and host.llm.has_method("is_local") and bool(host.llm.is_local())
+
+
+## Members of a chat Anon started stand still while its reply is on the way (a local model can take
+## two minutes, thread 43693039): a pony on her own routine stops where she is, under the talk owner
+## the exchange gives back (_clear_group). Held, story-claimed and command-led ponies keep what they
+## are doing; ambient chats are held by their facing circle instead. A pony out with friends keeps
+## her social owner: pony_social_groups.gd pauses an engaged member's outing itself, and taking the
+## owner made her leave the group, breaking the outing up (dev 2026-09-23, director_company.gd).
+func _hold_members() -> void:
+	for id: String in host.group.members:
+		var node: Variant = host.characters.get(id, {}).get("node")
+		var nav: Node = node.get_node_or_null("Navigator") if is_instance_valid(node) else null
+		if nav == null or not nav.has_method("stay") or host._encounter_claimed(id): continue
+		if node.has_method("is_held") and node.is_held(): continue
+		var owner := str(nav.command_owner)
+		if not (owner.is_empty() or owner.begins_with("life:")): continue
+		nav.stay()
+		nav.command_owner = host.TALK_OWNER
+
+
+## A pony Anon has been talking with (chat_last, not since her goodbye).
+func _in_chat(id: String) -> bool:
+	var entry: Dictionary = host.characters.get(id, {})
+	var last := float(entry.get("chat_last", -1e9))
+	return host._now() - last <= CHAT_PARTNER_SECONDS and last > float(host._released.get(id, -1e9))
 
 
 func _clear_group() -> void:
@@ -83,6 +133,13 @@ func _group_candidates(first: String) -> Array[String]:
 	var offered: Array = candidates.slice(0, 12)
 	if not offered.any(func(item): return item.id == first): return ids
 	var companions: Array = host.social.companions(first) if is_instance_valid(host.social) else []
+	# Only ponies in this conversation answer together (player board #55): the pony he speaks to,
+	# ponies he names or addresses ("you two" and "everypony" take everyone here), her companions
+	# out with her, and ponies he has been talking with. A pony merely passing keeps her routine;
+	# before, every pony in earshot joined, turned to him and was held, and long chats drew a crowd.
+	if not bool(host._address.get("everyone", false)):
+		var addressed: Array = host._address.get("addressed", [])
+		offered = offered.filter(func(item: Dictionary) -> bool: return item.id == first or item.id in addressed or item.id in companions or _in_chat(item.id) or _mentioned(item.id))
 	offered.sort_custom(func(a, b):
 		var rank_a := 0 if a.id == first else (1 if _mentioned(a.id) else (2 if a.id in companions else 3))
 		var rank_b := 0 if b.id == first else (1 if _mentioned(b.id) else (2 if b.id in companions else 3))
@@ -139,7 +196,13 @@ func _begin_group(ids: Array[String], ambient := false) -> void:
 	host._group_request = ""
 	# A group the player addressed takes the connection; ponies chatting among themselves
 	# simply skip this moment when it is taken (no error on screen).
-	if not host.group.ambient and not await host._take_llm(): return
+	if not host.group.ambient:
+		if not await host._take_llm():
+			print("[ai] group request dropped: a newer turn started while the local model finished an earlier one")
+			return
+		# The exchange's clock starts when its request is sent, not while it queued behind another.
+		host.group.started_at = host._now()
+		_hold_members()
 	if not _complete_group(host._group_prompt(), [{"role":"user", "content":request}], host._on_group_reply.bind(host._turn_id)):
 		if host.group.ambient: host._finish_silence()
 		else: host._fail("llm busy")
@@ -153,7 +216,7 @@ func ambient_request(ids: Array[String]) -> String:
 		request = "An ordinary spontaneous remark from %s, to herself, about something she actually perceives or knows; silence is fine. Nobody will answer: do not address anypony by name and do not ask a question. Not addressed to Anon." % ids[0]
 	else:
 		var others := ", ".join(ids.slice(1))
-		request = "Write the whole conversation now, all at once: an ordinary spontaneous chat that %s starts with %s, standing right here facing each other. Script every line in speaking order. Each participant speaks at least once, and whoever is spoken to answers on the very next line, politely and in character; nobody is left hanging. About 4 to 10 short lines, ending naturally (a goodbye, a plan or an easy pause). Mark each line [to: listener_id]. Continue only from completed shared speech. Anon being nearby is not a cue to greet or address him." % [ids[0], others]
+		request = "Write the whole conversation now, all at once: an ordinary spontaneous chat that %s starts with %s, standing right here facing each other. Script every line in speaking order. Each participant speaks at least once, and whoever is spoken to answers on the very next line, politely and in character; nobody is left hanging. Usually 2 to 6 short lines, each one bringing something new, ending naturally (a goodbye, a plan or an easy pause). Mark each line [to: listener_id]. Continue only from completed shared speech. Anon being nearby is not a cue to greet or address him." % [ids[0], others]
 	request += " " + CHATTER.seed_line() + " Ponies standing right here are present: talk with them, never about them or their house as if they were elsewhere."
 	if ids.size() > 1 and host._walking_together(ids): request += " They are out together as friends, walking side by side while they talk: they can mention where they're heading, the walk, stopping somewhere, or suggest what to do next together."
 	return request
@@ -266,7 +329,11 @@ func _ambient_audible(ids: Array, distance: float) -> bool:
 
 
 func _on_group_reply(text: String, error: String, turn: int) -> void:
-	if turn != host._turn_id or host.state != "thinking" or not host.group.active(): return
+	if turn != host._turn_id or host.state != "thinking" or not host.group.active():
+		# Never silent (thread 43693039: a local model's complete group lines never reached the game).
+		dropped_why = "a newer turn started" if turn != host._turn_id else ("the exchange ended" if not host.group.active() else "state is " + str(host.state))
+		print("[ai] group reply dropped (%s): %s" % [dropped_why, text.strip_edges().left(80)])
+		return
 	if error == LLM.OUTPUT_LIMIT_ERROR:
 		# A script cut off at the output limit keeps its complete lines (tester 2026-10-20: ambient
 		# chats showed "group llm: model output limit reached"). Ponies chatting among themselves do
@@ -291,7 +358,14 @@ func _on_group_reply(text: String, error: String, turn: int) -> void:
 			_clear_group()
 			host._current = first
 		host._llm_error("group llm", error); return
-	if not host._listener_available() or not host._group_turn_valid(): host.interrupt(); return
+	if not host._listener_available() or not host._group_turn_valid():
+		dropped_why = invalid_why if not invalid_why.is_empty() else "the listener is gone"
+		print("[ai] group reply dropped (%s)" % dropped_why)
+		host.interrupt(); return
+	dropped_why = ""
+	# Played from now on: a reply that took its time (a local model) gets the whole exchange window
+	# for its lines, so its second line is not cut as stale (_next_group_beat).
+	host.group.started_at = host._now()
 	var contexts := {}
 	for id in host.group.members:
 		host.awareness.sample(id, host.characters[id].node, host.characters, host.player_head, host._now(), host._earshot(id), true)
@@ -377,7 +451,7 @@ func _on_group_reply(text: String, error: String, turn: int) -> void:
 		var speakers := {}
 		for beat: Dictionary in decoded.beats: speakers[beat.speaker_id] = true
 		if host.group.members.size() > 1 and speakers.size() == 1 and host._repair_response(text, "Only one pony speaks. Write the whole conversation: the pony she addresses answers on the very next line, and each participant speaks at least once.", true): return
-	host.group.beats = SENTENCES.expand(decoded.beats)
+	host.group.beats = voiced_beats(SENTENCES.expand(decoded.beats))
 	_start_script()
 
 
@@ -414,6 +488,9 @@ func _next_group_beat() -> void:
 	host._pending_impression=beat.get("impression",{})
 	host._pending_text = host.clean_reply(beat.speech)
 	if host._strip_tag(host._pending_text).is_empty(): host._finish_silence(); return
+	if not CONTROLS.has_words(host._strip_tag(host._pending_text)):
+		# "..." alone: nothing to voice (the ponese voice refused it: "empty ponese line").
+		host._next_group_beat.call_deferred(); return
 	host._pending_actions = beat.actions.duplicate(true)
 	host._voice_id += 1
 	host._recorded = false
@@ -439,8 +516,38 @@ func _next_group_beat() -> void:
 	if not host._synthesize_voice(host._pending_text, profile, str(profile.get("tts_default_emotion", "neutral")), host._on_tts.bind(host._turn_id, host._voice_id)): host._voice_error("tts busy")
 
 
+## Sentence beats (speech_sentences.gd expand) that have words to say. A wordless piece ("..." before
+## "Hello.", a lone "~") hands its tags and first-piece role to the next piece of the same line, or its
+## feelings to the piece before; a line with no words at all keeps only its tags, as a silent step.
+static func voiced_beats(beats: Array) -> Array:
+	var out: Array = []
+	for i in beats.size():
+		var beat: Dictionary = beats[i]
+		if bool(beat.get("silent_travel", false)) or CONTROLS.has_words(CONTROLS.sanitize(str(beat.get("speech", "")))):
+			out.append(beat); continue
+		var next: Dictionary = beats[i + 1] if i + 1 < beats.size() else {}
+		if not next.is_empty() and str(next.get("speaker_id", "")) == str(beat.get("speaker_id", "")) and bool(next.get("continuation", false)):
+			next.continuation = bool(beat.get("continuation", false))
+			if not bool(beat.get("continuation", false)): next.actions = beat.get("actions", [])
+			continue
+		if bool(beat.get("continuation", false)) and not out.is_empty() and str(out[-1].get("speaker_id", "")) == str(beat.get("speaker_id", "")):
+			if beat.has("impression"): out[-1].impression = beat.impression
+			continue
+		if not (beat.get("actions", []) as Array).is_empty():
+			var step := beat.duplicate(true)
+			step.silent_travel = true
+			out.append(step)
+	return out
+
+
 func _prefetch_next() -> void:
 	if not host._listener_available() or not host._group_turn_valid(): return
+	# A streamed line is still being rendered while it plays; the next one is asked for when the
+	# voice client is free again (tts_client.gd live_render_finished).
+	if host.tts.has_method("can_stream") and host.tts.can_stream() and host.tts.busy:
+		if not host.tts.live_render_finished.is_connected(_on_live_render_finished):
+			host.tts.live_render_finished.connect(_on_live_render_finished)
+		return
 	var index: int = host.group.cursor
 	if index >= host.group.beats.size(): return
 	var beat: Dictionary = host.group.beats[index]
@@ -452,6 +559,11 @@ func _prefetch_next() -> void:
 	host._prefetch_result = {}
 	if not host._synthesize_voice(beat.speech, profile, str(profile.get("tts_default_emotion", "neutral")), host._on_prefetch.bind(host._turn_id, index)):
 		host._prefetch_result = {"path":"", "error":"prefetch unavailable"}
+
+
+func _on_live_render_finished() -> void:
+	if host.state == "speaking" and host.group.active() and host._prefetch_index != host.group.cursor:
+		_prefetch_next()
 
 
 func _on_prefetch(path: String, error: String, turn: int, index: int) -> void:

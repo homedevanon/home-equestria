@@ -63,8 +63,13 @@ func _run(sql: String, bindings: Array = []) -> bool:
 ## "brain" (private direction notes; witnesses decide who may ever see it).
 func add_line(day: int, minute: int, place: String, kind: String, speaker: String, listener: String, text: String, witnesses: Array) -> int:
 	if db == null or text.strip_edges().is_empty(): return 0
+	# One commit for the line and its witnesses (a town event has 5 to 20 of them; each statement
+	# on its own was a separate commit on the main thread).
+	var batched := _run("BEGIN;")
 	if not _run("INSERT INTO lines (day, minute, place, kind, speaker, listener, text) VALUES (?, ?, ?, ?, ?, ?, ?);",
-			[day, minute, place.left(80), kind.left(40), speaker.left(80), listener.left(80), text.left(3000)]): return 0
+			[day, minute, place.left(80), kind.left(40), speaker.left(80), listener.left(80), text.left(3000)]):
+		if batched: _run("ROLLBACK;")
+		return 0
 	var id := int(db.last_insert_rowid)
 	var seen := {}
 	for who in witnesses:
@@ -72,6 +77,7 @@ func add_line(day: int, minute: int, place: String, kind: String, speaker: Strin
 		if pony.is_empty() or seen.has(pony): continue
 		seen[pony] = true
 		_run("INSERT INTO witnesses (line, pony) VALUES (?, ?);", [id, pony])
+	if batched: _run("COMMIT;")
 	return id
 
 func last_line_id() -> int:

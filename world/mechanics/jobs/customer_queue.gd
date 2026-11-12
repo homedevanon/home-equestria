@@ -159,6 +159,13 @@ static func reclaim_from_model(nav: Node, owner: String) -> bool:
 	nav.set("command_pace_target", -1.0)
 	return true
 
+## reclaim_from_model for this queue's lease on `id`: true when one of her own in-place reply tags
+## had her navigator and the lease has it again (the venue then puts her back into her phase).
+func reclaim(id: String) -> bool:
+	var lease: Variant = claimed.get(id)
+	if not lease is Dictionary or not is_instance_valid((lease as Dictionary).get("nav")): return false
+	return reclaim_from_model((lease as Dictionary).nav as Node, str((lease as Dictionary).owner))
+
 ## The saved navigation fields of a lease ({} when not claimed).
 func previous(id: String) -> Dictionary:
 	var lease: Variant = claimed.get(id)

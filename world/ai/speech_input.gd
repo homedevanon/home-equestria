@@ -5,7 +5,11 @@ extends Node
 ## Godot side: an AudioStreamMicrophone plays into a muted "Mic" bus that carries an
 ## AudioEffectCapture; we pull the captured frames every process tick. VAD is an RMS gate
 ## with an adaptive noise floor and a hangover, plus a pre-roll so the first syllable is
-## not clipped. The WAV is 16-bit mono at the engine mix rate; the STT server resamples.
+## not clipped. The WAV is 16-bit mono at 16 kHz (STT_RATE), Whisper's own rate, made from the
+## capture at the real engine mix rate (re-read whenever capture starts: a device change can change
+## it), so no recognizer has to guess or resample. The microphone player is kept at normal speed
+## while the time-stop look slows every other sound (talk_freeze.gd AudioServer.playback_speed_scale
+## 0.7 stretched his own words and dropped pieces of them: the "[electronic music]" transcripts).
 ## Needs `audio/driver/enable_input=true` (project.godot).
 
 signal state_changed(state: String)      # "off", "listening", "hearing", "muted"
@@ -16,6 +20,8 @@ signal feedback_utterance(wav: PackedByteArray, seconds: float)
 const BUS := "Mic"
 const BLOCK := 0.02   # seconds per analysis block
 const RECORD_AUDIO := "android.permission.RECORD_AUDIO"
+## Whisper's sample rate; recordings at higher mix rates are resampled to it (stt_wav).
+const STT_RATE := 16000
 
 @export var mode := "ptt"                # "vad", "ptt", "off"
 @export var push_to_talk_action := "voice_talk"
@@ -38,6 +44,11 @@ var _capture: AudioEffectCapture
 var _capture_bus := ""
 var _player: AudioStreamPlayer
 var _mix_rate := 48000.0
+## The driver mix rate read at _ready (and again when capture starts); -1 for synthetic microphones
+## (tests) that set their own _mix_rate.
+var _driver_rate := -1.0
+## AudioEffectCapture.get_discarded_frames() at the last utterance (it only counts up).
+var _discarded_seen := 0
 var _pre: Array[PackedFloat32Array] = []
 var _pre_samples := 0
 var _speech: PackedFloat32Array = PackedFloat32Array()
@@ -59,14 +70,17 @@ var _debug_frames := 0
 
 
 func _ready() -> void:
-	_mix_rate = AudioServer.get_mix_rate()
+	_driver_rate = AudioServer.get_mix_rate()
+	_mix_rate = _driver_rate
 	var idx := AudioServer.get_bus_index(BUS)
 	if idx < 0:
 		AudioServer.add_bus()
 		idx = AudioServer.bus_count - 1
 		AudioServer.set_bus_name(idx, BUS)
 	_capture = AudioEffectCapture.new()
-	_capture.buffer_length = 0.5
+	# Two seconds of room: a long game frame (a chat reply landing, a scene load) left the capture
+	# full for longer than half a second and pieces of his words were dropped (split recordings).
+	_capture.buffer_length = 2.0
 	AudioServer.add_bus_effect(idx, _capture)
 	_capture_bus = AudioServer.get_bus_name(idx)
 	AudioServer.set_bus_mute(idx, true)
@@ -163,12 +177,34 @@ func _sync_capture() -> void:
 	var wanted := _available and not muted and not (_ptt_capped and held) and (mode == "vad" or (mode == "ptt" and held))
 	if wanted and not _player.playing:
 		if _capture != null: _capture.clear_buffer()
+		_refresh_mix_rate()
+		_keep_normal_speed()
 		_player.play()
 		_route_mic()
 	elif not wanted:
 		if _player.playing: _player.stop()
 		if _capture != null: _capture.clear_buffer()
 		level = 0.0
+
+
+## The capture runs at the driver's mix rate; a recording labelled with a stale rate plays
+## stretched or squeezed to the recognizer.
+func _refresh_mix_rate() -> void:
+	if _driver_rate < 0.0: return
+	var rate := AudioServer.get_mix_rate()
+	if rate > 0.0 and rate != _driver_rate:
+		print("[speech] mix rate changed: %d -> %d Hz" % [int(_driver_rate), int(rate)])
+		_driver_rate = rate
+		_mix_rate = rate
+
+
+## AudioServer.playback_speed_scale (the time-stop look) applies to every player, the microphone's
+## too: at 0.7 his words were captured 1.4 times as long and the input overflowed. The pitch scale
+## undoes it for this one player.
+func _keep_normal_speed() -> void:
+	if not is_instance_valid(_player): return
+	var wanted := 1.0 / clampf(AudioServer.playback_speed_scale, 0.05, 4.0)
+	if not is_equal_approx(_player.pitch_scale, wanted): _player.pitch_scale = wanted
 
 
 ## Godot's PulseAudio/PipeWire input follows the system default source, and
@@ -253,14 +289,15 @@ func _process(delta: float) -> void:
 	var available := _capture.get_frames_available()
 	if available <= 0:
 		return
+	_keep_normal_speed()
 	var frames := _capture.get_buffer(available)
 	var mono := PackedFloat32Array()
 	mono.resize(frames.size())
 	for i in frames.size():
 		mono[i] = (frames[i].x + frames[i].y) * 0.5
-	_debug_frames += mono.size()
-	_debug_peak = maxf(_debug_peak, _rms(mono))
 	if debug:
+		_debug_frames += mono.size()
+		_debug_peak = maxf(_debug_peak, _rms(mono))
 		_debug_timer += delta
 		if _debug_timer >= 2.0:
 			print("[speech] mic %s: %d frames/2s, peak rms %.4f, floor %.4f, gate %.4f, state %s%s" % [
@@ -292,6 +329,7 @@ func _process_ptt(mono: PackedFloat32Array, _delta: float) -> void:
 	if held and not _ptt_held:
 		feedback_mode = _feedback_pressed()
 		_speech = PackedFloat32Array()
+		_enc_reset()
 		_speech_seconds = 0.0
 		_in_speech = true
 		_set_state("hearing")
@@ -299,6 +337,7 @@ func _process_ptt(mono: PackedFloat32Array, _delta: float) -> void:
 		# Two thumbs rarely land on the same frame: the note starts when the chord closes.
 		feedback_mode = true
 		_speech = PackedFloat32Array()
+		_enc_reset()
 		_speech_seconds = 0.0
 		state_changed.emit(state) # the HUD shows "Feedback" now
 	if held:
@@ -307,6 +346,7 @@ func _process_ptt(mono: PackedFloat32Array, _delta: float) -> void:
 		if mono.size() <= remaining: _speech.append_array(mono)
 		elif remaining > 0: _speech.append_array(mono.slice(0, remaining))
 		_speech_seconds = _speech.size() / _mix_rate
+		_encode_ahead(_speech, false)
 		level = _rms(mono)
 		if _speech.size() >= sample_limit:
 			# Latch before emit: synchronous transcription/mute callbacks cannot reopen
@@ -341,6 +381,7 @@ func _process_vad(mono: PackedFloat32Array) -> void:
 					_in_speech = true
 					_silence = 0.0
 					_speech = PackedFloat32Array()
+					_enc_reset()
 					for chunk in _pre:
 						_speech.append_array(chunk)
 					_speech_seconds = _speech.size() / _mix_rate
@@ -350,6 +391,7 @@ func _process_vad(mono: PackedFloat32Array) -> void:
 			continue
 		_speech.append_array(block)
 		_speech_seconds += block.size() / _mix_rate
+		_encode_ahead(_speech, false)
 		if voiced:
 			_silence = 0.0
 		else:
@@ -382,12 +424,80 @@ func _finish(emit: bool) -> void:
 	if emit and seconds >= min_speech:
 		if debug:
 			print("[speech] utterance %.2f s (%d samples)" % [seconds, samples.size()])
+		# Frames the capture had to throw away while it was full: the recording has holes.
+		var discarded := _capture.get_discarded_frames() if _capture != null else 0
+		if discarded > _discarded_seen:
+			print("[speech] the microphone dropped %d frames of this recording (the game was busy)" % (discarded - _discarded_seen))
+		# One line per recording for bug reports (thread 2026-11-10: "glitchy and pitched down" clips):
+		# a wrong pitch shows as a sound speed other than 1, or as two rates that differ.
+		print("[speech] recording %.2f s: capture %d Hz, input device %d Hz, sound speed %.2f, mic speed %.2f, dropped %d" % [
+			seconds, int(_mix_rate), int(AudioServer.get_input_mix_rate()), AudioServer.playback_speed_scale,
+			_player.pitch_scale if is_instance_valid(_player) else 1.0, discarded - _discarded_seen])
+		_discarded_seen = discarded
+		var wav := _finish_wav(samples)
 		if feedback:
-			feedback_utterance.emit(encode_wav(samples, int(_mix_rate)), seconds)
+			feedback_utterance.emit(wav, seconds)
 		else:
-			utterance.emit(encode_wav(samples, int(_mix_rate)), seconds)
-	elif debug and emit:
-		print("[speech] dropped %.2f s blip" % seconds)
+			utterance.emit(wav, seconds)
+	else:
+		_enc_reset()
+		if debug and emit:
+			print("[speech] dropped %.2f s blip" % seconds)
+
+
+## The recording is converted for the recogniser while it is captured, a few hundred samples a
+## frame, so the frame that ends an utterance has almost nothing left to convert (the whole
+## conversion in that one frame held the game for 40 to 160 ms each time the player stopped
+## talking). The bytes are the same as stt_wav() makes; tools/ai/test_stt_wav_incremental.gd.
+var _enc_pcm := PackedByteArray()
+var _enc_count := 0
+var _enc_rate := 0
+var _enc_round := PackedFloat32Array([0.0])
+
+func _enc_reset() -> void:
+	_enc_pcm = PackedByteArray()
+	_enc_count = 0
+	_enc_rate = int(_mix_rate)
+
+## Converts what `samples` has gained since the last call. Not final: only output samples whose
+## source samples are all captured; final: the rest, the last one clamped as resample() does.
+func _encode_ahead(samples: PackedFloat32Array, final: bool) -> void:
+	var size := samples.size()
+	var direct := _enc_rate <= STT_RATE
+	var step := 1.0 if direct else float(_enc_rate) / float(STT_RATE)
+	var want := size
+	if not direct: want = int(floor(size / step)) if final else maxi(0, int(floor((size - 1) / step)))
+	if want <= _enc_count: return
+	_enc_pcm.resize(want * 2)
+	var last := size - 1
+	var wide := step >= 2.0
+	for i in range(_enc_count, want):
+		var value := 0.0
+		if direct:
+			value = samples[i]
+		else:
+			var at := i * step
+			var a := int(at)
+			var b := mini(a + 1, last)
+			value = samples[a] + (samples[b] - samples[a]) * (at - a)
+			if wide: value = (samples[maxi(a - 1, 0)] + value + samples[b]) / 3.0
+			# resample() stores single-precision values before encode_wav() reads them.
+			_enc_round[0] = value
+			value = _enc_round[0]
+		_enc_pcm.encode_s16(i * 2, int(clampf(value, -1.0, 1.0) * 32767.0))
+	_enc_count = want
+
+## The finished recording as stt_wav() would make it, from what was converted on the way.
+func _finish_wav(samples: PackedFloat32Array) -> PackedByteArray:
+	var rate := int(_mix_rate)
+	if _enc_rate != rate or _enc_count * 2 != _enc_pcm.size() or (rate > 0 and samples.is_empty()):
+		# The device rate changed during the recording (or nothing was converted): the plain way.
+		_enc_reset()
+		return stt_wav(samples, rate)
+	_encode_ahead(samples, true)
+	var pcm := _enc_pcm
+	_enc_reset()
+	return wav_from_pcm(pcm, mini(rate, STT_RATE))
 
 
 static func _rms(block: PackedFloat32Array) -> float:
@@ -398,6 +508,33 @@ static func _rms(block: PackedFloat32Array) -> float:
 	return sqrt(sum / block.size())
 
 
+## The recording as Whisper wants it: mono 16-bit at STT_RATE (lower rates stay as they are).
+static func stt_wav(samples: PackedFloat32Array, rate: int) -> PackedByteArray:
+	if rate <= STT_RATE: return encode_wav(samples, rate)
+	return encode_wav(resample(samples, rate, STT_RATE), STT_RATE)
+
+
+## Rate conversion for speech: each output sample averages the source samples around its position
+## (a small box filter, so hiss above the new Nyquist does not fold into the voice), linear between
+## them. One pass over the output when the utterance ends; nothing runs per frame.
+static func resample(samples: PackedFloat32Array, rate: int, target: int) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	if samples.is_empty() or rate <= 0 or target <= 0: return out
+	var step := float(rate) / float(target)
+	var count := int(floor(samples.size() / step))
+	out.resize(count)
+	var last := samples.size() - 1
+	var wide := step >= 2.0
+	for i in count:
+		var at := i * step
+		var a := int(at)
+		var b := mini(a + 1, last)
+		var value := samples[a] + (samples[b] - samples[a]) * (at - a)
+		if wide: value = (samples[maxi(a - 1, 0)] + value + samples[b]) / 3.0
+		out[i] = value
+	return out
+
+
 ## 16-bit PCM mono WAV.
 static func encode_wav(samples: PackedFloat32Array, rate: int) -> PackedByteArray:
 	var pcm := PackedByteArray()
@@ -405,6 +542,11 @@ static func encode_wav(samples: PackedFloat32Array, rate: int) -> PackedByteArra
 	for i in samples.size():
 		var v := int(clampf(samples[i], -1.0, 1.0) * 32767.0)
 		pcm.encode_s16(i * 2, v)
+	return wav_from_pcm(pcm, rate)
+
+
+## A mono 16-bit WAV file around `pcm`.
+static func wav_from_pcm(pcm: PackedByteArray, rate: int) -> PackedByteArray:
 	var out := PackedByteArray()
 	out.append_array("RIFF".to_ascii_buffer())
 	out.resize(8)

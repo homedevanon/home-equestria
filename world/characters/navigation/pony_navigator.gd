@@ -28,6 +28,10 @@ const NATIVE_REASONS := ["", "stepping_turn", "yielding", "no_safe_arc", "corrid
 	"avoidance_missing", "corridor_lost", "waiting_route"]
 const NATIVE_INFORMATIONAL := [0, 9, 13]
 const NATIVE_INPUT_STRIDE := 13
+## pony_locomotion.gd _update_state: her legs start above this travel speed; NAV_MODE_* there.
+const LEG_START_SPEED := 0.05
+const NATIVE_MODE_TRAVEL := 1
+const NATIVE_MODE_STEP_TURN := 2
 ## Cramped starts may leave their nook along capsule-sized floor this far (native search option).
 const NATIVE_ESCAPE_REACH := 2.5
 static var _follow_driver: Node
@@ -619,8 +623,13 @@ func _navigator_tick(delta: float) -> void:
 		return
 	if not _stand_for_travel():
 		_halt()
+		if prof: _cpu_lap("nav_stand_for_travel", lap)
 		return
-	if house_travel.update(self):return
+	if prof: lap = _cpu_lap("nav_stand_for_travel", lap)
+	if house_travel.update(self):
+		if prof: _cpu_lap("nav_house_travel", lap)
+		return
+	if prof: lap = _cpu_lap("nav_house_travel", lap)
 	# The native corridor starts where she stands, cramped or not: one writer, no legacy escape step.
 	if not native_follow and _recover_cramped_start(delta): return
 	if _approaching_player and not _needs_path:
@@ -1112,7 +1121,14 @@ func _native_apply(commands: PackedFloat32Array, states: PackedFloat32Array, pre
 		return
 	# The gait follows the follower's target speed (as the legacy navigator's requested pace did),
 	# not the momentary command it accelerates through.
-	pony.accept_navigation_motion(commands[at + 1], commands[at + 2], int(commands[at + 3]), preferred.length())
+	var speed: float = commands[at + 1]
+	# M-NAV-06 (W2-NAV-TERRAIN hook 6): legs start only above LEG_START_SPEED, so a STANDING pony
+	# given 0 < v <= that slid on planted hooves (stance creep, then the stance-step jitter). With a
+	# real pace behind the command she starts walking now (the follower integrates from the executed
+	# speed, so a plain 0 would never let her start at 60 Hz); a creep with no pace behind it is 0.
+	if speed > 0.0 and speed <= LEG_START_SPEED and int(pony.get("state")) == 0 and int(commands[at + 3]) != NATIVE_MODE_STEP_TURN:
+		speed = LEG_START_SPEED + 0.01 if int(commands[at + 3]) == NATIVE_MODE_TRAVEL and preferred.length() > LEG_START_SPEED else 0.0
+	pony.accept_navigation_motion(speed, commands[at + 2], int(commands[at + 3]), preferred.length())
 	var si := row * 8
 	_native_mode = int(commands[at + 3])
 	_native_progress = states[si]

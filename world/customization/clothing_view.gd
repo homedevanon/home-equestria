@@ -13,7 +13,12 @@ const OUTFIT := Rect2(404,22,200,68)
 const LOCKED_MESSAGE := "Locked: buy an outfit with it at Rarity's Boutique."
 const PROFILE_ITEMS := "res://world/shop/shop_items.gd"
 var outfit_index := 0
-func wear_rect(index: int) -> Rect2:return Rect2(24+index*197,578,186,52)
+const CLUB_SCARF := "wear:4cc-scarf:0"
+## The briefcase (world/inventory/inventory_store.gd), set by clothing_customizer.gd.
+var store: RefCounted
+## Three garment buttons; a fourth, narrower set while Anon wears the cup scarf (take it off here).
+func scarf_worn() -> bool:return profile!=null and profile.pony_items(profile.saved).has(CLUB_SCARF)
+func wear_rect(index: int) -> Rect2:return Rect2(24+index*146,578,138,52) if scarf_worn() else Rect2(24+index*197,578,186,52)
 func shoe_rect(index: int) -> Rect2:return Rect2(164+index*164,578,152,52)
 var profile: RefCounted
 var message := ""
@@ -61,10 +66,19 @@ func _draw():
 			var feet:String=profile.footwear()
 			on=feet!="barefoot";label="Footwear"
 			state={"shoes":"Shoes","sandals":"Wing sandals","barefoot":"Barefoot"}[feet]+"  ·  change"
+		var narrow:=scarf_worn()
+		if narrow:
+			label={"top":"Jacket & shirt"}.get(garment,label)
+			state=state.replace("Wearing  ·  take off","On · take off").replace("Off  ·  put on","Off · put on").replace("  ·  change"," · change")
 		draw_rect(rect,Color("667b5c") if on else Color("464d4b"))
 		draw_rect(rect,Color("ebce8d") if on else Color("909889"),false,2)
-		text(label,rect.position+Vector2(12,22),18,Color("f2e7d0"))
-		text(state,rect.position+Vector2(12,44),17,Color("cbd0c0"))
+		text(label,rect.position+Vector2(8 if narrow else 12,22),15 if narrow else 18,Color("f2e7d0"))
+		text(state,rect.position+Vector2(8 if narrow else 12,44),13 if narrow else 17,Color("cbd0c0"))
+	if scarf_worn() and profile.can_remove_garments():
+		var rect:=wear_rect(GARMENTS.GARMENTS.size())
+		draw_rect(rect,Color("667b5c"));draw_rect(rect,Color("ebce8d"),false,2)
+		text("/mlp/ cup scarf",rect.position+Vector2(8,22),15,Color("f2e7d0"))
+		text("On · take off",rect.position+Vector2(8,44),13,Color("cbd0c0"))
 	if profile.can_color_shoes():
 		text("Shoes",Vector2(38,610),27,Color("f2e7d0"))
 		for i in profile.SHOE_COLOURS.size():
@@ -119,6 +133,10 @@ func choose(pixel: Vector2) -> bool:
 	if profile.can_color_shoes():
 		for i in profile.SHOE_COLOURS.size():
 			if shoe_rect(i).has_point(pixel):return profile.choose_shoe_colour(i)
+	if scarf_worn() and profile.can_remove_garments() and wear_rect(GARMENTS.GARMENTS.size()).has_point(pixel):
+		# Back into the briefcase, saved at once like every pony-wear change.
+		message=profile.take_off_pony_item(store,CLUB_SCARF) if store!=null else "The briefcase is not here."
+		refresh();return true
 	for i in (GARMENTS.GARMENTS.size() if profile.can_remove_garments() else 0):
 		if wear_rect(i).has_point(pixel):
 			var garment:String=GARMENTS.GARMENTS[i]

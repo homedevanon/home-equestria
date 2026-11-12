@@ -29,7 +29,6 @@ static func display_name(id: String) -> String:
 ## The body slot a piece takes; a second piece for the same slot replaces the first.
 static func slot(id: String) -> String:
 	var piece := kind(id)
-	if piece == "socks": return "legs"
 	if piece == "cape": return "back"
 	var fitted := FITTED.slot(piece)
 	return fitted if not fitted.is_empty() else piece
@@ -39,7 +38,8 @@ static func fits(avatar: Node3D, id: String) -> bool:
 	if avatar == null or not is_wear(id): return false
 	var piece := kind(id)
 	if FITTED.has(piece) or FITTED.OUTFIT.has(piece): return FITTED.supports_fitted(avatar)
-	if piece == "socks": return avatar.find_child("MareBody", true, false) != null
+	if piece in ["socks", "plain-socks"]: return avatar.find_child("MareBody", true, false) != null
+	if piece in ["scarf", FITTED.CLUB_SCARF]: return FITTED.supports(avatar) or (piece == "scarf" and avatar.get("skeleton") != null)
 	return avatar.get("skeleton") != null
 
 ## Dress `avatar` in exactly `items` (wear ids). Idempotent: only changed pieces are rebuilt.

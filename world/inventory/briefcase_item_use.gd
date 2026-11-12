@@ -23,7 +23,8 @@ func _init(owner_node: Node3D) -> void:
 func wear_outfit(item: Node) -> bool:
 	var id:=str(item.get_meta("item_id", ""))
 	if host.clothing==null:return false
-	if host._pony():return _wear_on_pony(item, id)
+	# The cup scarf goes on either form; it is one worn piece shared by both.
+	if host._pony() or id==SHOP_ITEMS.CLUB_SCARF:return _wear_on_pony(item, id)
 	if not SHOP_ITEMS.wardrobe_only(id):return false
 	if not host.clothing.keep_bought(id):return false
 	if id == SHOP_ITEMS.WING_SANDALS:
@@ -57,7 +58,7 @@ func _wear_on_pony(item: Node, id: String) -> bool:
 			host.held.erase(side);host._track.erase(side);host._claim(side,false);host._haptic(side)
 	host.loose.erase(token);item.queue_free();host._refresh_holding()
 	_play_select();SFX.play_event(host,"prop_clothing",{},host.camera.global_position)
-	print("[inventory] AnonPony wears ",id)
+	print("[inventory] ","AnonPony" if host._pony() else "Anon"," wears ",id)
 	return true
 
 
@@ -65,7 +66,7 @@ func _wear_on_pony(item: Node, id: String) -> bool:
 func wearable(item: Node) -> bool:
 	if not is_instance_valid(item):return false
 	var id:=str(item.get_meta("item_id",""))
-	return SHOP_ITEMS.pony_wear(id) if host._pony() else SHOP_ITEMS.wardrobe_only(id)
+	return SHOP_ITEMS.pony_wear(id) if host._pony() else (SHOP_ITEMS.wardrobe_only(id) or id==SHOP_ITEMS.CLUB_SCARF)
 
 
 func _sync_flight_equipment() -> void:

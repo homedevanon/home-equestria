@@ -38,7 +38,10 @@ func setup(profile: RefCounted, actual_player: Node3D):
 			avatar.find_child("BodyIK",true,false).active=false
 			avatar.set_process(false);avatar.set_physics_process(false)
 			avatar.get_node("Model").scale=source.get_node("Model").scale
-	camera=Camera3D.new();camera.fov=42;camera.near=.05;camera.far=10;camera.current=true;scene.add_child(camera)
+	camera=Camera3D.new();camera.fov=42;camera.near=.05;camera.far=10;camera.current=true
+	# Placed from _process: no physics interpolation (else "Interpolated Camera3D triggered from outside physics process").
+	camera.physics_interpolation_mode=Node.PHYSICS_INTERPOLATION_MODE_OFF
+	scene.add_child(camera)
 	_update_camera()
 	set_active(false)
 func _capture_pose():

@@ -502,7 +502,13 @@ func _physics_process(delta: float) -> void:
 	if opening_angle()>.001 and not _nav_open:_nav_open=true;add_to_group("open_house_doors")
 	var next:=move_toward(opening_angle(),target,2.3*delta)
 	if is_equal_approx(next,opening_angle()):
-		if not _opening_ponies.is_empty(): _allow_opening_pony_overlap(global_transform)
+		# A still leaf only drops pony exceptions once they walked clear: two shape queries five
+		# times a second instead of every tick (doors held open by passing ponies, 2026-11-08).
+		if not _opening_ponies.is_empty():
+			_overlap_wait -= delta
+			if _overlap_wait <= 0.0:
+				_overlap_wait = OVERLAP_REFRESH
+				_allow_opening_pony_overlap(global_transform)
 		if _nav_open and opening_angle()<=.001:_notify_navigation()
 		_sleep_if_settled()
 		return
@@ -524,10 +530,14 @@ func _physics_process(delta: float) -> void:
 			if not is_instance_valid(holder):target=opening_angle()
 			return
 	if next > opening_angle(): _allow_opening_pony_overlap(leaf_transform)
+	_overlap_wait = 0.0
 	rotation.y=next*swing_direction
 	if next>.001 and not _nav_open:_nav_open=true;add_to_group("open_house_doors")
 	if _shut and next>=SHUT:_shut=false;_play(OPEN_SOUND)
 	elif not _shut and next<=.001:_shut=true;_play(CLOSE_SOUND)
+
+const OVERLAP_REFRESH := 0.2
+var _overlap_wait := 0.0
 
 ## A settled door with nobody queued, holding or overlapping stops its physics tick (51 town doors
 ## idled every tick, 2026-10-14). Every input that can move it (target, holder, a passage request,

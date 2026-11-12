@@ -36,6 +36,28 @@ const ADULT_POLICY_HINT := "SPECIAL INSTRUCTIONS: The user's prompt follows our 
 const PLAYER_FORM := preload("res://world/life/player_form.gd")
 const ARRIVAL_CONTEXT := preload("res://world/ai/arrival_context.gd")
 const EMOTION_TAG := "^\\s*\\[(neutral|happy|sad|angry|annoyed|fearful|surprised|calm|disgusted|whispering|shouting)\\]\\s*"
+const TOWN_TALK := preload("res://world/ai/memory/town_talk.gd")
+## M-AI-11 (board #329, thread A4): she agrees in words to a physical action but sends no tag. One
+## short repair request asks for it (a full extra request, so only when the player clearly asked
+## for one of these and her line clearly agrees). Rows: [what he asked, his words, tags that do it].
+const TAG_ASKS := [
+	["sit down", "\\b(sit (down|with me|here|next to me|beside me|by me)|take a seat|have a seat)\\b", ["sit", "sit_on_seat"]],
+	["lie down", "\\b(lie|lay) (down|with me|next to me|beside me)\\b", ["lie_down", "go_to_bed", "cuddle"]],
+	["stand up", "\\b(stand up|get up)\\b", ["stand", "wake_up"]],
+	["wait here", "\\b(wait (here|for me|there)|stay (here|put|there))\\b", ["stay"]],
+	["come over", "\\b(come (here|closer|over here)|get over here)\\b", ["approach", "follow"]],
+	["go home", "\\bgo (back )?home\\b", ["go_home", "go_to"]],
+	["go to bed", "\\b(go to bed|get (in|into) (the |your |my )?bed)\\b", ["go_to_bed", "lie_down"]],
+	["do a loop", "\\bloop[- ]?(de|the)[- ]?loop\\b", ["loop_de_loop", "air_show"]],
+	["do a barrel roll", "\\bbarrel roll\\b", ["barrel_roll", "air_show"]],
+	["do a sonic rainboom", "\\bsonic rainboom\\b", ["sonic_rainboom", "air_show"]],
+]
+const AGREES := "^\\W*(\\[[^\\]]*\\]\\s*)*(ok|okay|sure|yes|yeah|yep|alright|all right|of course|you got it|gladly|certainly|absolutely|why not|right away|happily|with pleasure)\\b"
+const DEMURS := "\\b(no|not|can't|cannot|don't|won't|later|maybe|rather|busy|sorry|but)\\b|n't\\b"
+var tag_repairs := 0
+var _repair_label := ""
+## M-AI-15: he says sorry (eases her grudge, pony_impressions.gd apologised).
+const APOLOGY := "\\b(sorry|apologi[sz]e|my apologies|forgive me|i was wrong|my bad)\\b"
 
 signal transcript(text: String)
 signal reply(character_id: String, text: String)
@@ -329,7 +351,14 @@ var _farewell: Dictionary = {}      # id -> time her goodbye must finish by
 func engaged(id: String) -> bool:
 	return _holds.engaged(id)
 
-## Engaged and not walking along with a talking group: stays where she is, no wandering.
+## Engaged and not walking along with a talking group: stays where she is, no wandering, and her
+## day plan waits. Only a conversation partner is engaged (speaking or thinking now, a member of the
+## running exchange, or Anon talked with her within CHAT_HOLD_SECONDS and she still hears him), and
+## only within director_holds.gd WALK_AWAY_METRES (8 m) of him between turns: a partner he left
+## farther away goes on with her day although engaged() still holds her in the living world
+## (world/game_residents.gd). Ponies merely nearby are never held: a player line's exchange takes
+## only the ponies he addresses or already talks with (director_group.gd _group_candidates), and the
+## talk freeze takes the same ponies (talk_freeze.gd).
 func holds_in_place(id: String) -> bool:
 	return _holds.holds_in_place(id)
 
@@ -467,6 +496,13 @@ func pick_listener(text := "") -> String:
 	return str(_address.id)
 
 
+## The pony Anon is speaking to as he starts typing or talking, before any words exist: the one he
+## looks at (talk_freeze.gd freezes her with his partners). "" when he faces nopony.
+func addressed_now() -> String:
+	if not is_instance_valid(player_head) or not player_head.is_inside_tree(): return ""
+	return _gazed_listener()
+
+
 func _gazed_listener() -> String:
 	var eye: Vector3 = player_head.global_position
 	var forward: Vector3 = -player_head.global_basis.z.normalized()
@@ -564,6 +600,9 @@ func handle_text(text: String) -> void:
 	if not told.is_empty() and is_instance_valid(world_context) and is_instance_valid(world_context.player_bonds) and world_context.player_bonds.has_method("mark_name_known"):
 		for listener: String in (members if members.size() >= 2 else [id]):
 			world_context.player_bonds.mark_name_known(listener, told)
+	if is_instance_valid(world_context) and is_instance_valid(world_context.impressions) and world_context.impressions.has_method("apologised") and RegEx.create_from_string(APOLOGY).search(text.to_lower()) != null:
+		for listener: String in (members if members.size() >= 2 else [id]):
+			if world_context.impressions.apologised(listener): print("[ai] %s: Anon apologised; her grudge eases" % listener)
 	# A payment made in the Pay panel since her last turn (told_paid): she hears it with his line.
 	var paid_note := str(characters[id].get("paid_note", ""))
 	if not paid_note.is_empty():
@@ -624,8 +663,8 @@ func handle_text(text: String) -> void:
 	# A photo in the player's hand, when Photos vision is on (photo_vision.gd).
 	var vision := VISION.mode(config)
 	var photo := "" if vision == "off" else VISION.held_photo(get_tree())
-	if not photo.is_empty() and vision == "separate" and _describe_photo(photo, prompt, history.duplicate(), limits, _turn_id): return
-	var messages := history.duplicate()
+	if not photo.is_empty() and vision == "separate" and _describe_photo(photo, prompt, brief_history(history), limits, _turn_id): return
+	var messages := brief_history(history)
 	if not photo.is_empty() and vision == "same":
 		var jpeg := VISION.encode(photo)
 		if not jpeg.is_empty():
@@ -759,7 +798,25 @@ var _trace_on := -1
 func _trace_request(kind: String, speaker: String, prompt: String, messages: Array) -> void:
 	_prompts._trace_request(kind, speaker, prompt, messages)
 
+## Her own earlier lines go back to the model as their first and last sentence only (dev
+## 2026-11-11, reply style review: fifteen messages of six-sentence replies taught the next reply
+## its length and shape; the last sentence keeps a question or offer she ended on). Her full lines
+## stay in her history and in the story journal. Always a new array.
+const HISTORY_SENTENCES := 2
+static func brief_history(messages: Array) -> Array:
+	var out: Array = []
+	for message: Dictionary in messages:
+		if str(message.get("role", "")) == "assistant":
+			var pieces := FILTERS.sentences(str(message.get("content", "")))
+			if pieces.size() > HISTORY_SENTENCES:
+				message = message.duplicate()
+				message["content"] = pieces[0] + " " + pieces[-1]
+		out.append(message)
+	return out
+
+const SOLO_OUTPUT_TOKENS := 512
 func _complete_solo(prompt: String, messages: Array, done: Callable) -> bool:
+	messages = brief_history(messages)
 	var label := _take_purpose("greeting" if _proactive_turn else "dialogue")
 	_trace_request("greeting" if _proactive_turn else "reply", _current, prompt, messages)
 	if not _proactive_turn:
@@ -769,8 +826,11 @@ func _complete_solo(prompt: String, messages: Array, done: Callable) -> bool:
 	if not ambient_budget.reserve(bytes): return false
 	_label_next(label)
 	if llm.has_method("complete_limited"):
-		# Reasoning room: a 220-token greeting cap with none was spent on private reasoning (no words).
-		return llm.complete_limited(prompt, messages, done, {"input_bytes":AMBIENT_BUDGET.MAX_INPUT_BYTES,"output_tokens":512,"reasoning_room":LLM.SPEECH_REASONING_ROOM})
+		# Reasoning room: a 220-token greeting cap with none was spent on private reasoning (no words),
+		# and LLM.SPEECH_REASONING_ROOM (1024) still cut solo remarks off on reasoning models
+		# (PLAYTESTER_FIXES_2026_10_20 open item): the same room as ambient group chats. Only written
+		# tokens are billed; the visible reply stays capped at SOLO_OUTPUT_TOKENS.
+		return llm.complete_limited(prompt, messages, done, {"input_bytes":AMBIENT_BUDGET.MAX_INPUT_BYTES,"output_tokens":SOLO_OUTPUT_TOKENS,"reasoning_room":AMBIENT_BUDGET.REASONING_TOKENS})
 	return llm.complete(prompt, messages, done)
 
 
@@ -853,10 +913,25 @@ func _on_reply(text: String, error: String, turn_id := -1) -> void:
 		if _repair_response(text, mismatch, false): return
 		_fail("Reply accepted a walk without its follow action; please try again")
 		return
+	# M-AI-11: one short repair request when she agreed to a physical action without its tag. Once
+	# per turn (_repair_turn); a repaired reply that still has none is spoken as it is.
+	if _authored_active.is_empty() and not _proactive_turn and _repair_turn != _turn_id:
+		var asked := tag_request(_player_text)
+		if not asked.is_empty() and agrees(str(decoded.speech)):
+			var capabilities: Array = actions.context(_current, _action_targets(_current)).get("capabilities", []) if actions.has_method("context") else []
+			var missing := missing_tag(asked, decoded.actions, capabilities, decoded.get("dropped", []))
+			if not missing.is_empty():
+				tag_repairs += 1
+				_repair_label = "dialogue_tag_repair"
+				print("[ai] %s: agreed to %s without a tag; one repair request (#%d this session; usage purpose dialogue_tag_repair)" % [_current, str(asked[0]), tag_repairs])
+				if _repair_response(text, missing, false): return
+				_repair_label = ""
 	_pending_actions = decoded.actions
 	var tagged := FACE_TAGS.parse(decoded.speech)
 	var cleaned := clean_reply(tagged.speech)
-	if _strip_tag(cleaned).is_empty():
+	# A reply of "..." or a lone symbol has nothing to say: silence, not a voice error
+	# ("tts: empty ponese line", log 2026-11-04..07).
+	if not CONTROLS.has_words(_strip_tag(cleaned)):
 		if decoded.get("control_only", false) and _repair_response(text, "The draft contains only control syntax and no spoken answer. Answer the player's words with fresh dialogue; do not emit unfinished tags.", false): return
 		if not _authored_active.is_empty():
 			_finish_silence(); return
@@ -903,7 +978,7 @@ func _on_reply(text: String, error: String, turn_id := -1) -> void:
 	var sentences := SENTENCES.audio_parts(cleaned)
 	if sentences.size() > 1:
 		group.begin([_current], characters, _now(), false)
-		group.beats = SENTENCES.expand([{"speaker_id":_current,"listener_id":"player","speech":cleaned,"actions":_pending_actions,"face":_pending_face,"face_map":FACE_TAGS.sentence_faces(SENTENCES.split(decoded.speech)),"gesture":_pending_gesture,"impression":_pending_impression}])
+		group.beats = GROUP_TURNS.voiced_beats(SENTENCES.expand([{"speaker_id":_current,"listener_id":"player","speech":cleaned,"actions":_pending_actions,"face":_pending_face,"face_map":FACE_TAGS.sentence_faces(SENTENCES.split(decoded.speech)),"gesture":_pending_gesture,"impression":_pending_impression}]))
 		_next_group_beat()
 		return
 	if not _synthesize_voice(cleaned, profile,
@@ -1012,10 +1087,41 @@ func _commit_actions() -> bool:
 		if action.type == "teleport_to_ponyville":
 			_after_speech_actions[_current] = {"action":action.duplicate(true), "turn":_turn_id, "epoch":_intent_epoch}
 		else: immediate.append(action)
-	var error: String = actions.commit(_current, immediate, _action_targets(_current), _turn_id)
+	var targets := _commit_targets(_current, immediate)
+	var error: String = actions.commit(_current, immediate, targets, _turn_id)
 	_pending_actions = []
+	if error != "":
+		# A tag the situation no longer allows (its pony walked out of sight between the reply and
+		# her line, log 2026-11-04..07: "action unavailable: Unknown target") is left out; her words
+		# and her other tags still go ahead instead of the whole line failing.
+		var kept := _still_valid(_current, immediate, targets)
+		if kept.size() < immediate.size():
+			print("[ai] %s: left out %d stale action tag(s): %s" % [_current, immediate.size() - kept.size(), error])
+			error = actions.commit(_current, kept, targets, _turn_id) if not kept.is_empty() else ""
 	if error != "": _fail("action unavailable: " + error); return false
 	return true
+
+
+## The targets her tags may name now (director_prompts.gd _action_targets: the ponies and things
+## she observes), plus any pony or player her accepted tags already named who is still in the world.
+## The reply was checked against what she saw then; turning to talk, or a pony stepping behind
+## another, drops that pony from what she sees now, and her follow or call failed as "Unknown target".
+func _commit_targets(id: String, list: Array) -> Dictionary:
+	var targets: Dictionary = _action_targets(id)
+	for action: Variant in list:
+		if not action is Dictionary: continue
+		for field: String in ["target_id", "pony_id"]:
+			var named := str(action.get(field, ""))
+			if named.is_empty() or targets.has(named) or not characters.has(named): continue
+			var node: Variant = characters[named].node
+			if is_instance_valid(node) and (node as Node).is_inside_tree(): targets[named] = node
+	return targets
+
+
+## The tags that still pass validation now (pony_action_schema.gd validate on a copy).
+func _still_valid(id: String, list: Array, targets: Dictionary) -> Array:
+	var context: Dictionary = actions.context(id, targets) if actions.has_method("context") else {}
+	return list.filter(func(action: Variant) -> bool: return action is Dictionary and ACTION_SCHEMA.validate((action as Dictionary).duplicate(true), context) == "")
 
 
 ## Speech carries EARSHOT_SCALE times each pony's authored earshot (dev 2026-10-01: "allow speech
@@ -1038,12 +1144,39 @@ func _repair_response(draft: String, reason: String, exchange: bool) -> bool:
 	var ambient: bool = group.ambient if exchange else _proactive_turn
 	var origin := str(llm.last_purpose).trim_suffix("_recovery").trim_suffix("_repair") if "last_purpose" in llm else ""
 	_next_purpose = (origin if not origin.is_empty() else "dialogue") + "_repair"
+	# M-AI-11's tag repair is counted under its own purpose in the usage log.
+	if not _repair_label.is_empty(): _next_purpose = _repair_label; _repair_label = ""
 	if "model output limit" in reason and not ambient and llm.has_method("complete_with_output_recovery"):
 		_next_purpose = ""
 		_label_next(origin)
 		return llm.complete_with_output_recovery(prompt, messages, _on_group_reply.bind(_turn_id) if exchange else _on_reply.bind(_turn_id))
 	return _complete_group(prompt,messages,_on_group_reply.bind(_turn_id)) if exchange else _complete_solo(prompt,messages,_on_reply.bind(_turn_id))
 
+
+## M-AI-11: [what, pattern, tags] when the player's words ask for a physical action, else [].
+static func tag_request(request: String) -> Array:
+	var said := request.to_lower().replace("’", "'")
+	for row: Array in TAG_ASKS:
+		if RegEx.create_from_string(str(row[1])).search(said) != null: return row
+	return []
+
+## Her line clearly agrees: it opens with a yes and holds no hedge or refusal.
+static func agrees(speech: String) -> bool:
+	var line := speech.to_lower().replace("’", "'").strip_edges()
+	return RegEx.create_from_string(AGREES).search(line) != null and RegEx.create_from_string(DEMURS).search(line) == null
+
+## The repair reason when none of the asked row's tags came and she can do the first one; "" else.
+## A tag she sent that was dropped (another movement won, an unknown target) is no missing tag.
+static func missing_tag(asked: Array, sent: Array, capabilities: Array, dropped: Array = []) -> String:
+	var tags: Array = asked[2]
+	for action: Variant in sent:
+		if action is Dictionary and str((action as Dictionary).get("type", "")) in tags: return ""
+	for line: Variant in dropped:
+		for tag: Variant in tags:
+			if str(line).to_lower().begins_with("[" + str(tag)): return ""
+	var usable := tags.filter(func(tag: Variant) -> bool: return str(tag) in capabilities)
+	if usable.is_empty(): return ""
+	return "You agreed to %s but sent no action tag, so nothing happens in the world. If you do it, keep your words and add [%s] after them; if you will not, reword so you do not agree." % [str(asked[0]), str(usable[0])]
 
 ## An accepted turn belongs to its speaker and purpose, even when its listener leaves.
 ## Audibility belongs to witnessed-event bookkeeping, not voice playback validity.
@@ -1158,7 +1291,11 @@ func _on_speech_finished(id: String = "") -> void:
 		if witnessed and not _proactive_turn and not _pending_impression.is_empty() and is_instance_valid(world_context) and is_instance_valid(world_context.impressions) and (not _player_text.is_empty() or not _physical_context.is_empty()) and (not group.active() or not group.ambient):
 			_impression_serial+=1
 			# Spa clients never gain romance from a reply (gifts and care are kind gestures; MECHANICS_ARCHITECTURE 4.2).
-			world_context.impressions.commit(_current,impression_for(characters[_current].node if characters.has(_current) else null,_pending_impression),_impression_session+"-"+str(_impression_serial))
+			var feeling := impression_for(characters[_current].node if characters.has(_current) else null,_pending_impression)
+			# M-AI-15: a hurt that follows rough handling is a "hit" deed for notoriety.
+			if "threw you" in _physical_context or "smacked your flank" in _physical_context: feeling["deed"] = "hit"
+			var feeling_event := _impression_session+"-"+str(_impression_serial)
+			world_context.impressions.commit(_current,feeling,feeling_event)
 	if witnessed and _authored_lines.has(_authored_active):
 		var row: Dictionary = _authored_lines[_authored_active]
 		var heard_lines: Array = row.get("heard", [])
@@ -1366,7 +1503,11 @@ func _process_step(delta: float) -> void:
 			if not _group_turn_valid():
 				# Speech is committal: a line already playing finishes, then the exchange ends.
 				if state == "speaking" and speech_committed(): _stop_after_line = true
-				else: interrupt()
+				else:
+					# A reply still on its way is lost with it: say why (a slow local model's group
+					# lines vanished without a trace, thread 43693039).
+					if state == "thinking": print("[ai] group reply abandoned while waiting for the model: ", _group_turns.invalid_why)
+					interrupt()
 		if state == "group_gap":
 			_group_gap -= delta
 			if _group_gap <= 0.0: _next_group_beat()
@@ -1407,7 +1548,8 @@ func clean_reply(text: String) -> String:
 	# Any other bracket tag the model invents ([flustered], [laughs]) is not speech.
 	var actions := RegEx.new()
 	actions.compile("\\*[^*]*\\*|\\[[^\\]]*\\]")
-	out = actions.sub(out, "", true)
+	# A stressed word keeps its place in the sentence (speech_controls.gd unstar).
+	out = actions.sub(CONTROLS.unstar(out), "", true)
 	if characters.has(_current):
 		var profile: Dictionary = characters[_current].get("profile", {})
 		var prefixes: Array = [str(profile.get("name", "")), _current, _current.replace("_", " ")]
@@ -1556,6 +1698,10 @@ func movement_dialogue_allowed(id: String) -> bool:
 
 func _begin_group(ids: Array[String], ambient := false) -> void:
 	_group_turns._begin_group(ids, ambient)
+	# M-AI-15: ponies chatting together pass on what they heard about Anon (no extra request).
+	if ambient and is_instance_valid(world_context):
+		var told := TOWN_TALK.spread_notoriety(world_context, ids)
+		if told > 0: print("[ai] town talk: %d pony(s) heard about Anon's notoriety" % told)
 
 
 func _complete_group(prompt: String, messages: Array, done: Callable) -> bool:
@@ -1579,7 +1725,10 @@ func _next_group_beat() -> void:
 
 
 func _voice_error(why: String) -> void:
-	if _strip_tag(_pending_text).is_empty(): _finish_silence(); return
+	if not CONTROLS.has_words(_strip_tag(_pending_text)): _finish_silence(); return
+	# A streamed line that broke off after she began it (pcm_speech_player.gd) is not said again
+	# from the start in Ponese: the listener already heard part of it.
+	if why.begins_with("PCM ") and _recorded: _fail(why); return
 	if _ponese_attempted or _pending_text.is_empty() or not _listener_available() or not tts.has_method("synthesize_ponese"):
 		_fail(why);return
 	_ponese_attempted=true
@@ -1627,6 +1776,12 @@ func _synthesize_voice(text: String, profile: Dictionary, emotion: String, callb
 		callback.call_deferred("", "no generated speech to synthesize")
 		return true
 	if tts.has_method("synthesize_profile"):
+		# The line about to be spoken (not a prefetch) may start while the server still renders it,
+		# when the server streams and the speaker can play a stream (tts_client.gd).
+		if callback.get_method() == "_on_tts" and tts.has_method("synthesize_profile_live") and tts.can_stream():
+			var actor: Variant = characters.get(str(profile.get("id", "")), {}).get("node")
+			if is_instance_valid(actor) and actor.has_method("supports_pcm_speech") and actor.supports_pcm_speech():
+				return tts.synthesize_profile_live(text, profile, emotion, callback)
 		return tts.synthesize_profile(text, profile, emotion, callback)
 	return tts.synthesize(text, int(profile.get("tts_speaker_id", 31)), emotion, callback)
 
@@ -1657,12 +1812,14 @@ func story() -> RefCounted:
 	if not memory.names.is_valid(): memory.names = func(id: String): return characters[id].profile.get("name", id) if characters.has(id) else null
 	return memory
 
-## Removes <brain> director notes and [feel:] tags from a reply, storing them in the journal.
+## Removes <brain> director notes (also written [brain]) and [feel:] tags from a reply, storing them in the journal.
 func take_story_notes(text: String, group_reply: bool) -> String:
 	var memory := story()
 	var present: Array = [_current]
 	for member in group.members:
 		if member not in present: present.append(member)
+	# [brain]...[/brain] (GitHub PR #13) is the same block as <brain>...</brain>.
+	text = CONTROLS.angle_notes(text)
 	if memory != null and ("<brain>" in text or "<story>" in text):
 		text = memory.take_notes(text, _current, present)
 		_brain_turns = BRAIN_EVERY

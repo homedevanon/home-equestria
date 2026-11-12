@@ -421,7 +421,11 @@ func _rest_hint(seat: Node3D) -> Dictionary:
 	var sleeping: bool = body.get_meta("couch_sleeping", false) or (form != null and form.has_method("is_lying") and form.call("is_lying") == true)
 	if not sleeping and not couch.opened and not couch.can_open(): return {}
 	var avatar: Node = body.get_parent().find_child("AnonBody", true, false) if xr else body.find_child("AnonBody", true, false)
-	if not sleeping and is_instance_valid(avatar) and float(avatar.get("model_scale")) > 1.3: return {}
+	# The sofa's own measure (couch.gd anon_fits, as couch.begin_player asks); beds and grass naps
+	# without one keep the old 1.3 cut (W1-LIFE-BEDS hook note).
+	if not sleeping and is_instance_valid(avatar):
+		var scale := float(avatar.get("model_scale"))
+		if not (bool(couch.call("anon_fits", scale)) if couch.has_method("anon_fits") else scale <= 1.3): return {}
 	var target: Node3D = _seat_target(seat)
 	var point: Vector3 = seat.global_position + Vector3.UP * .03
 	if xr:
@@ -471,6 +475,8 @@ static func _collect_bounds(node: Node, inverse: Transform3D, boxes: Array[AABB]
 ## Every segment reads the same way, control first, then "Hold: words" (thread 43671981: the
 ## carry row printed "Tap G · Put down Hold G, let go · Throw" as raw text beside icon rows).
 ## A keyboard key with no drawn icon (G, K, B on desktop) becomes "cap:<KEY>", a drawn key cap.
+## A status before the control ("Casting · [E/Q] Return rod", NEXT_STEPS C9) stays words, in a
+## segment of its own, and the control after it gets its icons like any other.
 static func parse(text: String) -> Array:
 	var result: Array = []
 	for raw: String in text.replace(" | ", "   ").split("   ", false):
@@ -487,6 +493,12 @@ static func parse(text: String) -> Array:
 		if not control.is_empty():
 			var caps := key_caps(control)
 			if caps.size() > icons.size(): icons = caps
+		if icons.is_empty() and not control.is_empty() and not part.begins_with("["):
+			var after: Array = parse(words)
+			if not after.is_empty() and not (after[0].icons as Array).is_empty():
+				result.append({"icons": [], "text": control})
+				result.append_array(after)
+				continue
 		var lower := control.to_lower()
 		if icons.is_empty() and not control.is_empty(): words = part
 		elif lower.begins_with("hold ") and lower.ends_with(", let go"): words = "Hold, let go: " + words

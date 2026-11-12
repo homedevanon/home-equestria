@@ -144,7 +144,12 @@ func _input(event:InputEvent)->void:
 		match event.physical_keycode:
 			KEY_F6:toggle();get_viewport().set_input_as_handled()
 			KEY_F5:saves.save_slot(0);get_viewport().set_input_as_handled()
-			KEY_F8:get_viewport().set_input_as_handled();saves.load_save(saves.slot_path(0))   # handled first: the reload frees this viewport
+			KEY_F8:
+				get_viewport().set_input_as_handled()   # handled first: the reload frees this viewport
+				# Refused (a scenario save with its mod off, a vanilla one with a scenario on, a busy
+				# save): say why on the hotbar instead of nothing happening.
+				saves.message=""
+				if not saves.load_save(saves.slot_path(0)) and str(saves.message)!="" and ui.get("hotbar")!=null:ui.hotbar.set_message(str(saves.message),true)
 			KEY_ESCAPE:
 				if opened:
 					# A save's page or an editor closes first, then the panel.

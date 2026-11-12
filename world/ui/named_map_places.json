@@ -149,13 +149,6 @@
 			"z": -230.181045532227
 		},
 		{
-			"id": "house:348:-127:-2161",
-			"kind": "house",
-			"name": "Octavia Melody's home",
-			"x": 34.7860870361328,
-			"z": -216.004776000977
-		},
-		{
 			"id": "house:365:-160:-1095",
 			"kind": "house",
 			"name": "Pinkie Pie's home",
@@ -214,7 +207,7 @@
 		{
 			"id": "house:756:-87:-3031",
 			"kind": "house",
-			"name": "Vinyl Scratch's home",
+			"name": "Octavia Melody & Vinyl Scratch's home",
 			"x": 75.5971069335938,
 			"z": -304.1171875
 		},

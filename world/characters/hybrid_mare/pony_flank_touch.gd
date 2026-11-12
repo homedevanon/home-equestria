@@ -353,11 +353,15 @@ func impact(index:int,at:=Vector3.INF,strength:=0.8) -> void:
 	marks[index].albedo_mix=.8;marks[index].visible=true   # same frame as the slap sound
 	sound.position=centre;sound.play()
 	_start_jiggle(index,strength)
-	mare.boop_node.strong_blush_time=5.0
-	mare.boop_node.sustain_blush()
+	# A spa client on the table (W1-SPA): a VR smack or a palm rubbing her hind legs is massage, not
+	# romantic contact, so no blush and no flank_smack reaction (that could end in a buck).
+	var spa_client:bool=mare.has_meta("spa_client")
+	if not spa_client:
+		mare.boop_node.strong_blush_time=5.0
+		mare.boop_node.sustain_blush()
 	mare.expressions.touch("flank",.6,.20)
 	var before_reaction:=Time.get_ticks_usec()
-	mare.physical_reaction.emit("flank_smack")
+	if not spa_client:mare.physical_reaction.emit("flank_smack")
 	var finished:=Time.get_ticks_usec()
 	HITCH.mark("flank impact %d: %d us visuals+sound, %d us reaction handlers"%[index,before_reaction-started,finished-before_reaction])
 

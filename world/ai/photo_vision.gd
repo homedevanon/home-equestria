@@ -14,13 +14,20 @@ const SHOWN_NOTE := "(Anon is holding up a photo he took so you can see it.)"
 const DESCRIBED_NOTE := "(Anon is holding up a photo he took so you can see it. The photo shows: %s)"
 const DESCRIBE_SYSTEM := "You describe photos for someone who cannot see them. In two or three plain sentences say who and what is in the picture, where it seems to be, and the main colours. Characters are ponies from My Little Pony: Friendship is Magic; name one only when you are sure who she is. No preamble."
 const DESCRIBE_ASK := "Describe this photo."
+## Paintings and drawings from the easel (M-AI-13) are shown the same way; with_note() then says he
+## painted it instead of took it, so no request is added and the photo wording stays as it was.
+const PHOTO_WORDS := "a photo he took"
+const PAINTED_WORDS := "a picture he painted"
+## Whether the last held_photo() found a painting rather than a photo (read by with_note()).
+static var _painted := false
 
 static func mode(config: RefCounted) -> String:
 	var value := str(config.get_value("vision/mode", "off"))
 	return value if value in MODES else "off"
 
-## The photo file the player holds in a hand (desktop or VR), or "" when none.
+## The photo (or painting) file the player holds in a hand (desktop or VR), or "" when none.
 static func held_photo(tree: SceneTree) -> String:
+	_painted = false
 	if tree == null or tree.root == null: return ""
 	var inventory := tree.root.find_child("BriefcaseInventory", true, false)
 	if inventory == null: return ""
@@ -29,9 +36,11 @@ static func held_photo(tree: SceneTree) -> String:
 	for item: Variant in (held as Dictionary).values():
 		if not is_instance_valid(item): continue
 		var id := REGISTRY.art_id(str((item as Node).get_meta("item_id", "")))
-		if id.is_empty() or not REGISTRY.is_photo(id): continue
+		if id.is_empty(): continue
 		var path := REGISTRY.art_path(id)
-		if FileAccess.file_exists(path): return path
+		if FileAccess.file_exists(path):
+			_painted = not REGISTRY.is_photo(id)
+			return path
 	return ""
 
 ## The photo as a base64 JPEG no larger than MAX_SIDE, or "" when it cannot be read.
@@ -50,6 +59,7 @@ static func with_note(messages: Array, note: String) -> Array:
 	var out := messages.duplicate()
 	if out.is_empty(): return out
 	var last: Dictionary = (out[-1] as Dictionary).duplicate()
+	if _painted: note = note.replace(PHOTO_WORDS, PAINTED_WORDS).replace("The photo shows", "The picture shows")
 	last.content = str(last.get("content", "")) + "\n" + note
 	out[-1] = last
 	return out

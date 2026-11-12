@@ -397,6 +397,163 @@
       ],
       "phrase": "buy a mug of cider at the {target}",
       "reasons": "cider"
+    },
+    "fish": {
+      "weight": 1.0,
+      "handler": "fish_at_dock",
+      "hours": [
+        7,
+        11
+      ],
+      "also_hours": [
+        15,
+        18.5
+      ],
+      "target": "dock",
+      "minutes": [
+        30,
+        60
+      ],
+      "phrase": "go fishing at the {target}",
+      "reasons": "fish"
+    },
+    "cook": {
+      "weight": 1.2,
+      "handler": "cook_at_home",
+      "hours": [
+        10.5,
+        12.5
+      ],
+      "also_hours": [
+        17,
+        19.5
+      ],
+      "target": "kitchen",
+      "minutes": [
+        20,
+        40
+      ],
+      "phrase": "cook {item} at home",
+      "reasons": "cook"
+    },
+    "eat_hayburger": {
+      "weight": 1.4,
+      "handler": "eat_at_hayburger",
+      "hours": [
+        11,
+        14.5
+      ],
+      "also_hours": [
+        17.5,
+        20.5
+      ],
+      "target": "hayburger",
+      "posture": [
+        "sit"
+      ],
+      "minutes": [
+        20,
+        35
+      ],
+      "phrase": "eat at {target}",
+      "reasons": "hayburger"
+    },
+    "spa_walk_in": {
+      "weight": 0.8,
+      "handler": "spa_walk_in",
+      "hours": [
+        9.5,
+        17.5
+      ],
+      "target": "spa",
+      "minutes": [
+        25,
+        45
+      ],
+      "phrase": "relax at the {target}",
+      "reasons": "spa"
+    },
+    "wrap_up_snow": {
+      "weight": 4.0,
+      "handler": "go_to",
+      "hours": [
+        7,
+        18
+      ],
+      "target": "wrap_up_spots",
+      "posture": [
+        "stand"
+      ],
+      "minutes": [
+        20,
+        40
+      ],
+      "when": {
+        "event": "winter_wrap_up"
+      },
+      "phrase": "clear the snow at {target}",
+      "reasons": "wrap_up"
+    },
+    "wrap_up_gardens": {
+      "weight": 3.0,
+      "handler": "tend",
+      "hours": [
+        7.5,
+        17
+      ],
+      "target": "garden",
+      "minutes": [
+        10,
+        20
+      ],
+      "when": {
+        "spot": "garden",
+        "event": "winter_wrap_up"
+      },
+      "phrase": "get her {target} ready for spring",
+      "reasons": "wrap_up"
+    },
+    "wrap_up_skies": {
+      "weight": 4.0,
+      "handler": "joyride",
+      "hours": [
+        7,
+        18
+      ],
+      "minutes": [
+        2,
+        5
+      ],
+      "when": {
+        "wings": true,
+        "event": "winter_wrap_up"
+      },
+      "phrase": "clear the winter clouds",
+      "reasons": "wrap_up"
+    },
+    "wrap_up_animals": {
+      "weight": 6.0,
+      "handler": "go_to",
+      "hours": [
+        7,
+        17
+      ],
+      "target": "animal_homes",
+      "posture": [
+        "stand"
+      ],
+      "minutes": [
+        20,
+        40
+      ],
+      "when": {
+        "event": "winter_wrap_up",
+        "only_id": [
+          "fluttershy"
+        ]
+      },
+      "phrase": "wake the animals at {target}",
+      "reasons": "wrap_up"
     }
   },
   "targets": {
@@ -418,7 +575,6 @@
     },
     "food": {
       "places": [
-        "landmark:burger_joint_01",
         "landmark:sugarcube_corner",
         "landmark:cloudsdale_hotdogstand_01"
       ]
@@ -430,7 +586,8 @@
         "landmark:rarityboutique_01",
         "landmark:sugarcube_corner",
         "landmark:goldenoaklibrary_01",
-        "landmark:cloudsdale_hotdogstand_01"
+        "landmark:cloudsdale_hotdogstand_01",
+        "landmark:ponyville_market"
       ],
       "items": {
         "landmark:kiosk_01_01": [
@@ -461,6 +618,12 @@
         "landmark:cloudsdale_hotdogstand_01": [
           "hay dogs",
           "a lemonade"
+        ],
+        "landmark:ponyville_market": [
+          "some vegetables",
+          "fresh apples",
+          "a carrot dog",
+          "some buttered corn"
         ]
       }
     },
@@ -540,6 +703,50 @@
     "cider_stand": {
       "places": [
         "job:cider_stand"
+      ]
+    },
+    "dock": {
+      "places": [
+        "station:fishing_dock"
+      ]
+    },
+    "kitchen": {
+      "places": [
+        "home"
+      ],
+      "items": {
+        "home": [
+          "carrot pancakes",
+          "vegetable noodle soup"
+        ]
+      }
+    },
+    "hayburger": {
+      "places": [
+        "landmark:burger_joint_01"
+      ]
+    },
+    "spa": {
+      "places": [
+        "landmark:spa_01"
+      ]
+    },
+    "wrap_up_spots": {
+      "places": [
+        "landmark:town_hall",
+        "landmark:fountain_01",
+        "landmark:bridge_01",
+        "landmark:bridge_02",
+        "landmark:schoolhouse_01",
+        "landmark:goldenoaklibrary_01",
+        "landmark:trainstation_01"
+      ]
+    },
+    "animal_homes": {
+      "places": [
+        "landmark:snazzys_fluttershy_cottage_01",
+        "landmark:bridge_04",
+        "landmark:windmill_01"
       ]
     }
   },
@@ -685,6 +892,60 @@
       "to treat herself",
       "with a friend",
       "because everypony's talking about it"
+    ],
+    "fish": [
+      "for some quiet time",
+      "to catch something for dinner",
+      "because the river is calm today",
+      "to practise her casting"
+    ],
+    "cook": [
+      {
+        "text": "for lunch",
+        "hours": [
+          10,
+          14
+        ]
+      },
+      {
+        "text": "for dinner",
+        "hours": [
+          16.5,
+          21
+        ]
+      },
+      "to try a recipe",
+      "because she's hungry"
+    ],
+    "hayburger": [
+      {
+        "text": "for lunch",
+        "hours": [
+          11,
+          15
+        ]
+      },
+      {
+        "text": "for dinner",
+        "hours": [
+          17,
+          22
+        ]
+      },
+      "with a hayburger craving",
+      "for some hay fries"
+    ],
+    "spa": [
+      "to unwind",
+      "for a hoof soak",
+      "after a long week",
+      "to treat herself"
+    ],
+    "wrap_up": [
+      "for Winter Wrap Up",
+      "so spring can come",
+      "because winter won't wrap itself up",
+      "with the rest of her team"
     ]
   },
   "overrides": {
@@ -692,27 +953,39 @@
     "rainbow_dash": {
       "fly": 4.0,
       "nap": 2.0,
-      "read": 1.2
+      "read": 1.2,
+      "spa_walk_in": 0.3,
+      "eat_hayburger": 1.3
     },
     "twilight_sparkle": {
       "read": 4.0,
-      "stargaze": 2.0
+      "stargaze": 2.0,
+      "cook": 0.5
     },
     "fluttershy": {
       "nap": 0.8,
-      "visit": 1.5
+      "visit": 1.5,
+      "spa_walk_in": 2.5,
+      "fish": 0.0
     },
     "pinkie_pie": {
       "visit": 2.5,
-      "eat": 1.6
+      "eat": 1.6,
+      "eat_hayburger": 1.5,
+      "cook": 1.5
     },
     "rarity": {
       "buy": 2.0,
-      "go_to": 1.3
+      "go_to": 1.3,
+      "spa_walk_in": 2.5,
+      "fish": 0.3,
+      "cook": 0.6
     },
     "applejack": {
       "nap": 0.3,
-      "read": 0.5
+      "read": 0.5,
+      "cook": 1.2,
+      "spa_walk_in": 0.3
     },
     "spike": {
       "read": 2.0,
@@ -723,7 +996,15 @@
       "split_wood": 0.0,
       "tend": 0.0,
       "fetch_water": 0.0,
-      "fly": 0.0
+      "fly": 0.0,
+      "cook": 2.0,
+      "spa_walk_in": 0.0,
+      "eat_hayburger": 1.5,
+      "fish": 0.5
+    },
+    "big_mcintosh": {
+      "fish": 1.5,
+      "spa_walk_in": 0.0
     }
   },
   "_reasons": "A reason is a string, or {\"text\", \"hours\": [from, to]} to fit only at those hours."

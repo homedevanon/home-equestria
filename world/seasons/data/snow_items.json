@@ -1,0 +1,15 @@
+{
+	"_comment": "W2-SEAS-F 2026-11-08. Briefcase item rows for snow play and raking (catalogue registration in item_catalog.gd / shop_items.gd is W3-INTEGRATION's), and which held items dress a snowman (world/seasons/snow_play/snow_play.gd part_for). A key ending in * matches every id with that prefix.",
+	"items": {
+		"coal": {"name": "Lump of coal", "description": "Hold it to a snowman's face for an eye, or to its middle for a button.", "stack": 16, "scene": "res://world/props/seasons/coal.tscn", "value": 1, "tags": ["snowman_part"], "seasons": ["autumn", "winter"]},
+		"stick": {"name": "Stick", "description": "A bare twig. Hold it to a snowman's side for an arm.", "stack": 8, "scene": "res://world/props/seasons/stick.tscn", "value": 0, "tags": ["snowman_part"], "seasons": ["autumn", "winter"]},
+		"rake": {"name": "Leaf rake", "description": "Drag it through scattered leaves to rake them back into a pile. Desktop: hold click and sweep.", "stack": 1, "scene": "res://world/props/seasons/rake.tscn", "value": 15, "tags": ["tool"], "seasons": ["autumn"]}
+	},
+	"snowman_parts": {
+		"carrot": "nose",
+		"food:carrot": "nose",
+		"coal": "coal",
+		"stick": "arm",
+		"wear:scarf:*": "scarf"
+	}
+}

@@ -169,7 +169,10 @@ func update(nav:Node) -> bool:
 		walk(nav,goal);return true
 	if phase==Phase.OPEN:
 		pony.set_meta("house_navigation",true)
-		pony.set_sim_tier(pony.SimTier.HERO)
+		# Only within the crowd's NEAR range (W1-PERF-PONY, like hybrid_mare FAR_DOOR_LIFT): a pony
+		# 50-180 m away was promoted to HERO on every tick she waited at a door, then ranked down again.
+		if not (pony.has_method("_beyond_near_range") and bool(pony.call("_beyond_near_range"))):
+			pony.set_sim_tier(pony.SimTier.HERO)
 		nav._halt();nav.state=nav.State.WAITING;nav.reason="Opening house door"
 		var door:Node=home.door()
 		# Open entrances use a plain Node; only physical door leaves have a handle/rotation.
@@ -223,7 +226,8 @@ func walk(nav:Node,destination:Vector3,house:Node3D=null,final:=Vector3.INF,line
 	else:blocked_seconds+=nav.get_physics_process_delta_time()
 	if blocked_seconds>15:
 		clear(pony);nav._fail("House passage obstructed; waiting for a clear route");return
-	if nav.native_follow:
+	# Guarded: test Navigator stubs (tools/boutique/test_door_travel.gd) have no native_follow.
+	if nav.get("native_follow") == true:
 		native_walk(nav,destination,house,final,line_from);return
 	var offset:=destination-pony.global_position;offset.y=0
 	var velocity:=offset.normalized()*minf(1.2,offset.length()*2)

@@ -52,6 +52,7 @@ const KEEP_APART := ["wing folded", "HornMagic"]
 ## A merged LOD level starts where a source level's edge length exceeds the previous merged
 ## level's by this ratio (fewer index buffers; in between, sources stay one level finer).
 const LOD_STEP := 1.5
+const SOURCES := preload("res://world/characters/crowd/mesh_source_cache.gd")
 const META := &"near_mesh"
 const HIDDEN := &"near_hidden"
 const INK := &"near_ink"
@@ -67,6 +68,23 @@ static func discard_pending() -> void:
 	for pending: Dictionary in _pending.values():
 		WorkerThreadPool.wait_for_task_completion(pending.task)
 	_pending.clear()
+	SOURCES.clear()
+
+
+## Behind the loading cover (game_loading.gd): assembles worker builds that finished but that no
+## pony collected (the one that asked changed tier or stopped waiting), so they do not wait for a
+## frame in play; returns the builds still running.
+static func harvest() -> int:
+	var running := 0
+	for k: String in _pending.keys():
+		var pending: Dictionary = _pending[k]
+		if not WorkerThreadPool.is_task_completed(pending.task):
+			running += 1
+			continue
+		WorkerThreadPool.wait_for_task_completion(pending.task)
+		_pending.erase(k)
+		cache[k] = _assemble(pending.job)
+	return running
 
 
 static func _enabled_from_args() -> bool:
@@ -171,6 +189,8 @@ static func _hair_meshes(hair: Node, identity: Resource, lod: bool) -> Array:
 
 static func _gather(pony: Node) -> Dictionary:
 	var job := {"key": key(pony), "groups": []}
+	var identity: Resource = pony.get("identity")
+	SOURCES.begin(String(identity.id) if identity != null else "default")
 	for entry in _skeleton_sets(pony):
 		var label: String = entry[0]
 		var skeleton: Skeleton3D = entry[1]
@@ -267,10 +287,11 @@ static func _candidate(pony: Node, mi: MeshInstance3D, skeleton: Skeleton3D, ski
 	# Mesh data (GPU readback, once per identity). The stored form ("_surfaces", the saved-resource
 	# layout) gives the exact normal/tangent bytes and the LOD index buffers
 	# (RenderingServer.mesh_get_surface returns a "lods" array that contains itself in 4.5).
-	var stored: Array = mesh.get("_surfaces")
+	# Shared imported meshes are read once per session (mesh_source_cache.gd), not per identity.
+	var stored: Array = SOURCES.stored(mesh)
 	for s in surfaces:
 		var raw: Dictionary = stored[s.si] if s.si < stored.size() else {}
-		s["arrays"] = mesh.surface_get_arrays(s.si)
+		s["arrays"] = SOURCES.arrays(mesh, s.si)
 		s["lods"] = _lods(raw)
 		s["normals"] = _normal_stream(raw)
 	return {"mi": mi, "path": pony.get_path_to(mi), "surfaces": surfaces, "counts": counts,

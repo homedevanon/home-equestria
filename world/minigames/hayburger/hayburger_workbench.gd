@@ -435,23 +435,32 @@ func _station(key: String, at: Vector3, size: Vector3, colour: Color, solid: boo
 		node.add_child(pad); _shape(pad,size,Vector3.ZERO)
 	stations[key] = node
 
+## The next thing ticket 1 needs, read from its recipe bottom to top (M-ACT-02: a ticket may want
+## no bun, no patty or three patties).
 func next_step(data: Dictionary) -> String:
 	if data.orders.is_empty(): return "Wait for a customer's spoken order and ticket."
 	var tray: Array = data.tray
-	if tray.has("lid"): return "Carry the whole burger to the red SERVE mat."
-	if tray.is_empty(): return "Place a bottom bun on the green BUILD tray."
-	if not tray.has("patty"):
-		match str(data.grill_state):
-			"empty": return "Take a raw hay patty to the grill on your left."
-			"cooking": return "Patty cooking — wait until GOLDEN."
-			"ready": return "Move the golden patty onto the bottom bun."
-			"held": return "Place the cooked patty on the wooden build board."
-			"burnt": return "Discard the burnt patty in the scraps bin; grill a fresh one."
 	var recipe: Array = data.orders[0].recipe
 	for index: int in range(mini(tray.size(),recipe.size())):
 		if tray[index] != recipe[index]: return "Wrong stack: put it in the scraps bin and rebuild ticket 1."
-	if tray.size() < recipe.size(): return "Add %s to the build board." % INGREDIENT_NAMES.get(recipe[tray.size()],recipe[tray.size()])
-	return "Carry the burger to the red serving cloth."
+	if tray.size() > recipe.size(): return "Wrong stack: put it in the scraps bin and rebuild ticket 1."
+	if tray.size() == recipe.size(): return "Carry the whole burger to the red SERVE mat."
+	var wanted := str(recipe[tray.size()])
+	if wanted == "bun" and tray.is_empty(): return "Place a bottom bun on the green BUILD tray."
+	if wanted == "patty":
+		match str(data.grill_state):
+			"empty": return "Take a raw hay patty to the grill on your left."
+			"cooking": return "Patty cooking — wait until GOLDEN."
+			"ready": return "Move the golden patty onto the bottom bun." if tray.size() == 1 and str(tray[0]) == "bun" else "Move the golden patty onto the build board."
+			"held": return "Place the cooked patty on the wooden build board."
+			"burnt": return "Discard the burnt patty in the scraps bin; grill a fresh one."
+	return "Add %s to the build board." % INGREDIENT_NAMES.get(wanted,wanted)
+
+## The tray is a finished burger: closed with its top bun, or exactly ticket 1 (just hay).
+func _finished(data: Dictionary) -> bool:
+	var tray: Array = data.tray
+	if tray.has("lid"): return true
+	return not tray.is_empty() and not data.orders.is_empty() and tray == (data.orders[0].recipe as Array)
 
 func pickup_text(item: Node3D) -> String:
 	if not is_instance_valid(item) or item in held.values(): return ""
@@ -466,7 +475,7 @@ func pickup_text(item: Node3D) -> String:
 		return "Ring the bell"
 	if not working(): return ""
 	if role == "grill" and restaurant.shift.snapshot().grill_state not in ["ready","burnt"]: return ""
-	if role == "burger": return "Pick up finished hayburger" if restaurant.shift.snapshot().tray.has("lid") else "Pick up unfinished burger"
+	if role == "burger": return "Pick up finished hayburger" if _finished(restaurant.shift.snapshot()) else "Pick up unfinished burger"
 	if role == "grill" and restaurant.shift.snapshot().grill_state == "burnt": return "Remove burnt patty"
 	return "Pick up " + str(INGREDIENT_NAMES.get(item.get_meta("ingredient",""),"hay patty"))
 
@@ -477,7 +486,7 @@ func release_hint(side: String, world_point: Vector3 = Vector3.INF) -> Dictionar
 	var kind: String = item.get_meta("ingredient","")
 	if _in_bin(at): return {"target":stations.bin,"text":"Discard in scraps"}
 	if item.get_meta("kitchen_role","") == "burger":
-		if _over(at,PASS,Vector2(.34,.29),.38) and restaurant.shift.snapshot().tray.has("lid"): return {"target":stations.pass,"text":"Serve hayburger"}
+		if _over(at,PASS,Vector2(.34,.29),.38) and _finished(restaurant.shift.snapshot()): return {"target":stations.pass,"text":"Serve hayburger"}
 	elif kind == "raw" and _over(at,GRILL,Vector2(.65,.34),.32): return {"target":stations.grill,"text":"Place patty on grill"}
 	elif _over(at,PREP,Vector2(.30,.26),.45): return {"target":stations.prep,"text":"Add to burger"}
 	return {"target":item,"text":"Place / drop"}

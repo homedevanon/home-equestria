@@ -1,6 +1,22 @@
-// Seasons (world/weather/seasons.gd): ground tint toward season_ground.rgb by .a; snow cover.
-global uniform vec4 season_ground;
-global uniform float season_snow;
+// Look 2026-11-10: cloud shadows on the ground read the shared look values.
+#include "res://world/look/look.gdshaderinc"
+// Seasons: every season_* global and the shared functions (snow cover, wetness, climate) come
+// from res://world/seasons/season.gdshaderinc; res://world/seasons/season_state.gd writes them.
+// The ground look itself (tint, snow, litter, wet, puddles) is in gaea_fragment.gdshaderinc.
+#include "res://world/seasons/season.gdshaderinc"
+// Ground-season inputs bound on this material by res://world/seasons/snow_trail.gd (W2-SEAS-B):
+// tree-crown shelter near the camera (R 1 = under a crown; rect = x0, z0, width, depth, width 0 =
+// none), the quality tier's wet look and puddles, and the falling rain (ripples in puddles).
+uniform sampler2D season_shelter_map : filter_linear, repeat_disable;
+uniform vec4 season_shelter_rect = vec4(0.0);
+uniform bool season_wet_surfaces = true;
+uniform bool season_puddles = false;
+uniform float season_rain = 0.0;
+// The grass colour probe's only layer (ground_grass.gd PROBE_LAYER): the probe keeps snow (blades
+// read it) but not litter or wetness (the blades add those themselves, so the probe never lags).
+const uint SEASON_PROBE_LAYERS = 524288u;
+// Spring: how strongly a flower drift tints the ground beyond the grass (gaea_fragment.gdshaderinc).
+const float LOOK_SPRING_GROUND = 0.28;
 // Derived from the accepted study shader; see tools/build_gaea_material.py.
 uniform vec4 gaea_grass_region = vec4(0.0);
 uniform int gaea_grass_slot = 0;
@@ -140,4 +156,53 @@ float gaea_rock(int id) {
 }
 float gaea_natural(int id) {
     return (id==0 || id==2 || id==3 || id==17 || id==18) ? 1.0 : gaea_rock(id);
+}
+
+// Ground seasons (W2-SEAS-B 2026-11-08). Trodden ids: dirt trail, town dirt, gravel. Forest floor:
+// damp forest floor (dense canopy), gloomy grass (open forest). CPU mirror: snow_trail.gd shelter_at.
+float season_road_id(int id) {
+	return (id == 1 || id == 4 || id == 5) ? 1.0 : 0.0;
+}
+float season_forest_id(int id) {
+	return id == 11 ? .8 : (id == 10 ? .45 : 0.0);
+}
+// Road share of the control texel nearest a Terrain3D uv (world metres x vertex density).
+float season_road_texel(vec2 at) {
+	ivec3 c = get_index_coord(at, FRAGMENT_PASS);
+	if (c.z < 0) return 0.0;
+	uint bits = floatBitsToUint(texelFetch(_control_maps, c, 0).r);
+	return mix(season_road_id(DECODE_BASE(bits)), season_road_id(DECODE_OVER(bits)), DECODE_BLEND(bits));
+}
+// Tree-crown shelter near the camera, faded out over the last 12% of the window.
+float season_canopy(vec2 xz) {
+	if (season_shelter_rect.z <= 0.0) return 0.0;
+	vec2 suv = (xz - season_shelter_rect.xy) / season_shelter_rect.zw;
+	float edge = min(min(suv.x, suv.y), min(1.0 - suv.x, 1.0 - suv.y));
+	if (edge <= 0.0) return 0.0;
+	return textureLod(season_shelter_map, suv, 0.0).r * smoothstep(0.0, .12, edge);
+}
+// Puddle share at a point: flat ground x sine blobs, more of it floods as it gets wetter. The exact
+// formula of world/audio/ground_contact_audio.gd puddle_at (W2-SEAS-J), so a splash is heard where
+// a puddle is seen; change both together. wet = season_wet_amount(p).
+float season_puddle(vec3 p, vec3 n, float wet) {
+	if (wet < .35) return 0.0;
+	float level_ground = smoothstep(.975, .995, n.y);   // (`flat` is a shader keyword)
+	if (level_ground <= 0.0) return 0.0;
+	float blobs = .5 + .25 * (sin(p.x * .43 + sin(p.z * .29) * 1.7) + sin(p.z * .37 + p.x * .19));
+	float level = 1.05 - wet * .45;
+	return level_ground * smoothstep(level, level + .1, blobs);
+}
+// Rain rings on puddles: two offset grids of 0.4 m cells, one ring growing in each.
+vec2 season_ripples(vec2 xz, float t) {
+	vec2 sum = vec2(0.0);
+	for (int i = 0; i < 2; i++) {
+		vec2 p = xz * 2.5 + float(i) * 7.31;
+		vec3 rnd = tile_random(floor(p) + float(i) * 31.0);
+		float phase = fract(t * .9 + rnd.z);
+		vec2 d = fract(p) - (.25 + rnd.xy * .5);
+		float r = length(d);
+		float x = (r - phase * .5) * 30.0;
+		if (abs(x) < 3.14159) sum += d / max(r, .001) * sin(x) * (1.0 - phase) * .35;
+	}
+	return sum;
 }

@@ -359,7 +359,7 @@
 			"label": "SOLO_ACTIONS",
 			"file": "world/ai/director_prompts.gd",
 			"placeholders": 0,
-			"text": "ACTION TAGS: at most one movement or posture tag plus one [look_at] per reply, only tags available now, with the TARGETS, PONY_IDs and LOCATIONS (or a mapped place's exact name) listed at the end, exactly as written. Never coordinates, code or JSON.\n- [look_at: TARGET] look a moment ([look_at: player, 5] for seconds)\n- [approach: TARGET] walk up close and stop, e.g. to come closer to whoever you talk with\n- [follow: TARGET] go along with someone ([follow: player, left, 2] for side and metres); [follow: player] is an open-ended walk with no destination, never your own trip. It stands you up itself (never add [stand]) and ends on [cancel], a new movement, or when they stay far out of reach. When Anon asks you to come with him to a named place (\"walk with me to X\", \"follow me to X\", \"let's go to X\"), use [lead: player, LOCATION] so you both head there, never [follow]\n- [go_to: LOCATION] walk to any named destination, including an accepted earlier invitation ([go_to: LOCATION, trot] for pace); far places are fine (you travel in stages); ends on arrival\n- [lead: TARGET, LOCATION] take someone to a place, waiting for them; when Anon agrees to come along where you are going, [lead: player, LOCATION]\n- [step: DIRECTION] a few steps: forward, back, left, right, away (from the player) or aside (out of someone's way, e.g. a doorway); [step: back, 2] for 1-6 metres\n- [stay: SECONDS] hold position 0.5-600 seconds ([stay] = 30); never instead of a story route\n- [cancel] stop; [resume_routine] back to your day; [go_home] go home to rest a while (say goodbye first)\n- [sit], [stand], [lie_down]; [sit_on_seat] sit on the nearest free bench or seat; [wake_up] wake, or get out of a bed or off a couch\n- [call_pony: PONY_ID] ask a nearby pony who can hear you to come; [send_pony: PONY_ID, TARGET] ask her to go to a nearby pony or the player. No remote summons; a request is not arrival\n- [relationship_offer: KIND, ACTIVITY] propose an eligible offer to Anon; ACTIVITY walk/fishing/orchard/meal/visit, or place plus a LOCATION ([relationship_offer: KIND, place, LOCATION])\n- [relationship_answer: OFFER_ID, yes] or no: answer ONLY an existing invitation from Anon\n- [agreed: KIND] Anon just asked you for a step in his own words (be my marefriend, go out with me, marry me, move in...) and you say yes, or he just said yes to your own offer; KIND dating/date/outing/move_in/engagement/marriage, only from your eligible offers. Without it nothing changes\n- [request_space] withdraw physical permission for three minutes; say you want space\n- [buck_player] kick Anon back with your hind legs as your line ends: only real, lasting anger at unwelcome contact, never boops or petting you secretly enjoy\n- [cuddle] walk over and rest with Anon where he lies (bed, couch, supported grass, blanket), only if you want to\nRequests are not compulsions: accept, clarify or decline. Saying yes does not move you: accepting something that needs moving or a posture puts its tag in this same reply. Holding and touching pause movement. Never say you arrived or did something before it happens."
+			"text": "ACTION TAGS: at most one movement or posture tag plus one [look_at] per reply, only tags available now, with the TARGETS, PONY_IDs and LOCATIONS (or a mapped place's exact name) listed at the end, exactly as written. Never coordinates, code or JSON.\n- [look_at: TARGET] look a moment ([look_at: player, 5] for seconds)\n- [approach: TARGET] walk up close and stop, e.g. to come closer to whoever you talk with\n- [follow: TARGET] go along with someone ([follow: player, left, 2] for side and metres); [follow: player] is an open-ended walk with no destination, never your own trip. It stands you up itself (never add [stand]) and ends on [cancel], a new movement, or when they stay far out of reach. When Anon asks you to come with him to a named place (\"walk with me to X\", \"follow me to X\", \"let's go to X\"), use [lead: player, LOCATION] so you both head there, never [follow]\n- [go_to: LOCATION] walk to any named destination, including an accepted earlier invitation ([go_to: LOCATION, trot] for pace); far places are fine (you travel in stages); ends on arrival\n- [lead: TARGET, LOCATION] take someone to a place, waiting for them; when Anon agrees to come along where you are going, [lead: player, LOCATION]\n- [step: DIRECTION] a few steps: forward, back, left, right, away (from the player) or aside (out of someone's way, e.g. a doorway); [step: back, 2] for 1-6 metres\n- [stay: SECONDS] hold position 0.5-600 seconds ([stay] = 30); never instead of a story route\n- [cancel] stop; [resume_routine] back to your day; [go_home] go home to rest a while (say goodbye first)\n- [sit], [stand], [lie_down]; [sit_on_seat] sit on the nearest free bench or seat; [wake_up] wake, or get out of a bed or off a couch\n- [go_to_bed] walk to your own bed, climb in and lie there (asleep at night) until [wake_up]; [go_to_bed: here] the bed in the house where Anon is; if he lies in a bed, [cuddle] joins him\n- [call_pony: PONY_ID] ask a nearby pony who can hear you to come; [send_pony: PONY_ID, TARGET] ask her to go to a nearby pony or the player. No remote summons; a request is not arrival\n- [relationship_offer: KIND, ACTIVITY] propose an eligible offer to Anon; ACTIVITY walk/meal/visit/orchard/fishing, or place plus a LOCATION ([relationship_offer: KIND, place, LOCATION])\n- [relationship_answer: OFFER_ID, yes] or no: answer ONLY an existing invitation from Anon\n- [agreed: KIND] Anon just asked you for a step in his own words (be my marefriend, go out with me, marry me, move in...) and you say yes, or he just said yes to your own offer; KIND dating/date/outing/move_in/engagement/marriage, only from your eligible offers. Without it nothing changes\n- [request_space] withdraw physical permission for three minutes; say you want space\n- [buck_player] kick Anon back with your hind legs as your line ends: only real, lasting anger at unwelcome contact, never boops or petting you secretly enjoy\n- [cuddle] walk over and rest with Anon where he lies (bed, couch, supported grass, blanket), only if you want to\nRequests are not compulsions: accept, clarify or decline. Saying yes does not move you: accepting something that needs moving or a posture puts its tag in this same reply; if no tag here can do it, say you can't right now instead of promising it. Holding and touching pause movement. Never say you arrived or did something before it happens."
 		},
 		{
 			"id": "director_prompts.solo_extra_help",
@@ -602,6 +602,14 @@
 			"text": "[magic_show] start your Great and Powerful stage show at the schoolhouse stage: fireworks call the town, the curtain rises in about three minutes; only when Anon paid for one or you truly want an audience; works alongside one other action"
 		},
 		{
+			"id": "pony_action_schema.b739c6f9",
+			"group": "Dialogue rules",
+			"label": "[relationship_offer: KIND, ACTIVITY] ask Anon for a relationship step",
+			"file": "world/ai/pony_action_schema.gd",
+			"placeholders": 0,
+			"text": "[relationship_offer: KIND, ACTIVITY] ask Anon for a relationship step (ACTIVITY walk/meal/visit/orchard/fishing, or place plus a LOCATION)"
+		},
+		{
 			"id": "pony_action_schema.c061098f",
 			"group": "Dialogue rules",
 			"label": "FEELINGS (optional, never spoken): after your complete spoken words yo",
@@ -658,12 +666,12 @@
 			"text": "[give: ITEM] hand Anon something you really have (from your list); it goes into his hand; say it out loud; works alongside one other action"
 		},
 		{
-			"id": "pony_action_schema.f5f2a41f",
+			"id": "pony_action_schema.f99802ec",
 			"group": "Dialogue rules",
-			"label": "[relationship_offer: KIND, ACTIVITY] ask Anon for a relationship step",
+			"label": "[go_to_bed] walk to your own bed, climb in and lie there (asleep at ni",
 			"file": "world/ai/pony_action_schema.gd",
 			"placeholders": 0,
-			"text": "[relationship_offer: KIND, ACTIVITY] ask Anon for a relationship step (ACTIVITY walk/fishing/orchard/meal/visit, or place plus a LOCATION)"
+			"text": "[go_to_bed] walk to your own bed, climb in and lie there (asleep at night) until you get up; [go_to_bed: here] the bed in the house where Anon is"
 		},
 		{
 			"id": "pony_action_schema.faf9bff9",
@@ -767,7 +775,7 @@
 			"label": "PROMPT",
 			"file": "world/ai/pony_dialogue_tags.gd",
 			"placeholders": 0,
-			"text": "Expression tags (optional, sparing, never spoken): a line may start with one face for that line, [face:NAME] with NAME neutral, happy, delighted, silly, amused, crookedsmile, relaxed, shy, sad, annoyed, angersmug, suspicious, angry, ponyrage, fearful, disgusted, surprised, confused, ooo, anticipation, affectionate or pain ([face:happy] Good to see you.), then optionally a voice emotion, usually omitted: [neutral] [happy] [sad] [angry] [annoyed] [fearful] [surprised] [calm] [shouting]. Occasionally, when a real pony would move while talking, one gesture as the line starts: [hoofraise] (or [hoofraise:left]/[hoofraise:right]) lifts a curled forehoof to make a point, greet, plead or emphasise; [excited] shows excitement (a pegasus spreads her wings, a unicorn's horn sparks, an earth pony kicks up a hind hoof); unicorns and alicorns only: [magic] lights the horn a moment; pegasi and alicorns only: [wings:spread] holds the wings open a few seconds, [wings:flutter] gives a quick excited open-and-shut."
+			"text": "Expression tags (optional, sparing, never spoken): a line may start with one face, [face:NAME] with NAME neutral, happy, delighted, silly, amused, crookedsmile, relaxed, shy, sad, annoyed, angersmug, suspicious, angry, ponyrage, fearful, disgusted, surprised, confused, ooo, anticipation, affectionate or pain ([face:happy] Good to see you.); a later sentence may start with a new face when her feeling changes mid-reply ([face:delighted] Hi! [face:sad] But I lost my kite.), and the face holds until changed. Then optionally a voice emotion, usually omitted: [neutral] [happy] [sad] [angry] [annoyed] [fearful] [surprised] [calm] [shouting]. Occasionally, when a real pony would move while talking, one gesture as the line starts: [hoofraise] (or [hoofraise:left]/[hoofraise:right]) lifts a curled forehoof to make a point, greet, plead or emphasise; [excited] shows excitement (a pegasus spreads her wings, a unicorn's horn sparks, an earth pony kicks up a hind hoof); unicorns and alicorns only: [magic] lights the horn a moment; pegasi and alicorns only: [wings:spread] holds the wings open a few seconds, [wings:flutter] gives a quick excited open-and-shut."
 		},
 		{
 			"id": "pony_intent_consistency.cecf69bc",
@@ -1090,6 +1098,14 @@
 			"text": "You could not pay him the %d bits you promised (%s); you still owe him."
 		},
 		{
+			"id": "jobs.530e6932",
+			"group": "Dialogue rules",
+			"label": "- %s: %.1f h worked, not paid yet; paid at your next clock-out.",
+			"file": "world/mechanics/jobs/jobs.gd",
+			"placeholders": 2,
+			"text": "- %s: %.1f h worked, not paid yet; paid at your next clock-out."
+		},
+		{
 			"id": "market.2b981002",
 			"group": "Dialogue rules",
 			"label": "Anon can take the %s from your stall for %d bits for the next two minu",
@@ -1186,6 +1202,14 @@
 			"text": "Aim at her raised hoof, hold the left mouse button and move the mouse left and right. Front hooves are filed here; back hooves are filed and massaged on the table."
 		},
 		{
+			"id": "updater.29bd4d56",
+			"group": "Dialogue rules",
+			"label": "You have version %s. Could not check for a newer one (details in %s).",
+			"file": "world/update/updater.gd",
+			"placeholders": 2,
+			"text": "You have version %s. Could not check for a newer one (details in %s)."
+		},
+		{
 			"id": "chatter_topics.idle_guidance",
 			"group": "Group and ambient chat",
 			"label": "IDLE_GUIDANCE",
@@ -1231,7 +1255,7 @@
 			"label": "BRAIN_INSTRUCTION",
 			"file": "world/ai/memory/story_memory.gd",
 			"placeholders": 0,
-			"text": "DIRECTOR NOTES (required this turn): start your reply with a private <brain>...</brain> block, plain text, at most 60 words, nobody hears it:\nWANT pony_id: what this pony wants right now, apart from Anon, never something Anon turned down (one line per pony present)\nELSEWHERE: one thing happening off-screen in town that ponies might hear about later\nNEXT: one likely thing that could happen soon, grounded in who and what is here now; never an event about a pony or thing not present\nDONE: what is settled, dropped, turned down by Anon or no longer matters (optional)\nSetbacks must be fair: foreshadowed or the result of earlier facts. After </brain>, write the normal reply."
+			"text": "DIRECTOR NOTES (required this turn): start your reply with a private <brain>...</brain> block, plain text, at most 60 words, nobody hears it:\nWANT pony_id: what this pony wants right now, apart from Anon, never something Anon turned down (one line per pony present)\nELSEWHERE: one true thing a pony under TOWN NOW is doing, as town talk in your own words; skip it when none is listed\nNEXT: one likely thing that could happen soon, grounded in who and what is here now; never an event about a pony or thing not present\nDONE: what is settled, dropped, turned down by Anon or no longer matters (optional)\nSetbacks must be fair: foreshadowed or the result of earlier facts. After </brain>, write the normal reply."
 		},
 		{
 			"id": "story_memory.feel_instruction",
@@ -1391,7 +1415,7 @@
 			"label": "ACTION_HELP",
 			"file": "world/relationships/relationship_runtime.gd",
 			"placeholders": 0,
-			"text": "Relationship actions: relationship_offer(kind,activity,location_id) proposes an eligible offer to Anon; activity is walk/fishing/orchard/meal/visit, or place for time together at a mapped place (then give its location_id, e.g. a lake; omit location_id otherwise). For a named destination use go_to and the mapped location; each agreeing companion travels there independently and stops on arrival. Follow Anon only for a walk without a named destination; it ends when he stays beyond walking range. If he takes his balloon during a shared activity, you can board it with him. relationship_answer(offer_id,accept) answers ONLY an existing player offer. Use a boolean accept. agreed(kind) records a step you both said yes to: Anon asked for it in his own words and you accept, or he said yes to your offer. State your actual offer or answer in speech. These changes commit only when your spoken line finishes. Never answer your own offer or fabricate player acceptance. request_space() withdraws physical permission for three minutes; say that you want space. buck_player() kicks Anon back with your hind legs when your spoken line ends; only for real, lasting anger at unwelcome contact, never for boops or petting you secretly enjoy. cuddle() walks over and rests with Anon on the bed, couch, supported grass or deployed blanket he is lying on, only if you want to. Actual friendship chooses beside or shoulder company; an established romantic relationship permits a closer snuggle, subject to current boundaries. kiss_player() walks up and initiates a kiss; your relationship line says whether that is natural yet. Adults only. A short spoken line is optional; Anon can end it with the kiss button."
+			"text": "Relationship actions: relationship_offer(kind,activity,location_id) proposes an eligible offer to Anon; activity is walk/meal/visit/orchard/fishing, or place for time together at a mapped place (then give its location_id, e.g. a park; omit location_id otherwise). For a named destination use go_to and the mapped location; each agreeing companion travels there independently and stops on arrival. Follow Anon only for a walk without a named destination; it ends when he stays beyond walking range. If he takes his balloon during a shared activity, you can board it with him. relationship_answer(offer_id,accept) answers ONLY an existing player offer. Use a boolean accept. agreed(kind) records a step you both said yes to: Anon asked for it in his own words and you accept, or he said yes to your offer. State your actual offer or answer in speech. These changes commit only when your spoken line finishes. Never answer your own offer or fabricate player acceptance. request_space() withdraws physical permission for three minutes; say that you want space. buck_player() kicks Anon back with your hind legs when your spoken line ends; only for real, lasting anger at unwelcome contact, never for boops or petting you secretly enjoy. cuddle() walks over and rests with Anon on the bed, couch, supported grass or deployed blanket he is lying on, only if you want to. Actual friendship chooses beside or shoulder company; an established romantic relationship permits a closer snuggle, subject to current boundaries. kiss_player() walks up and initiates a kiss; your relationship line says whether that is natural yet. Adults only. A short spoken line is optional; Anon can end it with the kiss button."
 		},
 		{
 			"id": "relationship_runtime.kiss_not_ready",
@@ -1520,14 +1544,6 @@
 			"file": "world/buildings/hayburger/hayburger_runtime.gd",
 			"placeholders": 2,
 			"text": "You are ordering the actual customer ticket at Hayburger. Request it naturally in your own words. Ticket name: %s. Required ingredients: %s. Do not change the order, invent extras, or give construction instructions. This is your request to the server, not a quotation to recite."
-		},
-		{
-			"id": "hayburger_runtime.9e1ddc1e",
-			"group": "Story and events",
-			"label": "could not be paid; it is added to your next wage if you work another",
-			"file": "world/buildings/hayburger/hayburger_runtime.gd",
-			"placeholders": 0,
-			"text": " could not be paid; it is added to your next wage if you work another shift before leaving"
 		},
 		{
 			"id": "hayburger_runtime.b2e23a38",
@@ -1736,6 +1752,14 @@
 			"file": "world/events/trixie_show/show_runtime.gd",
 			"placeholders": 0,
 			"text": "[Paid! Your stage show at the schoolhouse stage starts in about three minutes; your magic is already calling Ponyville over. Tell Anon to come watch, then head for the stage.]"
+		},
+		{
+			"id": "show_runtime.55cef403",
+			"group": "Story and events",
+			"label": "your shows are only between half past four and seven in the evening",
+			"file": "world/events/trixie_show/show_runtime.gd",
+			"placeholders": 0,
+			"text": "your shows are only between half past four and seven in the evening"
 		},
 		{
 			"id": "show_runtime.5b59d342",

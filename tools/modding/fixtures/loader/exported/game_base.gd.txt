@@ -1,0 +1,11 @@
+extends RefCounted
+## Stands in for a game script in an exported build: binary tokens behind a .remap, no class_name.
+const KIND := "game"
+static var made := 0
+
+func describe() -> String:
+	return "game"
+
+static func count() -> int:
+	made += 1
+	return made

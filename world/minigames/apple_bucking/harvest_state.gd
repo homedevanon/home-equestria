@@ -6,6 +6,7 @@ const REWARD: int = 20
 ## a basket, six a day). Each tree row remembers the day it was started ("day", optional in older
 ## saves); an unfinished basket can always be finished.
 const DAILY_BASKETS: int = 6
+const SEASON_STATE := preload("res://world/seasons/season_state.gd")
 var trees: Dictionary = {}
 var _committing: bool = false
 ## Today's basket limit and basket pay: DAILY_BASKETS and REWARD unless a town event changes them
@@ -16,11 +17,11 @@ var reward: int = REWARD
 
 ## Trees fruit from spring to autumn and stand bare in winter (dev 2026-10-28: a new game starts
 ## in spring, and autumn-only apples left the job empty for 40 in-game days). "cycle" is the day
-## number, so every basket has its own receipt; "season" paces Applejack's invitation.
+## number, so every basket has its own receipt; "season" paces Applejack's invitation. The season
+## is world/seasons/season_state.gd's formula, F1 offset included (M-SEA-04).
 static func calendar(day: float, season_days: int) -> Dictionary:
-	var length: int = maxi(1, season_days)
-	var season: int = int(floor(maxf(day, 0.0) / length))
-	var ripe: bool = season % 4 != 3
+	var season: int = SEASON_STATE.count_for(int(floor(maxf(day, 0.0))), season_days, SEASON_STATE.current_offset())
+	var ripe: bool = posmod(season, 4) != 3
 	return {"cycle": int(floor(maxf(day, 0.0))), "season": season, "ripe": ripe, "growth": 1.0 if ripe else 0.0}
 
 ## A picked tree grows a new crop in REGROW_DAYS. Older saves stored next autumn instead and no

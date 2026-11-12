@@ -41,12 +41,24 @@ static func sentence_faces(sentences: Array[String]) -> Array:
 		if not key.is_empty(): result.append({"key": key, "face": face})
 	return result
 
+## A model marks a stressed word with stars ("he is a *child*, dear", "A *date*?") as well as
+## stage directions ("*sighs* Well..."). The cleaners drop everything between stars, which lost
+## the stressed word and left "he is a , dear" (dev 2026-11-11). This takes the stars off a
+## stressed word and leaves stage directions for the cleaners: starred words that follow a word
+## of the same clause, or one starred word right before "?" or "!".
+static var _stressed: RegEx
+static func unstar(text: String) -> String:
+	if not "*" in text: return text
+	if _stressed == null:
+		_stressed = RegEx.create_from_string("(?<=[\\p{L}\\p{N}] )\\*{1,2}([^*\\n]{1,40}?)\\*{1,2}(?=[\\s,.!?;:\u2026\u2014-]|$)|\\*{1,2}([\\p{L}'\u2019-]{1,24})\\*{1,2}(?=[?!])")
+	return _stressed.sub(text, "$1$2", true)
+
 ## A sentence reduced to lower-case letters and digits, without bracket tags or *actions*, so a raw
 ## sentence and its cleaned spoken copy compare equal.
 static func sentence_key(text: String) -> String:
 	var tags := RegEx.new()
 	tags.compile("\\*[^*]*\\*|\\[[^\\]]*\\]")
-	var plain := tags.sub(text, "", true).to_lower()
+	var plain := tags.sub(unstar(text), "", true).to_lower()
 	var out := ""
 	for c in plain:
 		if (c >= "a" and c <= "z") or (c >= "0" and c <= "9"): out += c

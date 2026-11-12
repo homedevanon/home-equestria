@@ -17,6 +17,7 @@ func setup(owner_body: CharacterBody3D, owner_ambience: Node3D, is_pony := false
 	_primed = false
 	_previous = Vector3.INF
 	process_physics_priority = 20
+	_watched = 0
 
 
 func _physics_process(delta: float) -> void:
@@ -25,12 +26,26 @@ func _physics_process(delta: float) -> void:
 	if not at.is_finite() or not body.velocity.is_finite():
 		_primed = false
 		return
-	var floor_now: bool = bool(body.call("grounded")) if pony and body.has_method("grounded") else body.is_on_floor()
-	var flying: bool = bool(body.get("flying")) if "flying" in body else false
-	var swimming: Variant = body.get("swimming") if "swimming" in body else null
+	# Which of these the body's script has is fixed per body: looked up once, not four string
+	# property/method lookups every tick (2026-11-08 physics-step pass).
+	if body.get_instance_id() != _watched:
+		_watched = body.get_instance_id()
+		_has_grounded = pony and body.has_method("grounded")
+		_has_flying = "flying" in body
+		_has_swimming = "swimming" in body
+		_has_held = "_held" in body
+	var floor_now: bool = bool(body.call("grounded")) if _has_grounded else body.is_on_floor()
+	var flying: bool = bool(body.get("flying")) if _has_flying else false
+	var swimming: Variant = body.get("swimming") if _has_swimming else null
 	var wet: bool = swimming != null and bool(swimming.get("active"))
-	var held: bool = bool(body.get("_held")) if "_held" in body else false
+	var held: bool = bool(body.get("_held")) if _has_held else false
 	observe(at, body.velocity, floor_now, flying or wet or held, delta)
+
+var _watched := 0
+var _has_grounded := false
+var _has_flying := false
+var _has_swimming := false
+var _has_held := false
 
 
 ## Accept only measured motor state; useful for isolated transition fixtures too.

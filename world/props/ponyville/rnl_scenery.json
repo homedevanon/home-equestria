@@ -15716,7 +15716,6 @@
 		"rnl_tree5_revamp": "No RNL trees (dev, 2026-09-23): the world uses the purchased Grassy Fields trees.",
 		"rnl_vinyl_octavia_house": "RNL houses removed (dev, 2026-09-23); the speakers belonged to Vinyl and Octavia's house.",
 		"rnl_wide_b_revamp": "RNL houses removed (dev, 2026-09-23); the speakers belonged to Vinyl and Octavia's house.",
-		"rnl_wirearch_v2": "Hearth's Warming garland arch; seasonal decoration held for a seasonal set.",
 		"rnl_zaptree": "No RNL trees (dev, 2026-09-23): the world uses the purchased Grassy Fields trees.",
 		"rnl_zaptree2": "No RNL trees (dev, 2026-09-23): the world uses the purchased Grassy Fields trees.",
 		"sarysa__appleturret__apple_from_fruit_shoot": "Weapon projectile model with missing material.",
@@ -16379,6 +16378,13 @@
 		}
 	],
 	"rules": "Sites authored per group; each resolved on surveyed terrain; heights refitted on live terrain by build.gd.",
+	"seasonal": {
+		"rnl_wirearch_v2": {
+			"event": "hearths_warming",
+			"prefab": "res://world/props/rnl/rnl_wirearch_v2/prefab.scn",
+			"note": "Hearth's Warming garland arch, released 2026-11-08 (W2-SEAS-I): not baked into rnl_scenery.scn; world/events/seasonal_decor.gd puts it up over the south road into town (events.json hearths_warming decor) only during the event. The prefab is the build.gd make_prefab bake with two post boxes as its collider."
+		}
+	},
 	"source_library": "redacted",
 	"surveys": {
 		"everfree": "5506e1205708b53ffb2525225455256cc591e27457c705a35b9b3029cf4ecac3:town:2844b0a830",

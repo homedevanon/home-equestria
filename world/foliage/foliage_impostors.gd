@@ -13,6 +13,8 @@ static func parts(entry: Dictionary) -> Array:
 	var spec: Dictionary = _manifest[id]
 	var material := ShaderMaterial.new();material.shader=SHADER
 	material.set_shader_parameter("atlas",load(DIRECTORY+id+".res"))
+	# The older sakura foliage impostor blossoms too (W2-SEAS-D H3).
+	if preload("res://world/foliage/vegetation_materials.gd").is_blossom(id):material.set_shader_parameter("blossom_tree",1.0)
 	var mesh := QuadMesh.new();mesh.size=Vector2.ONE*float(spec.diameter);mesh.material=material
 	# Conservative bounds for a camera-facing quad, including overhead views.
 	mesh.custom_aabb=AABB(-Vector3.ONE*float(spec.diameter)*.5,Vector3.ONE*float(spec.diameter))

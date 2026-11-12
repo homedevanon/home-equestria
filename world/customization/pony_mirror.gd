@@ -21,7 +21,10 @@ func setup(settings: RefCounted, actual_player: Node3D) -> void:
 	env.environment.ambient_light_color=Color("d3d9d8")
 	env.environment.ambient_light_energy = 0.7; _scene.add_child(env)
 	var light := DirectionalLight3D.new(); light.rotation_degrees = Vector3(-30,-30,0); _scene.add_child(light)
-	camera = Camera3D.new(); camera.fov = 35; _scene.add_child(camera)
+	camera = Camera3D.new(); camera.fov = 35
+	# Placed from _process: no physics interpolation (else "Interpolated Camera3D triggered from outside physics process").
+	camera.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
+	_scene.add_child(camera)
 	profile.changed.connect(_rebuild)
 	_rebuild(); set_active(false)
 func _rebuild() -> void:

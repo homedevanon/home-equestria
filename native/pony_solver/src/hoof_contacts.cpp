@@ -155,7 +155,10 @@ PackedVector3Array PonySolverNative::contacts_begin(const Array &p_source_pose, 
 // From the first probe to the second. `hits` are the four probe dictionaries ({} for none).
 // `state`: state, STANDING, STOPPING. `scalars`: blend, spawn_settle, body_scale, hip_height,
 // seconds_since_switch, gait_blend_seconds. Returns [re-sample points, which feet re-sample
-// (PackedByteArray), hoof_planted positions].
+// (PackedByteArray), hoof_planted positions, the hoof index of each of those positions
+// (PackedInt32Array)]. The indices (2026-11-08) let the caller hand each plant to its own hoof:
+// a gait switch can unplant that same foot later in this pass, and matching a position to the
+// nearest planted lock then gave the plant (and its sound) to another hoof.
 Array PonySolverNative::contacts_plant(const Array &p_feet, const Array &p_hits, const PackedInt32Array &p_state,
 		const PackedFloat64Array &p_scalars) {
 	Array result;
@@ -174,6 +177,7 @@ Array PonySolverNative::contacts_plant(const Array &p_feet, const Array &p_hits,
 	PackedVector3Array points;
 	PackedByteArray probe;
 	PackedVector3Array planted_at;
+	PackedInt32Array planted_hoof;
 	for (int i = 0; i < 4; i++) {
 		ContactFoot &c = contact_feet[i];
 		Dictionary foot = p_feet[i];
@@ -214,6 +218,7 @@ Array PonySolverNative::contacts_plant(const Array &p_feet, const Array &p_hits,
 				foot[k.age] = 0.0;
 				if (state != standing) {
 					planted_at.push_back(c.hit_position);
+					planted_hoof.push_back(i);
 				}
 			}
 			planted = true;
@@ -247,6 +252,7 @@ Array PonySolverNative::contacts_plant(const Array &p_feet, const Array &p_hits,
 	result.push_back(points);
 	result.push_back(probe);
 	result.push_back(planted_at);
+	result.push_back(planted_hoof);
 	return result;
 }
 

@@ -9,14 +9,12 @@ const CARRIED_TOP := 466
 const ROW_HEIGHT := 50
 const WORN_ROWS := 5
 const CARRIED_ROWS := 4
-## The briefcase (world/inventory/inventory_store.gd), set by clothing_customizer.gd.
-var store: RefCounted
 
 ## Dye swatches inside the worn thigh highs' row (dev 2026-10-28: more sock colours).
 func sock_swatch_rect(row: Rect2, colour: int) -> Rect2: return Rect2(row.position.x + 96 + colour * 20, row.position.y + 12, 17, 20)
 
 func _socks_colour(id: String) -> int:
-	return PONY_OUTFIT.colour(id) if PONY_OUTFIT.kind(id) == "socks" else -1
+	return PONY_OUTFIT.colour(id) if PONY_OUTFIT.kind(id) in ["socks", "plain-socks"] else -1
 
 func worn_rect(index: int) -> Rect2: return Rect2(24, WORN_TOP + index * ROW_HEIGHT, 580, ROW_HEIGHT - 6)
 func carried_rect(index: int) -> Rect2: return Rect2(24 + (index % 2) * 294, CARRIED_TOP + (index / 2) * ROW_HEIGHT, 286, ROW_HEIGHT - 6)
@@ -56,7 +54,7 @@ func _draw() -> void:
 		draw_rect(rect, Color("39413e"))
 		var dyed := _socks_colour(worn[i])
 		if dyed >= 0:
-			text("Socks:", rect.position + Vector2(14, 30), 21, Color("f2e7d0"))
+			text("Solid:" if PONY_OUTFIT.kind(worn[i]) == "plain-socks" else "Socks:", rect.position + Vector2(14, 30), 21, Color("f2e7d0"))
 			var palette: Array = (load(PONY_OUTFIT.WARDROBE_PATH) as GDScript).get("COLOURS")
 			for c in palette.size():
 				var swatch := sock_swatch_rect(rect, c)

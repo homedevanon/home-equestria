@@ -4,8 +4,15 @@ extends RefCounted
 const EMOTIONS := ["neutral", "happy", "sad", "angry", "annoyed", "fearful", "surprised", "calm", "disgusted", "whispering", "shouting"]
 
 ## A director-note line written without its <brain> block: the upper-case labels of
-## story_memory.gd BRAIN_INSTRUCTION at a line start. Speech never opens a line with "NEXT:".
-const NOTE_LINE := "(?m)^[ \\t]*(?:WANT(?:[ \\t]+[A-Za-z0-9_]+)?|ELSEWHERE|NEXT|DONE(?:[ \\t]+[A-Za-z0-9_]+)?)[ \\t]*:[^\\n]*(?:\\n|$)"
+## story_memory.gd BRAIN_INSTRUCTION at a line start, also after a group line's speaker prefix
+## ("luna: WANT: ..."; GitHub PR #13). Speech never opens a line with "NEXT:", so a lone NEXT line
+## is dropped too (D-37 leaves that to the dev).
+const NOTE_LINE := "(?m)^[ \\t]*(?:[A-Za-z][A-Za-z0-9_']*(?:[ \\t]+[A-Za-z][A-Za-z0-9_']*){0,2}[ \\t]*:[ \\t]*)?(?:WANT(?:[ \\t]+[A-Za-z0-9_]+)?|ELSEWHERE|NEXT|DONE(?:[ \\t]+[A-Za-z0-9_]+)?)[ \\t]*:[^\\n]*(?:\\n|$)"
+## Square note wrappers ([brain]...[/brain], [story], any case and spacing; GitHub PR #13): some models
+## write the notes block with the brackets of the action tags, and "[brain]note[/brain]Hello!" reached
+## the voice as "noteHello!". They become angle tags first (angle_notes), so the block is never spoken
+## and story_memory.gd still stores it.
+const SQUARE_NOTE := "(?i)\\[\\s*(/?)\\s*(brain|story)\\s*\\]"
 
 ## These are game director notes, never spoken dialogue. A missing opener was observed in
 ## play: WANT/ELSEWHERE/NEXT/DONE text followed by </brain> reached the voice pipeline.
@@ -15,8 +22,22 @@ const NOTE_LINE := "(?m)^[ \\t]*(?:WANT(?:[ \\t]+[A-Za-z0-9_]+)?|ELSEWHERE|NEXT|
 ## all, or put reasoning in <think> blocks (an orphan </think> when the server opened the block
 ## itself), or wrap the notes in a Markdown fence: none of it is speech.
 static func without_private_notes(text: String) -> String:
-	text = RegEx.create_from_string(NOTE_LINE).sub(text, "", true)
-	if not "<" in text: return text.strip_edges()
+	text = angle_notes(text)
+	# Blocks first: an orphan closer ends a note line ("WANT: plan.</brain>Hello!" keeps "Hello!").
+	if "<" in text: text = _without_note_blocks(text)
+	return RegEx.create_from_string(NOTE_LINE).sub(text, "", true).strip_edges()
+
+## [brain]/[/brain] and [story]/[/story] as <brain>/</brain> and <story>/</story>; other text unchanged.
+static func angle_notes(text: String) -> String:
+	if not "[" in text: return text
+	var out := ""
+	var cursor := 0
+	for tag: RegExMatch in RegEx.create_from_string(SQUARE_NOTE).search_all(text):
+		out += text.substr(cursor, tag.get_start() - cursor) + "<" + tag.get_string(1) + tag.get_string(2).to_lower() + ">"
+		cursor = tag.get_end()
+	return out + text.substr(cursor) if cursor > 0 else text
+
+static func _without_note_blocks(text: String) -> String:
 	var tags := RegEx.create_from_string("(?is)<\\s*(/?)\\s*(?:brain|story|think|thinking)\\b[^>]*(?:>|$)")
 	var found := false
 	var out := ""
@@ -35,7 +56,17 @@ static func without_private_notes(text: String) -> String:
 		cursor = tag.get_end()
 	if depth == 0: out += text.substr(cursor)
 	if found: out = RegEx.create_from_string("(?m)^[ \\t]*```[A-Za-z]*[ \\t]*(?:\\n|$)").sub(out, "", true)
-	return out.strip_edges()
+	return out
+
+## True when the line has a letter or digit of any script to say: "...", "~" or a lone "♪" is not
+## speech. Any script counts, so a reply in Japanese or Chinese still reaches a voice that can say it.
+static func has_words(text: String) -> bool:
+	return RegEx.create_from_string("[\\p{L}\\p{N}]").search(text) != null
+
+## The ponese voice's own word test (native pony_ponese_voice.cpp is_word_char): without such a
+## letter it answers "empty ponese line".
+static func has_ponese_words(text: String) -> bool:
+	return RegEx.create_from_string("[A-Za-z0-9\\x{00C0}-\\x{1FFF}]").search(text) != null
 
 static func spans(text: String) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
@@ -78,6 +109,11 @@ static func sanitize(text: String, keep_presentation := false) -> String:
 	out = out.replace("]", "") if not keep_presentation else _strip_loose_closers(out)
 	while "  " in out: out = out.replace("  ", " ")
 	return out.strip_edges()
+
+## Stars taken off a stressed word; the rule lives with the tags (pony_dialogue_tags.gd), which
+## this file already reads, so the two files do not load each other in a ring.
+static func unstar(text: String) -> String:
+	return preload("res://world/ai/pony_dialogue_tags.gd").unstar(text)
 
 static func _strip_loose_closers(text: String) -> String:
 	var out := ""

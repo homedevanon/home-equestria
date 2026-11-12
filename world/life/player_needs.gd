@@ -14,8 +14,13 @@ func setup(host: Node) -> void:
 	game = host
 	add_to_group("player_needs")
 
+## Autoloads live as long as the tree: looked up once, not by path every physics tick.
+var _clock_node: Node
+var _settings_node: Node
+
 func _clock_hours() -> float:
-	var clock := get_node_or_null("/root/TimeOfDay")
+	if not is_instance_valid(_clock_node): _clock_node = get_node_or_null("/root/TimeOfDay")
+	var clock := _clock_node
 	return float(clock.day) * 24.0 + float(clock.hours) if clock != null else 0.0
 
 func _physics_process(delta: float) -> void:
@@ -87,7 +92,8 @@ func _apply(delta: float) -> void:
 		if camera != null:
 			var roll := sin(_sway_time * 1.3) * 0.06 * level
 			if camera.rotation.z != roll: camera.rotation.z = roll
-			var base := float(get_node("/root/Settings").get_value("controls/fov"))
+			if not is_instance_valid(_settings_node): _settings_node = get_node("/root/Settings")
+			var base := float(_settings_node.get_value("controls/fov"))
 			if level > 0.001 or absf(camera.fov - base) > 0.05:
 				camera.fov = lerpf(camera.fov, base + sin(_sway_time * 0.8) * 4.0 * level, 0.1)
 

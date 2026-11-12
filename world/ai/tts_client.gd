@@ -7,6 +7,14 @@ const CAPTURE := preload("res://world/ai/ai_capture.gd")
 ## a MOSS-TTS-PNY Gradio host called directly, "openai" = any OpenAI-compatible
 ## /audio/speech endpoint, "none" = no server (every voice is local ponese).
 ## Failures fall back to ponese in `synthesize_profile`.
+##
+## Streamed speech (2026-11-10, from the breeze-tts-pny mod by nak, MIT): a "moss" server whose
+## GET /health answers {"ready": true, "pcm_stream": "framed-v1"} also takes POST <url>/stream and
+## sends the line while it renders it (pcm_voice_stream.gd). `synthesize_profile_live` then hands
+## the caller a "pcm://utterance/N" name after about 200 ms of sound instead of a WAV path after
+## the whole clip; the speaker plays it with pcm_speech_player.gd. A server that reports
+## "characters" voices every pony by its profile id ("character_id" in the request), speaker id
+## or not. Every other server and every other caller keeps the WAV path.
 
 const EMOTION_IDS := {"neutral": 0, "happy": 1, "sad": 2, "angry": 3, "annoyed": 4,
 	"fearful": 5, "surprised": 6, "calm": 7, "disgusted": 8, "whispering": 9, "shouting": 11}
@@ -30,6 +38,20 @@ const MAX_AUDIO_BYTES := 12 * 1024 * 1024
 const DIR := "user://tts"
 const CHATTER := preload("res://world/ai/chatter_voice.gd")
 const CONTROLS := preload("res://world/ai/speech_controls.gd")
+const PCM_STREAM := preload("res://world/ai/pcm_voice_stream.gd")
+const UTTERANCE := preload("res://world/ai/pcm_utterance.gd")
+const SENTENCES := preload("res://world/ai/speech_sentences.gd")
+## The stream capability probe: attempts after start-up or a settings change, with 1/2/4/8/10 s
+## between them; afterwards a spoken line asks again at most this often.
+const PROBE_ATTEMPTS := 6
+const REPROBE_MS := 30000
+## Frames buffered before a streamed line starts. A server may ask for more in /health
+## ("prebuffer_ms"): one that renders slower than real time, or sits behind a tunnel.
+const START_FRAMES := 4800
+const MAX_START_FRAMES := 24000 * 4
+
+## Emitted when a streamed line has fully arrived (or failed): the client is free again.
+signal live_render_finished
 
 @export var provider := "none"
 @export var url := "http://127.0.0.1:8000/tts"
@@ -61,6 +83,20 @@ var _chatter_counter := 0
 var _stage := ""
 var _gradio_call := ""
 var _tag_regex := RegEx.create_from_string("\\[[A-Za-z _-]{1,20}\\]")
+var _pcm_stream: Node
+var _health: HTTPRequest
+var _probe_serial := 0
+var _probe_attempts := 0
+var _probe_ms := -REPROBE_MS
+## The url the stream probe succeeded for; "" = no streaming.
+var _stream_url := ""
+## The streaming server picks voices by character id (it reported "characters").
+var _stream_characters := false
+var _start_frames := START_FRAMES
+var _want_live := false
+var _live: RefCounted
+var _live_announced := false
+var _stream_character := ""
 
 
 func _ready() -> void:
@@ -74,6 +110,13 @@ func _ready() -> void:
 	_request.request_completed.connect(_on_completed)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output_dir))
 	set_process(false)
+	_pcm_stream = PCM_STREAM.new()
+	_pcm_stream.name = "PcmStream"
+	_pcm_stream.debug = debug
+	add_child(_pcm_stream)
+	_pcm_stream.response_completed.connect(_on_pcm_completed)
+	_pcm_stream.pcm_chunk.connect(_on_pcm_chunk)
+	_probe.call_deferred()
 
 
 func configure(section: Dictionary) -> void:
@@ -93,6 +136,77 @@ func configure(section: Dictionary) -> void:
 	style_strength = float(section.get("style_strength", style_strength))
 	if _request != null:
 		_request.timeout = timeout
+	_set_stream("")
+	_probe_attempts = 0
+	_probe.call_deferred()
+
+
+## Asks the "moss" server whether it can send speech while rendering it.
+func _probe() -> void:
+	_probe_serial += 1
+	if is_instance_valid(_health):
+		_health.cancel_request(); _health.queue_free(); _health = null
+	if not is_inside_tree() or provider != "moss" or not (url.begins_with("http://") or url.begins_with("https://")) or not url.rstrip("/").ends_with("/tts"): return
+	_probe_attempts += 1
+	_probe_ms = Time.get_ticks_msec()
+	_health = HTTPRequest.new(); _health.timeout = 5.0; _health.body_size_limit = 65536
+	add_child(_health)
+	_health.request_completed.connect(_on_health.bind(url, _probe_serial))
+	var error := _health.request(url.rstrip("/").trim_suffix("/tts") + "/health")
+	if error != OK: _retry_probe(_probe_serial, error, 0)
+
+
+func _on_health(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, requested_url: String, serial: int) -> void:
+	if serial != _probe_serial or requested_url != url: return
+	if result != HTTPRequest.RESULT_SUCCESS or code in [408, 429, 500, 502, 503, 504]:
+		_retry_probe(serial, result, code)
+		return
+	# Any other answer (MOSS has no /health, or one without the stream field): WAV as before.
+	if code != 200: return
+	var data: Variant = JSON.parse_string(body.get_string_from_utf8())
+	if not data is Dictionary or data.get("pcm_stream") != "framed-v1": return
+	if not data.get("ready", false):
+		_retry_probe(serial, result, code)
+		return
+	var hint: Variant = data.get("prebuffer_ms", 0)
+	_start_frames = clampi(int(hint) * 24, START_FRAMES, MAX_START_FRAMES) if hint is float or hint is int else START_FRAMES
+	var characters: Variant = data.get("characters", 0)
+	_stream_characters = (characters is float or characters is int) and int(characters) > 0
+	_set_stream(url)
+	print("[voice] voice server sends speech while rendering it; lines start after %d ms of sound%s" % [
+		_start_frames / 24, " (voices by character)" if _stream_characters else ""])
+
+
+func _retry_probe(serial: int, result: int, code: int) -> void:
+	if debug: print("[voice] stream probe attempt %d: result %d, HTTP %d" % [_probe_attempts, result, code])
+	if _probe_attempts >= PROBE_ATTEMPTS or not is_inside_tree(): return
+	var delay := minf(pow(2.0, _probe_attempts - 1), 10.0)
+	await get_tree().create_timer(delay).timeout
+	if not is_inside_tree() or serial != _probe_serial or not _stream_url.is_empty(): return
+	_probe()
+
+
+## A server that came up after every probe attempt (a Colab link pasted while the notebook was
+## still loading) is found again on a later line.
+func _reprobe_if_given_up() -> void:
+	if _stream_url.is_empty() and _probe_attempts >= PROBE_ATTEMPTS and Time.get_ticks_msec() - _probe_ms >= REPROBE_MS:
+		_probe_attempts = 0
+		_probe()
+
+
+func _set_stream(value: String) -> void:
+	_stream_url = value
+	if value.is_empty():
+		_stream_characters = false
+		_start_frames = START_FRAMES
+	# With a stream the first sound no longer waits for the clip's end, so one request may carry
+	# several short sentences (speech_sentences.gd).
+	SENTENCES.note_stream_client(get_instance_id(), can_stream())
+
+
+## True when lines can be heard while the server is still rendering them.
+func can_stream() -> bool:
+	return provider == "moss" and not _stream_url.is_empty() and url == _stream_url
 
 
 ## True when a voice server is set up at all; otherwise every pony speaks ponese.
@@ -113,6 +227,8 @@ func build_body(text: String, speaker_id: int, emotion: String) -> Dictionary:
 		body["style_strength"] = style_strength
 	if provider == "remote" and remote_url != "":
 		body["remote"] = remote_url
+	if can_stream() and _stream_characters and not _stream_character.is_empty():
+		body["character_id"] = _stream_character
 	return body
 
 
@@ -205,6 +321,10 @@ func cancel() -> void:
 	if busy: _capture("cancel", {})
 	_generation += 1
 	_failure_generation += 1
+	if _live != null:
+		_live.cancel_transport = Callable()
+		_live.cancel(); _live = null
+	if is_instance_valid(_pcm_stream): _pcm_stream.cancel()
 	if _request != null: _request.cancel_request()
 	busy = false
 	_stage = ""
@@ -251,7 +371,60 @@ func _request_next(next_url: String) -> void:
 
 func _dispatch_request(next_url: String, headers := PackedStringArray(), method := HTTPClient.METHOD_GET, body := "") -> Error:
 	_capture("request", {"method": method, "body": body})
+	if can_stream() and next_url == url and is_instance_valid(_pcm_stream):
+		if _want_live:
+			_live = UTTERANCE.new(); _live.cancel_transport = cancel; _live_announced = false
+			_live.start_frames = _start_frames
+		return _pcm_stream.start(url.rstrip("/") + "/stream", body, timeout)
 	return _request.request(next_url, headers, method, body)
+
+
+## As synthesize_profile, for a caller whose speaker can play a line that is still arriving
+## (pcm_speech_player.gd): with a streaming server `on_done` gets a "pcm://utterance/N" name once
+## the line's first 200 ms are here. Without one this is synthesize_profile.
+func synthesize_profile_live(text: String, profile: Dictionary, emotion: String, on_done: Callable) -> bool:
+	if busy: return false
+	_want_live = can_stream()
+	var accepted := synthesize_profile(text, profile, emotion, on_done)
+	_want_live = false
+	return accepted
+
+
+func _on_pcm_chunk(data: PackedByteArray) -> void:
+	if _live == null or not busy: return
+	_live.pcm.append_array(data)
+	# Hand the line over once its start buffer is here: the director gives playback 12 seconds to
+	# start after the handoff, but stays in rendering for 90.
+	if _live.pcm.size() >= maxi(9600, int(_live.start_frames) * 2): _announce_live()
+
+
+func _announce_live() -> void:
+	if _live == null or _live_announced or not _on_done.is_valid(): return
+	_live_announced = true
+	var utterance: RefCounted = _live
+	var done := _on_done; _on_done = Callable()
+	var uri: String = utterance.publish()
+	_capture("complete", {"audio_file": uri, "error": ""})
+	done.call(uri, "")
+	if not utterance.claimed: utterance.cancel()
+
+
+func _on_pcm_completed(result: int, code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
+	if _live == null:
+		_on_completed(result, code, headers, body); return
+	var utterance: RefCounted = _live
+	if result == HTTPRequest.RESULT_SUCCESS and code == 200 and not utterance.pcm.is_empty():
+		utterance.done = true
+		_announce_live()
+	elif _live_announced:
+		# The speaker already has the line: it stops there (pcm_speech_player.gd reports it).
+		utterance.error = "transport result %d, HTTP %d" % [result, code]
+	else:
+		utterance.release(); _live = null
+		_on_completed(result, code, headers, body); return
+	utterance.release()
+	_live = null; _on_done = Callable(); busy = false; _stage = ""
+	live_render_finished.emit.call_deferred()
 
 
 ## Gradio's server-sent events: the "complete" event's data is the output list; its first
@@ -319,6 +492,7 @@ static func fix_wav_sizes(body: PackedByteArray) -> PackedByteArray:
 ## Identity-aware routing, retaining the legacy synthesize API for callers without profiles.
 func synthesize_profile(text: String, profile: Dictionary, emotion: String, on_done: Callable) -> bool:
 	if busy: return false
+	_reprobe_if_given_up()
 	text = voice_text(text)
 	if spoken_text(text).is_empty():
 		_defer_failure(on_done, "no generated speech to synthesize")
@@ -329,7 +503,11 @@ func synthesize_profile(text: String, profile: Dictionary, emotion: String, on_d
 	if not has_server() or CHATTER.is_ponese_mode(mode): return _start_chatter(text, profile, emotion, on_done)
 	# An OpenAI voice name makes any pony voiced, speaker id or not.
 	var openai_voiced := provider == "openai" and profile.has("openai_voice") and not CHATTER.is_ponese_mode(str(profile.get("voice_mode", mode)))
-	if CHATTER.use_chatter(profile, mode) and not openai_voiced:
+	# A streaming server with its own voice list voices a pony by profile id, speaker id or not;
+	# a pony set to Ponese in her own profile stays Ponese.
+	var routed := can_stream() and _stream_characters and not str(profile.get("id", "")).is_empty() \
+		and not CHATTER.is_ponese_mode(str(profile.get("voice_mode", mode)))
+	if CHATTER.use_chatter(profile, mode) and not openai_voiced and not routed:
 		return _start_chatter(text, profile, emotion, on_done)
 	var generation := _generation
 	var finished := func(path: String, error: String) -> void:
@@ -338,7 +516,10 @@ func synthesize_profile(text: String, profile: Dictionary, emotion: String, on_d
 			if debug: print("[voice] TTS unavailable (", error.left(80), "); local chatter for ", profile.get("id", "background"))
 			if _start_chatter(text, profile, emotion, on_done): return
 		on_done.call(path, error)
-	return synthesize(text, int(profile.get("tts_speaker_id", 31)), emotion, finished, str(profile.get("openai_voice", ""))) or busy
+	_stream_character = str(profile.get("id", "")) if routed else ""
+	var accepted := synthesize(text, int(profile.get("tts_speaker_id", 31)), emotion, finished, str(profile.get("openai_voice", "")))
+	_stream_character = ""
+	return accepted or busy
 
 func synthesize_ponese(text: String, profile: Dictionary, emotion: String, on_done: Callable) -> bool:
 	return _start_chatter(text, profile, emotion, on_done)
@@ -348,7 +529,9 @@ func _start_chatter(text: String, profile: Dictionary, emotion: String, on_done:
 	_capture("local_voice", {"text": text, "speaker": str(profile.get("id", "")), "emotion": emotion})
 	emotion = _line_emotion(text, emotion)
 	text = spoken_text(text)
-	if text.is_empty():
+	# "..." or a lone symbol: nothing for the voice to say (the native voice answered "empty ponese
+	# line", log 2026-11-04..07); the director treats this answer as silence.
+	if not CONTROLS.has_ponese_words(text):
 		_defer_failure(on_done, "no generated speech to synthesize")
 		return true
 	busy = true
@@ -403,6 +586,9 @@ func _process(_delta: float) -> void:
 
 
 func _exit_tree() -> void:
+	SENTENCES.note_stream_client(get_instance_id(), false)
+	_probe_serial += 1
+	if is_instance_valid(_health): _health.cancel_request()
 	cancel()
 	for job in _jobs: job.thread.wait_to_finish()
 	_jobs.clear()

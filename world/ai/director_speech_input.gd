@@ -118,11 +118,17 @@ func _on_stt_completed(result: int, code: int, _headers: PackedStringArray, body
 		host._fail("speech-to-text failed (%d/%d%s); %s" % [result, code, (": " + body.get_string_from_utf8().left(120)) if code >= 400 else "", hint])
 		return
 	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
-	var text := String(parsed.get("text", "")) if parsed is Dictionary else ""
-	if host.debug: print("[ai] heard: ", text)
+	var heard := String(parsed.get("text", "")) if parsed is Dictionary else ""
+	if host.debug: print("[ai] heard: ", heard)
+	var text := spoken_words(heard)
 	if text.strip_edges() == "":
 		host.speech.set_muted(false)
-		host.hud.set_state(host.speech.state, "")
+		# Whisper's sound labels ("[electronic music]", "(silence)") are not his words; nopony
+		# hears them (thread 43656594: push-to-talk kept arriving as "[electronic music]").
+		if not heard.strip_edges().is_empty():
+			print("[ai] heard no words, only ", heard.strip_edges().left(60))
+			_capture("non_speech", {"text": heard.strip_edges().left(120)})
+		host.hud.set_state(host.speech.state, "" if heard.strip_edges().is_empty() else "heard no words, only %s; check the microphone" % heard.strip_edges().left(40))
 		return
 	if is_feedback:
 		handle_feedback(text)
@@ -131,6 +137,15 @@ func _on_stt_completed(result: int, code: int, _headers: PackedStringArray, body
 		var respelled: String = VOCABULARY.correct(text)
 		if respelled != text: print("[ai] respelled heard names: %s -> %s" % [text.left(80), respelled.left(80)])
 		host.handle_text(respelled)
+
+
+## The transcript without Whisper's non-speech labels: bracketed or parenthesised sound descriptions
+## ("[Music]", "[electronic music]", "[BLANK_AUDIO]", "(silence)", "(upbeat music)"), *stage
+## directions* and music notes. "" when nothing with letters or digits is left.
+static func spoken_words(text: String) -> String:
+	var words := RegEx.create_from_string("\\[[^\\]\\n]*\\]|\\([^)\\n]*\\)|\\*[^*\\n]*\\*|[♪♫♬]").sub(text, " ", true)
+	words = RegEx.create_from_string("\\s+").sub(words, " ", true).strip_edges()
+	return words if RegEx.create_from_string("[\\p{L}\\p{N}]").search(words) != null else ""
 
 
 func handle_feedback(text: String) -> void:
@@ -211,9 +226,9 @@ func _dictation_done(text: String, failure: String) -> void:
 	if not failure.is_empty():
 		_capture("dictation_error", {"error": failure})
 		push_warning("[letters] dictation: " + failure)
-	elif not text.strip_edges().is_empty():
-		# The same respelling as conversation: "Minuet" -> "Minuette".
-		var respelled: String = VOCABULARY.correct(text)
+	elif not spoken_words(text).is_empty():
+		# The same respelling as conversation: "Minuet" -> "Minuette". Sound labels never reach paper.
+		var respelled: String = VOCABULARY.correct(spoken_words(text))
 		if host.debug: print("[letters] dictated: ", respelled.left(120))
 		var node := _dictation_node()
 		if node != null and node.has_method("take_words"): node.call("take_words", respelled)

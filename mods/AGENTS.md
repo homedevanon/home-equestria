@@ -31,7 +31,9 @@ This file adds the working rules.
    or with the built pack in the mods folder. Read the log: `[mods] <id> <version>` means it
    loaded. `[mods] <id> not loaded: ...` says why it did not. Fix every script error the log shows.
    Then check the behaviour in game, start a fresh world and load an existing one, and confirm the
-   game still runs with the mod switched off in Settings → Mods.
+   game still runs with the mod switched off in Settings → Mods. If the user has a downloaded
+   (exported) copy of the game, test the built `.pck` there too: exported games keep their scripts
+   as compiled tokens, which is where script extensions and replaced game files behave differently.
 7. Tell the user where the `.pck` is, what it changes, how you tested it, and anything you could
    not test (for example VR or Quest).
 
@@ -54,6 +56,37 @@ This file adds the working rules.
   the behaviour is the point of the mod.
 - Physics bodies take the scale of their parent when they enter the tree: set a body's
   transform before `add_child`.
+- A script extension starts with `extends "res://<game script>.gd"` on its own line, full path,
+  quoted. Never extend a `.gdc` path. Ship extensions as `.gd` source (the build tool does). If
+  the override does not compile against the player's game, the mod is switched off with "could
+  not extend <path> in this build"; check the log for the compiler's message.
+- If your mod needs another mod, declare it in `mod.json`: `"depends": {"other_id": ">=1.2.0"}`.
+  Read the other mod's state through `Mods.is_active(id)` and `Mods.pack_rows()`, never by
+  reaching into its files.
+- Do not ship `.uid` files, and do not rely on `uid://` references between your own files: the
+  game does not know your UIDs. The build tool strips them from `[ext_resource]` lines of text
+  scenes and resources; refer to your files by `res://mods/<id>/...` paths in code.
+- Unknown keys in `mod.json` are ignored; a known key with the wrong shape (`scenario`, `depends`,
+  `patches`, `extends`) stops the mod. Keep `version` a dotted number (`1.2.0`): bundled-mod
+  updates, `depends` and patch packs compare it by numbers.
+
+## Scenario mods
+
+If the mod changes how a new world starts (an alternate Equestria, another opening), make it a
+scenario mod: read `res://mods/README.md` "Scenario mods" and copy `res://mods/example_scenario/`.
+
+- Declare `"scenario": {"id", "name", ...}` in `mod.json`. The `id` is stamped into every world
+  and save of the scenario: never rename it after release.
+- Put the start in the start node (`prepare(game, resumed)`, `signal finished`) and use the
+  `game.arrival` hooks (`end_opening`, `place_player`, `place_at_golden_oak`, `skip_to_free_home`,
+  `choose_form`). Do not copy or replace `world/life/arrival_story.gd`, `world/game.gd` or
+  `world/game_saves.gd`.
+- `prepare` runs for new and continued worlds: only set up a brand-new world when `resumed` is
+  false, and keep any per-world flags in `"mods": {"<id>": {...}}` (initial_state or
+  `Mods.state(id)`).
+- Every coroutine wait must stop when the world is being left (`if not await ...: return`).
+- Test both directions: with the mod on, older saves are refused ("Turn off ..."); with it off,
+  its saves are refused ("Needs ..."). Only one scenario mod runs at a time.
 
 ## Game rules mods should keep
 
@@ -76,3 +109,8 @@ This file adds the working rules.
   or in the files you ship.
 - Do not edit `res://tools/modding/build_mod.gd` or `res://world/modding/` to make your mod work;
   the players' game will not have your edits.
+- Do not replace `world/game.gd` or `world/game_saves.gd`; extend them. A stale copy of either
+  breaks new worlds and saves after the next game update, and Settings → Mods warns players about
+  any pack that does.
+- Do not write into the game's install folder or its `mods/bundled/` folder, and do not download
+  or install other packs. Bundled mods and their updates belong to the game.

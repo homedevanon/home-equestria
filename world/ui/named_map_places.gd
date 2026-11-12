@@ -16,8 +16,15 @@ const SHOPS := [
 static func opacity(zoom: float) -> float:
 	return smoothstep(FADE_FROM, FADE_TO, zoom)
 
+## The file never changes during a session; the map asks every 2 s while it shows.
+static var _document: Variant = null
+static var _document_read := false
+
 static func defaults(houses := false) -> Array:
-	var document: Variant = JSON.parse_string(FileAccess.get_file_as_string(DATA)) if FileAccess.file_exists(DATA) else null
+	if not _document_read:
+		_document_read = true
+		_document = JSON.parse_string(FileAccess.get_file_as_string(DATA)) if FileAccess.file_exists(DATA) else null
+	var document: Variant = _document
 	var result: Array = []
 	if not document is Dictionary: return result
 	for row: Dictionary in document.get("places", []):

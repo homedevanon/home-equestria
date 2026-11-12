@@ -45,6 +45,19 @@ func run() -> void:
 		["private note</brain", "", "partial orphan closer"],
 		["Let's use our brains and find a book.", "Let's use our brains and find a book.", "ordinary dialogue preserved"],
 		["The book says WANT: a new beginning.", "The book says WANT: a new beginning.", "labels without note delimiters preserved"],
+		# GitHub PR #13, ported by hand (2026-11-08 overhaul M-AI-04).
+		["[brain]WANT: find a book.\nNEXT: read it.[/brain]Hello!", "Hello!", "square brain wrappers"],
+		["private note[/brain]Hello!", "Hello!", "square orphan closer"],
+		["<brain>private note[/brain]Hello!", "Hello!", "mixed wrapper styles"],
+		["[story]private note[/story]Hello!", "Hello!", "square story wrappers"],
+		["[ Brain ]private note[ /BRAIN ]Hello!", "Hello!", "square wrapper case and spacing"],
+		["Hello! [brain]private unfinished note", "Hello!", "unclosed square block"],
+		["WANT: find a book.\nELSEWHERE: a shop closes.\nNEXT: choose a book.\nDONE: lunch.\nHello!", "Hello!", "bare director block"],
+		["Hello!\nWANT luna: find a book.\nNEXT: choose a book.", "Hello!", "bare notes after speech with pony id"],
+		["luna: WANT: find a book.\nluna: NEXT: choose a book.\nluna: Hello!", "luna: Hello!", "speaker-prefixed bare notes"],
+		["WANT: private plan.</brain>Hello!", "Hello!", "orphan closer on the note line keeps the speech after it"],
+		# D-37 (dev decides): a lone NEXT line is still treated as a note, as before the port.
+		["NEXT: turn left at the gate.", "", "lone NEXT line stays private (D-37)"],
 	]
 	var director: Node = DIRECTOR.new()
 	director.set("_current", "pinkie_pie")
@@ -81,6 +94,30 @@ func run() -> void:
 	check(text == "Hello!" and notes.size() == 1, "valid notes stored privately and speech preserved")
 	text = director.take_story_notes("WANT: private plan.</brain>Hello!", false)
 	check(text == "Hello!", "orphan closer also suppressed with database open")
+	text = director.take_story_notes("[brain]WANT pinkie_pie: borrow a quill.[/brain]Hi!", false)
+	notes = memory.store._rows("SELECT kind FROM lines WHERE kind = 'brain';")
+	check(text == "Hi!" and notes.size() == 2, "square-wrapped notes stored privately and speech preserved")
+	# M-AI-09: a topic Anon turned down, or that already had its day, does not come back at once.
+	var clock := {"day": 3, "minute": 600}
+	memory.clock = func() -> Dictionary: return clock
+	var mind := func() -> Array: return memory.store.open_threads("pinkie_pie", 12, int(clock.day), int(clock.minute)).map(func(row: Dictionary) -> String: return str(row.text))
+	director.take_story_notes("<brain>WANT pinkie_pie: watch Anon draw a helicopter on parchment.</brain>Draw it for me?", false)
+	check(mind.call().any(func(t: String) -> bool: return "helicopter" in t), "a new want is on her mind")
+	check(memory.declined("pinkie_pie", "Can you draw a helicopter on parchment for me?", "No, I won't draw the helicopter.") >= 1, "his no settles the helicopter want")
+	clock.minute = 640
+	director.take_story_notes("<brain>WANT pinkie_pie: see Anon draw the helicopter on parchment.</brain>Okay!", false)
+	check(not mind.call().any(func(t: String) -> bool: return "helicopter" in t), "the settled want is not reopened by the next notes turn")
+	clock.day = 6
+	director.take_story_notes("<brain>WANT pinkie_pie: see Anon draw the helicopter on parchment.</brain>Okay!", false)
+	check(mind.call().any(func(t: String) -> bool: return "helicopter" in t), "after two days the topic may come back")
+	director.take_story_notes("<brain>WANT pinkie_pie: bake a carrot cake together.\nDONE: the helicopter drawing on parchment</brain>Cake!", false)
+	check(not mind.call().any(func(t: String) -> bool: return "helicopter" in t) and mind.call().any(func(t: String) -> bool: return "cake" in t), "a DONE note settles a want and keeps the new one")
+	clock.day = 7; clock.minute = 700
+	director.take_story_notes("<brain>WANT pinkie_pie: bake a carrot cake together today.</brain>Cake?", false)
+	check(not mind.call().any(func(t: String) -> bool: return "cake" in t), "a want that had its full day is not restated back to life")
+	clock.day = 10
+	director.take_story_notes("<brain>WANT pinkie_pie: bake a carrot cake together today.</brain>Cake?", false)
+	check(mind.call().any(func(t: String) -> bool: return "cake" in t), "a rested topic may return days later")
 	memory.store.close()
 	director.free(); tts.free(); world.free()
 	print("PRIVATE_NOTES_DONE checks=", checks, " failures=", failures)

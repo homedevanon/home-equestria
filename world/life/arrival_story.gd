@@ -68,10 +68,6 @@ const LINES := {
 const LINES_PONY := {
 	"found":"You unexpectedly discover an unfamiliar pony alone in the dangerous Everfree. React with spontaneous, startled concern for their immediate wellbeing; find out whether they are okay or hurt. Recognize their actual pony species from the supplied body context; this is not an alien or human discovery. Your curiosity stays kind, and any surprise about rare or unusual features must be warranted by their actual supplied body. Let your name follow naturally if it fits, rather than leading with a formal introduction or a memory interview. Do not diagnose injury or amnesia, invent appearance details or shared history, or supply their answer.",
 }
-## What Celestia is told when she arrives (her AI speaks it in her own words): this for human
-## Anon, and the same words for AnonPony from _celestia_greeting().
-const CELESTIA_GREETING := "[Observed situation, not player speech] Twilight sent you a message about a lost stranger she found confused in the Everfree and sheltered at Golden Oak Library. It is now the following morning or later; you have sought the newcomer out in person. This is your first meeting. Welcome him warmly and offer a permanent, freely given Ponyville house with nothing owed. Ask Twilight to show him the way. Two short sentences; no scene narration or action tags."
-const CELESTIA_GREETING_PONY := "[Observed situation, not player speech] Twilight sent you a message about a lost stranger she found confused in the Everfree and sheltered at Golden Oak Library. You have sought the newcomer out the following morning or later. This is your first meeting. The newcomer is %s. Welcome %s warmly, tell %s %s is safe, and offer a Ponyville house of %s own: you are giving %s a permanent home with nothing owed. Ask Twilight to show %s the way. Two short sentences; no scene narration or action tags."
 var game: Node
 var data: Dictionary = {}
 var _twilight: Node3D
@@ -86,6 +82,9 @@ var tutorial: Node3D
 var _wake_node: Node
 var _forest_running := false
 var _context_epoch := -1
+## Scenario mods (world/modding/scenario.gd): while set, a new world's forest opening waits (the
+## scenario's start node runs first; hold_opening()).
+var _opening_held := false
 
 ## Retire the former handoff while retaining delivered speech and one-time grant receipts.
 ## Only this story's saved plan changes; unrelated encounters and recorded history remain.
@@ -210,19 +209,13 @@ func _choose_form() -> void:
 func _pony_now() -> bool:
 	return PLAYER_FORM.is_pony(PLAYER_FORM.active(get_tree()))
 
-func _celestia_greeting() -> String:
-	var form: Dictionary = PLAYER_FORM.active(get_tree())
-	if not PLAYER_FORM.is_pony(form): return CELESTIA_GREETING
-	var words: Dictionary = PLAYER_FORM.pronouns(form)
-	return CELESTIA_GREETING_PONY % [PLAYER_FORM.describe(form), words.object, words.object, words.subject, words.possessive, words.object, words.object]
-
 func stage() -> String:
 	return str(data.get("stage", "done"))
 
 func _set_stage(value: String) -> void:
 	data.stage = value; _stage_time = 0.0; _save()
 	_recovering_follower = false
-	_best_gap = INF; _stalled = 0.0; _route = []; _route_planned = false; _road_started = false; _route_request = -1
+	_road_started = false
 	print("[arrival] stage ", value)
 
 func _save() -> void:
@@ -250,6 +243,7 @@ func _physics_process(delta: float) -> void:
 	# Twilight belongs to the story until it ends: the population does not spawn her elsewhere.
 	if is_instance_valid(game.get("population")) and not game.population.visiting.has(TWILIGHT): game.population.visiting[TWILIGHT] = true
 	if game.get_node_or_null("LoadingCover") != null: return
+	if _opening_held and stage() in FOREST_STAGES: return
 	_stage_time += delta
 	if stage() in FOREST_STAGES:
 		if stage() == "found": _tick_transport_request(delta)
@@ -259,12 +253,7 @@ func _physics_process(delta: float) -> void:
 	_timer -= delta
 	if _timer > 0.0: return
 	_timer = 0.25
-	match stage():
-		"to_library": _to_library()
-		"overnight": _overnight()
-		"welcome": _welcome()
-		"to_home": _to_home()
-		"home": _home_step()
+	if stage() == "to_library": _to_library()
 
 # ---------------------------------------------------------------- the forest opening
 ## Wake, tutorial and Twilight's arrival run as one sequence. Each stage is saved, so a reload
@@ -385,26 +374,35 @@ func _encounter() -> void:
 	var outside_log: Vector3 = pocket.gate + pocket.gate_dir * 1.6
 	_command([{"id": "arrival_to_log", "type": "go_to", "location_id": _point_id(Vector2(outside_log.x, outside_log.z)), "pace": "trot"}])
 	var walked := 0.0
-	while walked < 30.0 and _flat(_twilight.global_position, outside_log) > 1.4:
+	while is_instance_valid(_twilight) and walked < 30.0 and _flat(_twilight.global_position, outside_log) > 1.4:
 		if not await _wait(0.25): return
 		walked += 0.25
-		if _idle() and walked > 3.0 and _flat(_twilight.global_position, outside_log) > 1.4:
+		if is_instance_valid(_twilight) and _idle() and walked > 3.0 and _flat(_twilight.global_position, outside_log) > 1.4:
 			_command([{"id": "arrival_to_log_again", "type": "go_to", "location_id": _point_id(Vector2(outside_log.x, outside_log.z)), "pace": "trot"}])
 	_command([{"id": "arrival_wait_log", "type": "stay", "duration_s": 600.0}, {"id": "arrival_look_log", "type": "look_at", "target_id": "player", "duration_s": 30.0}])
 	# The rustle and visible approach establish her arrival; avoid an extra model/TTS wait.
 	await _lift_log()
 	if not _alive(): return
+	# M-ARR-03: she can leave the tree during the walk or the lift (despawn, rescue); a freed
+	# actor read below would stop this coroutine with a script error. Find her again instead.
+	if not is_instance_valid(_twilight):
+		if await _wait(1.0): _encounter()
+		return
 	# She comes in slowly, stops a comfortable step away, and stays.
 	var approached := 0.0
 	_command([{"id": "arrival_approach", "type": "approach", "target_id": "player", "distance_m": 1.7, "pace": "walk"}])
-	while approached < 40.0 and _flat(_twilight.global_position, _feet()) > 2.3:
+	while is_instance_valid(_twilight) and approached < 40.0 and _flat(_twilight.global_position, _feet()) > 2.3:
 		if not await _wait(0.25): return
 		approached += 0.25
+		if not is_instance_valid(_twilight): break
 		if _idle() and _flat(_twilight.global_position, _feet()) > 2.3 and fmod(approached, 4.0) < 0.25:
 			# A refused approach falls back to a fixed spot beside him, inside the pocket.
 			var beside: Vector3 = _feet() + (_twilight.global_position - _feet()).normalized() * 1.8
 			if approached > 8.0: _command([{"id": "arrival_beside", "type": "go_to", "location_id": _point_id(Vector2(beside.x, beside.z)), "pace": "walk"}])
 			else: _command([{"id": "arrival_approach_again", "type": "approach", "target_id": "player", "distance_m": 1.7, "pace": "walk"}])
+	if not is_instance_valid(_twilight):
+		if await _wait(1.0): _encounter()
+		return
 	_command([{"id": "arrival_stay", "type": "stay", "duration_s": 600.0}, {"id": "arrival_look", "type": "look_at", "target_id": "player", "duration_s": 30.0}])
 	# The encounter begins before spawning; only her actual close approach proves
 	# she has found the newcomer, even if their first speech is interrupted.
@@ -414,17 +412,39 @@ func _encounter() -> void:
 	# fifteen-second pause afterward. An opened profile still gets reading time.
 	tutorial.twilight = _twilight
 	tutorial.start("inspect")
+	# M-ARR-05 (threads 43664204, 43665023: "I press J, click Twilight... nothing happens"). With AI
+	# usage off there is no director: no pony can speak, and every line below waited forever.
+	# Then she still takes him out of the forest, once he has looked at her (or after 20 s).
+	if not _dialogue_available():
+		var waited := 0.0
+		while str(tutorial.step) == "inspect" and waited < 20.0:
+			if not await _wait(0.25) or not _found_ongoing(): return
+			waited += 0.25
+		tutorial.stop()
+		print("[arrival] no AI dialogue: Twilight takes the newcomer to safety without talking")
+		if _found_ongoing() and is_instance_valid(_twilight): request_teleport_to_ponyville(TWILIGHT, _twilight, _context_epoch)
+		return
+	# With dialogue, the opening now waits for him to answer her: say how, once he has looked.
+	var talk_hint := func(id: String) -> void:
+		if id == "inspect" and _found_ongoing() and is_instance_valid(tutorial): tutorial.start("talk")
+	tutorial.step_done.connect(talk_hint)
 	if not await _line("found") or stage() != "found" or bool(data.get("transport_requested", false)):
-		tutorial.stop(); return
+		if is_instance_valid(tutorial):
+			if tutorial.step_done.is_connected(talk_hint): tutorial.step_done.disconnect(talk_hint)
+			tutorial.stop()
+		return
 	var looked := 0.0
-	while not str(tutorial.step).is_empty() and looked < 15.0 and (looked < 3.0 or bool(tutorial._seen_open)):
+	while str(tutorial.step) == "inspect" and looked < 15.0 and (looked < 3.0 or bool(tutorial._seen_open)):
 		if not await _wait(0.25) or stage() != "found" or bool(data.get("transport_requested", false)): return
 		looked += 0.25
+	if tutorial.step_done.is_connected(talk_hint): tutorial.step_done.disconnect(talk_hint)
 	tutorial.stop()
+	tutorial.start("talk")
 	# Let it breathe (dev 2026-10-14: "Hi. Are you ok? That's a timberwolf. Ok let's go."): she
 	# waits for him to answer, sits beside him, says who she is and where he is, listens; only
 	# then the howls, her quiet worry, and the offer.
 	if not await _breathe(8.0): return
+	tutorial.stop()
 	_command([{"id": "arrival_sit", "type": "sit"}, {"id": "arrival_look_sit", "type": "look_at", "target_id": "player", "duration_s": 60.0}])
 	if not await _wait(1.5) or not _found_ongoing(): return
 	if not await _line("settle") or not _found_ongoing(): return
@@ -476,17 +496,20 @@ func _lift_log() -> void:
 	var aside: Vector3 = pocket.gate_dir.cross(Vector3.UP).normalized() * 2.4 + pocket.gate_dir * 0.8
 	var to := Transform3D(from.basis.rotated(Vector3.UP, 1.1), from.origin + aside)
 	var t := 0.0
+	var lifting := true
 	while t < 2.6:
-		if not await _wait(0.03): return
+		# M-ARR-03: the teleport can free the pocket (and its log) mid-lift, and a quit or reload
+		# ends the wait; either way stop moving it and still let the glow and horn go.
+		if not await _wait(0.03) or not is_instance_valid(log_node) or not log_node.is_inside_tree():
+			lifting = false; break
 		t += 0.03
 		var k := smoothstep(0.0, 1.0, t / 2.6)
 		var lifted := from.interpolate_with(to, k)
 		lifted.origin.y += sin(k * PI) * 0.9
 		log_node.global_transform = lifted
-	if magic != null:
-		preload("res://world/characters/magic/unicorn_magic.gd").unglow_object(meshes)
-		magic.hold(false)
-	await _wait(0.5)
+	MAGIC.unglow_object(meshes)
+	if is_instance_valid(magic): magic.hold(false)
+	if lifting: await _wait(0.5)
 
 ## Intent remains available throughout the local rescue. Casting still requires
 ## Twilight to physically rejoin the newcomer at the original close distance.
@@ -646,13 +669,7 @@ func _skip_opening_wanted() -> bool:
 	return settings != null and str(settings.get_value("world/opening")) == "skip"
 
 func _skip_opening() -> void:
-	_place_player(FOREST_EDGE, Vector3(0.0, 0.0, -1.0))
-	await ZoneManager.wait_until_idle()
-	if not await _wait(0.6): return
-	var library := _library()
-	if library != null:
-		var inward: Vector3 = library.center() - library.inside(); inward.y = 0.0
-		_place_player(library.inside() + (inward.normalized() * 0.8 if inward.length() > 0.01 else Vector3.ZERO), inward.normalized() if inward.length() > 0.01 else Vector3(0, 0, -1))
+	if not await place_at_golden_oak(): return
 	data.opening_skipped = true; data.teleported = true; data.shelter_explained = true
 	game.world_context.record("arrival", "Twilight found the newcomer in the Everfree, teleported them to Golden Oak Library and offered her guest bed for as long as they need.", [TWILIGHT], [TWILIGHT])
 	_finish()
@@ -660,6 +677,64 @@ func _skip_opening() -> void:
 	if is_instance_valid(_wake_node):
 		await _wake_node._lids(0.0, 1.2)
 		if is_instance_valid(_wake_node): _wake_node.queue_free()
+
+# ---------------------------------------------------------------- scenario hooks
+## For scenario mods' start nodes (world/modding/scenario.gd, res://mods/README.md "Scenario mods"),
+## so a mod never copies this story. end_opening() and hold_opening() belong before the opening
+## starts (a start node's prepare()); the placement helpers work at any time after that.
+
+## The opening is over without being played: no forest, tutorial, form choice or Twilight scene;
+## the stage is "done" (saved), Twilight goes back to her day, the player stays where he is.
+## A scenario with "skip_opening" gets this on its new world before its start node's prepare().
+func end_opening(note := "") -> void:
+	if stage() == "done": return
+	if is_instance_valid(_wake_node):
+		# Gone at once (its black must not cover the scenario's own start).
+		if _wake_node.get_parent() != null: _wake_node.get_parent().remove_child(_wake_node)
+		_wake_node.queue_free()
+	_wake_node = null
+	if is_instance_valid(tutorial): tutorial.stop()
+	data.opening_skipped = true
+	if not note.is_empty(): data.skipped = note
+	_finish()
+	print("[arrival] opening ended by ", note if not note.is_empty() else "a mod")
+
+## While `on`, a new world's forest opening (the black wake included) waits; the scenario start
+## node releases it when it emits `finished`.
+func hold_opening(on: bool) -> void:
+	_opening_held = on
+
+## Puts the player's feet at `at` on the ground, facing `facing`, and streams the world there.
+## Under the loading cover (in prepare()) the world then loads around that place.
+func place_player(at: Vector3, facing: Vector3) -> void:
+	_place_player(at, facing)
+
+## Inside Golden Oak Library, facing in, as the "skip the opening" setting does. `via_town`: first
+## stand in Ponyville and let the streaming settle (needed when he is far away). Returns false
+## when the world is being left. A coroutine: await it.
+func place_at_golden_oak(via_town := true) -> bool:
+	if via_town or _library() == null:
+		_place_player(FOREST_EDGE, Vector3(0.0, 0.0, -1.0))
+		await ZoneManager.wait_until_idle()
+		if not await _wait(0.6): return false
+	var library := _library()
+	if library != null:
+		var inward: Vector3 = library.center() - library.inside(); inward.y = 0.0
+		_place_player(library.inside() + (inward.normalized() * 0.8 if inward.length() > 0.01 else Vector3.ZERO), inward.normalized() if inward.length() > 0.01 else Vector3(0, 0, -1))
+	return _alive()
+
+## The whole "skip the opening" start: he wakes in Golden Oak Library, the world remembers that
+## Twilight found him and offered her guest bed, and the story is done. A coroutine.
+func skip_to_free_home() -> void:
+	if stage() == "done": return
+	if is_instance_valid(tutorial): tutorial.stop()
+	await _skip_opening()
+
+## The human Anon / AnonPony choice of a new world (stored in the world), for a scenario that
+## skips the opening but still lets the player choose. A coroutine.
+func choose_form() -> void:
+	if game.xr_active or not PLAYER_FORM.saved(game.world_context.state).is_empty(): return
+	await _choose_form()
 
 func _ground(p: Vector3) -> Vector3:
 	var h: float = WorldTerrain.instance.height_at(p) if is_instance_valid(WorldTerrain.instance) else NAN
@@ -820,7 +895,7 @@ func _recover_follower() -> bool:
 	if _recovering_follower:
 		_recovering_follower = false
 		_command([{"id": "arrival_reunited", "type": "stay", "duration_s": 1.0}])
-		_road_started = false; _stalled = 0.0; _best_gap = INF
+		_road_started = false
 		return true
 	return false
 
@@ -849,7 +924,9 @@ func _to_library() -> void:
 		if executor != null and str(executor.movement.get("type", "")) != "stay":
 			_command([{"id": "arrival_shelter_stay", "type": "stay", "duration_s": 600.0}])
 		if not bool(data.get("shelter_explained", false)):
-			_say(TWILIGHT, LINES.shelter, "arrival_shelter", null, _shelter_delivered)
+			# With AI usage off nopony can say it: the shelter is simply his (M-ARR-05).
+			if _dialogue_available(): _say(TWILIGHT, LINES.shelter, "arrival_shelter", null, _shelter_delivered)
+			else: _shelter_delivered()
 		if not bool(data.get("shelter_explained", false)): return
 		if _encounters() != null: _encounters().complete(RESCUE)
 		_finish()
@@ -857,8 +934,7 @@ func _to_library() -> void:
 	if not _road_started or _idle():
 		_road_started = true
 		_lead(LIBRARY, "arrival_lead_library")
-	# The executor retries a failed lead through the actual house adapter. The outdoor
-	# watchdog would replace this indoor destination with terrain-height point legs.
+	# The executor retries a failed lead through the actual house adapter.
 
 func _shelter_delivered() -> void:
 	if not _alive() or bool(data.get("shelter_explained", false)): return
@@ -866,224 +942,28 @@ func _shelter_delivered() -> void:
 	game.world_context.record("arrival", "Twilight found the newcomer in the Everfree, teleported them to Golden Oak Library and offered her guest bed for as long as they need.", [TWILIGHT], [TWILIGHT])
 	_save()
 
-func _begin_shelter() -> void:
-	var runtime := _encounters()
-	if runtime == null: return
-	var begun: bool = runtime.begin(SHELTER, {"title": "hosting the rescued newcomer overnight", "place": "Golden Oak Library",
-		"participants": [TWILIGHT], "movers": {TWILIGHT: ["arrival"]},
-		"knows": {TWILIGHT: ["You found this newcomer in the Everfree and offered your guest bed. You sent Celestia a message; she will seek them out tomorrow morning. No house has been granted yet."]},
-		"commitment": {TWILIGHT: "Remain available as their host. They may rest or explore freely; do not pretend Celestia has already welcomed them."},
-		"beats": [{"id": "morning", "speaker": TWILIGHT, "label": "wait for the following morning's visit"}]})
-	if begun: runtime._sync_presence()
-
-func _overnight() -> void:
-	_begin_shelter()
-	var home := _library()
-	if not is_instance_valid(_twilight):
-		if home != null and not _spawning: _bring_twilight(home.outside())
-	elif home != null and not home.contains(_twilight.global_position):
-		var executor := _exec()
-		if executor != null and str(executor.movement.get("type", "")) != "go_to":
-			_command([{"id": "arrival_host_return", "type": "go_to", "location_id": LIBRARY, "pace": "walk"}])
-	elif _idle():
-		_command([{"id": "arrival_host_wait", "type": "stay", "duration_s": 600.0}])
-	if bool(game.get("player_sleeping")): return
-	var due := int(data.get("morning_day", int(TimeOfDay.day) + 1)) * 24.0 + float(data.get("morning_hour", 8.0))
-	if float(TimeOfDay.day) * 24.0 + TimeOfDay.hours < due: return
-	if _encounters() != null: _encounters().complete(SHELTER)
-	_set_stage("welcome")
-
-# ---------------------------------------------------------------- Legacy road routing and Celestia
-var _route: Array = []        # waypoints (Vector2) still to pass before the goal
-var _route_planned := false   # the walk grid was asked this stage
-var _road_started := false    # the authored road was laid out this stage
-var _best_gap := INF
-var _stalled := 0.0
-var _lead_log := 0.0
-var _lead_goal := ""
-var _lead_action := ""
+# ---------------------------------------------------------------- leading on foot
+## The retired Celestia welcome's encounter id: old saves still carry its row, which prepare()
+## cancels or migrates (the welcome, overnight and walk-home stages were retired on 2026-10-14;
+## their code is in archive/arrival-legacy-routing-2026-11-08/).
+const WELCOME := "arrival_welcome"
+var _road_started := false    # the lead to the library was issued this stage
 
 static func _point_id(point: Vector2) -> String:
 	return "point:%.1f,%.1f" % [point.x, point.y]
 
-## Where a lead goal is on the ground plane: story points directly, places by the directory.
-func _goal_xz(goal: String) -> Vector2:
-	if goal.begins_with("point:"):
-		var xz := goal.trim_prefix("point:").split_floats(",")
-		return Vector2(xz[0], xz[1]) if xz.size() == 2 else Vector2.INF
-	var at: Vector3 = PLACES.resolve(get_tree(), goal)
-	return Vector2(at.x, at.z) if at.is_finite() else Vector2.INF
-
 func _lead(goal: String, action_id: String) -> void:
-	_lead_goal = goal; _lead_action = action_id
-	var target := _point_id(_route[0]) if not _route.is_empty() else goal
-	_command([{"id": action_id, "type": "lead", "target_id": "player", "location_id": target, "wait_distance_m": 7.0, "pace": "trot"}])
-
-## Called each tick while Twilight leads toward `goal`, through any waypoints first. Progress is
-## the flat distance still to go: ten seconds without getting three metres closer, not counting
-## waits for Anon or a route query, re-issues the lead; with no waypoints left, it asks the walk grid once per
-## stage for the whole route and follows that in 12 m legs.
-var _was_waiting := false
-var _called_ms := -100000
-func _watch_lead(goal: String, action_id: String) -> void:
-	var executor := _exec()
-	if executor == null or not is_instance_valid(_twilight): return
-	var at := _twilight.global_position
-	var aim: Vector2 = _route[0] if not _route.is_empty() else _goal_xz(goal)
-	if not aim.is_finite(): return
-	var gap := Vector2(at.x, at.z).distance_to(aim)
-	var waiting := bool(executor.get("_waiting_for_follower"))
-	var navigator: Node = _twilight.get_node_or_null("Navigator")
-	var planning: bool = navigator != null and navigator.route_pending()
-	var movement: Dictionary = executor.movement
-	if navigator != null and navigator.house_travel.active() and str(movement.get("type", "")) == "lead" \
-			and str(movement.get("status", "")) in ["accepted", "running", "blocked"] \
-			and not str(movement.get("id", "")).is_empty() and str(navigator.command_owner) == str(movement.id):
-		# Leaving a house can initially move away from the final goal. House travel owns
-		# physical progress and doorway queue waits; neither this timer nor a nearby
-		# route waypoint may replace its passage before the outside handoff.
-		_best_gap = gap; _stalled = 0.0
-		return
-	# Waiting for him, she calls him along, at most every 25 s (dev 2026-10-14: she walked up,
-	# said nothing and walked off again; he could not tell she was showing him the way home).
-	if waiting and not _was_waiting and Time.get_ticks_msec() - _called_ms > 25000:
-		_called_ms = Time.get_ticks_msec()
-		_say(TWILIGHT, "Anon has stopped following you while you lead him to his new house. Call him along: tell him to follow you, that his house is this way and not far.", "arrival_follow_me")
-	_was_waiting = waiting
-	if waiting or planning or gap < _best_gap - 3.0:
-		_best_gap = gap if waiting or planning else minf(gap, _best_gap)
-		_stalled = 0.0
-	else:
-		_stalled += 0.25
-	_lead_log += 0.25
-	if _lead_log >= 30.0:
-		_lead_log = 0.0
-		print("[arrival] leading to %s: %.0f m to go, %d waypoints left, %.1f s without progress%s" % [_point_id(aim), gap, _route.size(), _stalled, " (waiting for Anon)" if waiting else ""])
-	if not _route.is_empty() and (gap < 4.0 or (_idle() and gap < 8.0)):
-		_route.pop_front(); _best_gap = INF; _stalled = 0.0
-		if _route.is_empty(): print("[arrival] last waypoint passed, on to ", goal)
-		_lead(goal, action_id)
-		return
-	if _stalled < 10.0: return
-	_stalled = 0.0; _best_gap = INF
-	if _route.is_empty() and not _route_planned:
-		_route_planned = true
-		print("[arrival] stuck at %s on the way to %s; asking the walk grid for the route" % [at.round(), goal])
-		var goal_at := _goal_xz(goal)
-		_plan_route(Vector3(goal_at.x, at.y, goal_at.y))
-	else:
-		print("[arrival] stuck at %s on the way to %s; asking again" % [at.round(), _point_id(aim)])
-	_lead(goal, action_id)
-
-## The walk grid's whole route from Twilight to `goal_at`, as waypoints every 12 m.
-var _route_request := -1
-func _plan_route(goal_at: Vector3) -> void:
-	var navigator: Node = _twilight.get_node_or_null("Navigator")
-	var service: Node = navigator.get("_service") if navigator != null else null
-	if service == null or _route_request >= 0: return
-	var ground: float = WorldTerrain.instance.height_at(goal_at) if is_instance_valid(WorldTerrain.instance) else NAN
-	if is_finite(ground): goal_at.y = ground
-	_route_request = service.request_path(_twilight.global_position, goal_at, _twilight.get("profile"), _route_ready)
-
-func _route_ready(result: Dictionary, request_id: int, _revision: int) -> void:
-	if not _alive() or request_id != _route_request: return
-	_route_request = -1
-	var path: PackedVector3Array = result.get("path", PackedVector3Array())
-	if path.is_empty() or not is_instance_valid(_twilight):
-		print("[arrival] no walk-grid route: ", result.get("reason", "?"))
-		return
-	var points: Array = []
-	var travelled := 0.0
-	var length := 0.0
-	for i in range(1, path.size()):
-		var step := path[i - 1].distance_to(path[i])
-		travelled += step; length += step
-		if travelled >= 12.0:
-			travelled = 0.0
-			points.append(Vector2(path[i].x, path[i].z))
-	var end := Vector2(path[path.size() - 1].x, path[path.size() - 1].z)
-	while not points.is_empty() and (points.back() as Vector2).distance_to(end) < 6.0: points.pop_back()
-	_route = points; _best_gap = INF; _stalled = 0.0
-	print("[arrival] walk-grid route: %d waypoints over %.0f m" % [points.size(), length])
-	if not _route.is_empty(): _lead(_lead_goal, _lead_action)
-
-## The welcome as a durable encounter: Celestia's generated welcome and housing explanation
-## must finish naturally before the house grant. Boops, questions and walks away preserve that
-## purpose. Failed, absent or interrupted generation remains pending; no scripted speech or
-## timed fallback counts as delivery.
-const WELCOME := "arrival_welcome"
-var _welcome_turn_noted := false
+	_command([{"id": action_id, "type": "lead", "target_id": "player", "location_id": goal, "wait_distance_m": 7.0, "pace": "trot"}])
 
 func _encounters() -> Node:
 	return game.get("encounters") if game != null else null
 
-func _begin_welcome() -> void:
-	var runtime := _encounters()
-	if runtime == null or runtime.active(WELCOME): return
-	# A cancelled legacy escort is the only row replaced; delivered welcomes are preserved.
-	if not runtime.get_row(WELCOME).is_empty():
-		if str(runtime.get_row(WELCOME).get("status", "")) != "cancelled": return
-		runtime._store().erase(WELCOME)
-	var w: Dictionary = PLAYER_FORM.pronouns(PLAYER_FORM.active(get_tree()))
-	var him := str(w.object)
-	runtime.begin(WELCOME, {
-		"title": "welcoming the newcomer after a night at Twilight's treehouse", "place": "Golden Oak Library, or wherever the newcomer has gone nearby",
-		"participants": ["celestia", TWILIGHT],
-		"knows": {
-			"celestia": ["Twilight's message explained that she found this confused stranger in the Everfree and offered shelter at Golden Oak. You came the following morning to meet %s. You have never met %s before; nopony knows yet how %s got there." % [him, him, w.subject]],
-			TWILIGHT: ["You found %s lost in the Everfree and sheltered %s at Golden Oak. You sent Celestia a message asking her to seek %s out the following morning." % [him, him, him]]},
-		"commitment": {
-			"celestia": "Welcome %s to Equestria, tell %s %s is safe, and that Ponyville will be %s home: a house of %s own, freely given. Then ask Twilight to show %s the way." % [him, him, w.subject, w.possessive, w.possessive, him],
-			TWILIGHT: "Help Celestia meet %s, stay with %s while she welcomes %s, then welcome %s into the freely given home, with no key or lock required." % [him, him, him, him]},
-		"release_after": {"celestia": "welcome"},
-		# Only the scene moves them: Celestia's visit walks her back to him; the story leads Twilight.
-		"movers": {"celestia": ["visit:"], TWILIGHT: ["arrival"]},
-		"beats": [
-			{"id": "escort", "label": "sheltering the newcomer at Golden Oak", "speaker": TWILIGHT},
-			{"id": "welcome", "label": "the welcome and the free house", "speaker": "celestia", "intent": LINES.welcome, "await_turn_s": 75.0},
-			{"id": "home", "label": "welcoming the newcomer home", "speaker": TWILIGHT}]})
-
-func _welcome() -> void:
-	_begin_welcome()
-	if not is_instance_valid(_twilight):
-		if not _spawning: _bring_twilight(_twilight_spawn_hint(Vector3(4.0, 0.0, 4.0)))
-	else: _recover_follower()
-	var runtime := _encounters()
-	if runtime == null: return
-	var visits: Node = game.get_node_or_null("PrincessVisits")
-	if visits != null:
-		if visits.visit.is_empty() and visits.start("celestia",_celestia_greeting(),45.0,false,true):
-			data.celestia_called = true; _save()
-		var greeting: Dictionary = visits.visit
-		# Physical arrival at the listener starts the welcome obligation, rather than
-		# allowing its background retry to speak while Celestia is still at the door.
-		if str(greeting.get("id", "")) == "celestia" and bool(greeting.get("greeted", false)):
-			runtime.mark_delivered(WELCOME, "escort")
-		if not _welcome_turn_noted and bool(greeting.get("greeted",false)) and int(greeting.get("greeting_turn",-1)) >= 0:
-			_welcome_turn_noted = true
-			runtime.expect_turn(WELCOME,"celestia",int(greeting.greeting_turn))
-	if runtime.delivered(WELCOME,"welcome"):
-		if not bool(data.get("welcome_said",false)):
-			data.welcome_said = true; _save()
-		_grant_home()
+## A pony can speak at all: the conversation director exists (game_player_rig.gd leaves it out
+## exactly when AI usage is off or --no-ai is given).
+func _dialogue_available() -> bool:
+	return game != null and game.get("director") != null
 
 # ---------------------------------------------------------------- the house
-## The vacant Ponyville house nearest Golden Oak (fewest residents first); it is reserved for
-## the player, so residents who lived there move to the emptiest other house.
-func _grant_home() -> void:
-	var house := _home_house()
-	if house == null:
-		var best := _free_house(GOLDEN_OAK)
-		if best == null: print("[arrival] no house found yet"); _timer = 2.0; return
-		data.home = best.place_id(); _save()
-		house = best
-	_home_reserved()
-	if not is_instance_valid(_twilight):
-		if not _spawning: _bring_twilight(_twilight_spawn_hint(Vector3(4.0, 0.0, 4.0)))
-		return
-	print("[arrival] home ", data.home)
-	_set_stage("to_home")   # the next tick leads to the spot outside its door
-
 ## The Ponyville plot house with the fewest residents, nearest `near` among equals (only the
 ## house `only` when one is named).
 func _free_house(near: Vector3, only := "") -> Node3D:
@@ -1149,28 +1029,28 @@ func _home_reserved() -> void:
 		if house.has_method("require_welcome_table"): house.require_welcome_table()
 	if str(house.get_meta("reserved_for", "")) == "player": return
 	house.set_meta("reserved_for", "player")
-	game.population.set("_house_signature", 0)
-	game.population._assign_houses()
+	# M-ARR-01: the grant's own _free_house already ran this frame's assignment pass, so a plain
+	# _assign_houses() returned early and the old residents stayed listed in the house until a
+	# later frame. Reassign now, then refresh the desktop map (else it waits for its 2 s sample).
+	var population: Node = game.get("population")
+	if population == null: return
+	if population.has_method("reassign_houses"): population.reassign_houses()
+	else:
+		population.set("_house_signature", 0)
+		population._assign_houses()
+	var hud: Variant = game.get("world_map")
+	if not is_instance_valid(hud): return
+	var map: Variant = (hud as Object).get("map")
+	var tracked: Variant = (hud as Object).get("tracked")
+	# The VR map (world_map_vr.gd) has no `tracked`; it samples from the head camera.
+	if not is_instance_valid(tracked): tracked = (hud as Object).get("camera")
+	if is_instance_valid(map) and is_instance_valid(tracked) and (map as Object).has_method("update_ponies"):
+		(map as Object).call("update_ponies", tracked, true)
 
-func _to_home() -> void:
-	var house := _home_house()
-	if house == null: return
-	if not is_instance_valid(_twilight):
-		if not _spawning: _bring_twilight(_twilight_spawn_hint(Vector3(-5.0, 0.0, 5.0)))
-		return
-	if _recover_follower(): return
-	# Lead to the spot outside the door, not the house itself (house travel would go inside).
-	var door: Vector3 = house.outside()
-	var goal := _point_id(Vector2(door.x, door.z))
-	_watch_lead(goal, "arrival_lead_home")
-	if _idle() and _feet().distance_to(door) > 12.0: _lead(goal, "arrival_lead_home")
-	if Vector2(_feet().x - door.x, _feet().z - door.z).length() < 7.0 and _twilight.global_position.distance_to(door) < 9.0:
-		_command([{"id": "arrival_wait_home", "type": "stay", "duration_s": 600.0}])
-		_say(TWILIGHT,LINES.home,"arrival_home",null,func() -> void:
-			data.home_explained = true; _save())
-		if bool(data.get("home_explained",false)):
-			_set_stage("home")
-
+## The retired welcome's home step and its one-time furnishing (welcome food, starting bits).
+## No stage reaches it any more (prepare() retires "home"); kept because the welcome-table
+## reservation above and its fixtures (tools/life/test_welcome_food_surface.gd,
+## arrival_shelter_fixture.gd, persistence_run.gd) still use the same receipts.
 ## Complete the welcome after reaching home; no physical token gates its use.
 func _home_step() -> void:
 	if not is_instance_valid(_twilight):

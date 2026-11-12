@@ -213,34 +213,37 @@ func rank() -> void:
 		return
 	var eye := camera.global_position
 	var ranked: Array = []
+	# (score, index into ranked): sorted natively, not through a script comparator (W2 perf pass:
+	# the lambda was ~250 script calls per ranking with 45 ponies).
+	var order: Array[Vector2] = []
 	for pony in members:
 		if not pony.is_inside_tree():
 			continue
-		var pinned_distance := eye.distance_to(pony.global_position)
-		var pinned: bool = pony.is_pinned()
-		if pinned and not pony.body_pinned() and pinned_distance > TALK_HERO_DISTANCE:
-			pinned = false  # only talking or listening, and not up close
-		if not pony.has_clip_tier() and not (pony.has_method("own_far_tier") and pony.own_far_tier()):
+		var distance := eye.distance_to(pony.global_position)
+		# is_pinned() is body_pinned() plus talking/listening; past TALK_HERO_DISTANCE only the
+		# body pins count, so the conversation checks are skipped there.
+		var pinned: bool = pony.body_pinned() if distance > TALK_HERO_DISTANCE else pony.is_pinned()
+		if not pinned and not pony.has_clip_tier() and not (pony.has_method("own_far_tier") and pony.own_far_tier()):
 			pinned = true  # a body layout without baked gaits has only the solver
 		if pinned:
 			# Held, touched, thrown, flying, riding a moving support (or up close in a
 			# conversation): the solver, every tick when close or touched, else every other.
-			var divisor := 1 if pinned_distance <= close_distance or pony.needs_full_rate() else 2
+			var divisor := 1 if distance <= close_distance or pony.needs_full_rate() else 2
 			pony.hero_divisor = divisor
 			pony.set_detail_divisor(1)
 			pony.set_sim_tier(Tier.HERO, counts.pinned % divisor)
 			counts.pinned += 1
 			counts.hero += 1
 			continue
-		var position: Vector3 = pony.global_position
-		var distance := eye.distance_to(position)
 		var seen := _seen_held(pony, distance)
 		# Unseen ponies rank as if farther away: they can be cheaper unseen.
 		var score := distance * (1.0 if seen else 1.6)
+		order.append(Vector2(score, ranked.size()))
 		ranked.append([score, distance, pony, seen])
-	ranked.sort_custom(func(a, b): return a[0] < b[0])
+	order.sort()
 	var near_index := 0
-	for entry in ranked:
+	for key in order:
+		var entry: Array = ranked[int(key.y)]
 		var pony: Node = entry[2]
 		var hero_limit := hero_distance + (HERO_MARGIN if pony.sim_tier == Tier.HERO else 0.0)
 		var near_limit := near_distance + (TIER_MARGIN if pony.sim_tier != Tier.FAR else 0.0)

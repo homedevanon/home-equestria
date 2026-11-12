@@ -30,14 +30,15 @@ const APPLES := ["apple", "food:green-apple"]
 const FARM_EXTRA := ["carrot", "food:hay-bundle", "food:oats", "food:bread-loaf"]
 const SPORTY_WEAR := ["goggles", "aviators", "sunhat", "cowpony-hat"]
 const MAGIC_WEAR := ["wizard_hat", "cape"]
-const COZY_WEAR := ["scarf", "socks", "beanie"]
+const COZY_WEAR := ["scarf", "4cc-scarf", "socks", "plain-socks", "beanie"]
 ## Values for families without a price (architecture 2.3).
 const BOOK_VALUE := 12
 const PAINTING_VALUE := 40
 const PHOTO_VALUE := 8
 const KEG_SERVING_VALUE := 5
 ## Never handed over: the old key is not even a catalogue item, but stays excluded by name.
-const NEVER_GIFT := ["house-key"]
+## Snowman coal and sticks are building bits, not presents (W2-SEAS-F).
+const NEVER_GIFT := ["house-key", "coal", "stick"]
 
 static var _catalog: Script
 static var _data: Dictionary = {}

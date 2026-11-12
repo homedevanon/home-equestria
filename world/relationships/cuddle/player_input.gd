@@ -58,8 +58,12 @@ func _available()->bool:
 	return is_instance_valid(camera) and is_instance_valid(body) and body.get("controls_locked")!=true and body.get("flying")!=true and not body.get_meta("knocked_down",false)
 
 func _physics_process(delta:float)->void:
-	if not _available():_release();return
-	if not _xr and Input.mouse_mode!=Input.MOUSE_MODE_CAPTURED:_release();return
+	if not _available():
+		if not _released():_release()
+		return
+	if not _xr and Input.mouse_mode!=Input.MOUSE_MODE_CAPTURED:
+		if not _released():_release()
+		return
 	if is_instance_valid(current) and (not current.enabled or body.get("velocity") is Vector3 and Vector3(body.velocity).length()>.3):
 		current.end();_release();current=null
 	if is_instance_valid(_pending):
@@ -119,11 +123,23 @@ func _hand(side:String)->void:
 				current=session;current.take(side,hit,at);break
 	_previous[side]=pressed
 
+## Ponies lying with Anon on a sofa or bed (couch.gd and shared_bed.gd add them to this group
+## with their couch_cuddle meta). The per-tick hover below looks only at them instead of every
+## pony's session (W2 perf pass: 45 sessions a tick on desktop). Rollback: READY_SCAN = false.
+const READY_GROUP:=&"couch_cuddle"
+const READY_SCAN:=true
+
 func _nearest()->Node:
 	var winner:Node;var gap:=2.2
-	for i in sessions.size():
-		if not is_instance_valid(sessions[i]) or sessions[i].is_queued_for_deletion():continue
-		var session:Node=sessions[i]
+	var pool:Array=sessions
+	if READY_SCAN and is_inside_tree():
+		pool=[]
+		for mare:Node in get_tree().get_nodes_in_group(READY_GROUP):
+			var own:Node=mare.get_node_or_null(^"CuddleSession")
+			if own!=null and sessions.has(own):pool.append(own)
+	for i in pool.size():
+		if not is_instance_valid(pool[i]) or pool[i].is_queued_for_deletion():continue
+		var session:Node=pool[i]
 		if not session.mare.get_meta("couch_cuddle",false) or not session.willing():continue
 		var actor:Node3D=session.mare
 		var point:Vector3=actor.listen_point();var distance:=camera.global_position.distance_to(point)
@@ -133,6 +149,7 @@ func _nearest()->Node:
 	return winner
 
 func _input(event:InputEvent)->void:
+	if event is InputEventKey and preload("res://world/ui/typing_guard.gd").active(): return  # typing never drives the game
 	if FLIGHT_INPUT.reserves_mouse(event,body): return
 	if _xr or not _available():return
 	if event is InputEventKey and event.physical_keycode==KEY_C and event.pressed and not event.echo:
@@ -188,6 +205,14 @@ func _release()->void:
 	_previous={"left":true,"right":true}
 	_desktop.clear();_drag_side=""
 	if is_instance_valid(_marker):_marker.hide()
+
+## _release() would change nothing (W2 perf pass: it ran, and rebuilt _previous, every tick
+## while the desktop was unavailable).
+func _released()->bool:
+	if is_instance_valid(current) or not _desktop.is_empty() or _drag_side!="":return false
+	if _previous.size()!=2 or _previous.get("left")!=true or _previous.get("right")!=true:return false
+	if is_instance_valid(_marker) and _marker.visible:return false
+	return not (is_instance_valid(inventory) and inventory.has_meta("desktop_activity_owner") and inventory.get_meta("desktop_activity_owner")==self)
 
 func cancel_desktop_activity()->void:
 	if not _xr:_release()

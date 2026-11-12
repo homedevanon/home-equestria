@@ -25,6 +25,9 @@ const SPOT := Vector3(316.8, 3.815, -229.0)
 const YAW := 5.93453292519943
 const FLOOR := 0.88
 const DOOR := AABB(Vector3(-0.475, 0.89, -1.80), Vector3(0.95, 1.83, 0.24))
+## The doorknob (inside and outside halves) pokes past DOOR's faces, so the cut left it floating in
+## the empty doorway (player board #53, 2026-11-08). Its own two separate pieces lie in this box.
+const KNOB := AABB(Vector3(-0.50, 1.57, -1.815), Vector3(0.11, 0.11, 0.28))
 const INSIDE := Rect2(-0.85, -1.68, 1.70, 2.98)   # x, z of the interior floor (model units)
 const OWNER := "trixie"
 var ramp_toe_y := 0.0
@@ -81,7 +84,7 @@ func _without_door() -> ArrayMesh:
 		var kept := PackedInt32Array()
 		for i in range(0, index.size(), 3):
 			var c := (v[index[i]] + v[index[i + 1]] + v[index[i + 2]]) / 3.0
-			if DOOR.has_point(c): continue
+			if DOOR.has_point(c) or KNOB.has_point(c): continue
 			kept.append_array([index[i], index[i + 1], index[i + 2]])
 		arrays[Mesh.ARRAY_INDEX] = kept
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)

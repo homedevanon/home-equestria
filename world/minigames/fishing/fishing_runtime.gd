@@ -26,6 +26,13 @@ func setup() -> void:
 
 func _landed(rod: Node3D, at: Vector3) -> void:
 	if not is_instance_valid(host) or not is_instance_valid(host.inventory): return
+	# A resident fishing on her own day plan while Anon is not fishing (fish_at_dock.gd): her catch
+	# is the dock's "caught" fact only; no owned fish piles up on the dock for him.
+	var angler: String = companions.day_angler(rod) if is_instance_valid(companions) else ""
+	if not angler.is_empty() and not companions._player_fishing():
+		preload("res://world/audio/interaction_sounds.gd").play_at(dock, "prop_fish_land", dock.landing_point())
+		STATIONS.note(self, "fishing_dock", angler, ["river-fish"], "caught")
+		return
 	var pony: Node3D = companions.actor_for_rod(rod) if is_instance_valid(companions) else null
 	if rod.holder!="player" and pony==null: return
 	# A landed catch is a tangible inventory-owned body. The player can collect it

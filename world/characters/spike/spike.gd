@@ -810,7 +810,8 @@ func _process(delta: float) -> void:
 		_talk_set = _talk_mix
 		tree.set("parameters/talk/blend_amount", _talk_mix)
 	if speaking:
-		_speech_time += delta
+		if is_instance_valid(_pcm_player): _speech_time = maxf(0.0, _pcm_player.time)
+		else: _speech_time += delta
 		expressions.viseme = LipSync.viseme_at(_cues, _speech_time) if not _cues.is_empty() else "X"
 	_mouth_hold_left = maxf(0.0, _mouth_hold_left - delta)
 	expressions.mouth_open = _mouth_hold if _mouth_hold_left > 0.0 else 0.0
@@ -1035,8 +1036,53 @@ func set_action_gaze(target: Node3D) -> void:
 func set_conversation_target(listener: Node3D, _hold_position := true) -> void:
 	conversation_target = listener
 
+## A line that is still arriving from the voice server ("pcm://utterance/N" from tts_client.gd).
+const PCM_UTTERANCE := preload("res://world/ai/pcm_utterance.gd")
+const PCM_PLAYER := preload("res://world/characters/pcm_speech_player.gd")
+var _pcm_player: Node
+
+func supports_pcm_speech() -> bool:
+	return is_instance_valid(_voice)
+
+func _speak_pcm(path: String) -> void:
+	var utterance: RefCounted = PCM_UTTERANCE.take(path)
+	if utterance == null or not is_instance_valid(_voice):
+		if utterance != null: utterance.cancel()
+		speech_failed.emit("PCM speech unavailable")
+		return
+	_pending_path = path
+	_cues = []
+	_pcm_player = PCM_PLAYER.new()
+	add_child(_pcm_player)
+	_pcm_player.started.connect(func() -> void:
+		print("[voice] %s plays %s (streamed)" % [name, _pending_path.get_file()])
+		_speech_time = 0.0
+		speech_started.emit())
+	_pcm_player.finished.connect(_pcm_ended.bind(""))
+	_pcm_player.failed.connect(_pcm_ended)
+	_pcm_player.begin(utterance, _voice)
+	_cues = _pcm_player.cues
+
+## The stream player's end: only a line that played out counts as finished.
+func _pcm_ended(message: String) -> void:
+	_drop_pcm_player()
+	_speech_time = -1.0
+	_cues = []
+	expressions.viseme = "X"
+	if message.is_empty(): speech_finished.emit()
+	else: speech_failed.emit(message)
+
+func _drop_pcm_player() -> void:
+	if is_instance_valid(_pcm_player):
+		_pcm_player.cancel()
+		_pcm_player.queue_free()
+	_pcm_player = null
+
 func say(wav_path: String, text := "") -> void:
 	stop_speaking()
+	if PCM_UTTERANCE.is_uri(wav_path):
+		_speak_pcm(wav_path)
+		return
 	var stream := LipSync.load_wav(wav_path)
 	if stream == null or stream.get_length() <= 0.0:
 		speech_failed.emit("Cannot load voice audio")
@@ -1067,6 +1113,7 @@ func _on_voice_finished() -> void:
 func stop_speaking() -> void:
 	_speech_generation += 1
 	_pending_stream = null
+	_drop_pcm_player()
 	if _voice != null and _voice.playing: _voice.stop()
 	if _speech_time >= 0.0:
 		_speech_time = -1.0
@@ -1079,6 +1126,8 @@ func is_speaking() -> bool:
 
 func speech_progress() -> Dictionary:
 	if _voice == null or _voice.stream == null: return {}
+	# A line still arriving from the voice server has no length yet: callers estimate from the text.
+	if is_instance_valid(_pcm_player): return {"time": maxf(0.0, _speech_time)}
 	return {"time": maxf(0.0, _speech_time), "duration": _voice.stream.get_length()}
 
 func listen_point() -> Vector3:

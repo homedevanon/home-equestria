@@ -10,7 +10,10 @@ extends Node
 ##
 ## Saved in world_context.state.jobs (created lazily, old saves load with defaults):
 ## {"version": 1, "hired": {job_id: {"day": int, "by": String}},
-##  "units": {job_id: {"day": int, "player": int, "ponies": {id: int}}}, "shift_serial": int}
+##  "units": {job_id: {"day": int, "player": int, "ponies": {id: int}}}, "shift_serial": int,
+##  "owed": {job_id: hours}, "pay": [{"job", "day", "units", "bits", "hours", "at"}]}
+## "owed" and "pay" (2026-11-08, M-MEC-04/05) are optional, type-guarded keys: shift hours worked and
+## not paid yet (kept across a reload), and Anon's pay notes for the notebook (notebook_lines).
 const LEDGER := preload("res://world/mechanics/ledger.gd")
 const FACTS := preload("res://world/mechanics/facts.gd")
 const STATE_KEY := "jobs"
@@ -18,6 +21,8 @@ const VERSION := 1
 const GROUP := "mechanics_jobs"
 const DATA_PATH := "res://world/mechanics/data/jobs.json"
 const NAME_CHARS := 64
+## Pay notes kept for the notebook (one row per job and day, newest last).
+const PAY_ROWS := 8
 
 var context: Node
 var game: Node
@@ -285,12 +290,102 @@ func pay_unit(job_id: String, worker: String, unit_ref: String, customer := "", 
 			LEDGER.transfer(host, customer, till, price, "sale", {"payers": payers_for(row.get("customer_payers", ["customer", "town"]), customer),
 				"receipt": receipt + ":sale", "item": str(opts.get("item", ""))})
 	if counts: count_unit(job_id, worker)
+	if worker == "player": note_pay(job_id, maxi(amount, 0), 1 if counts else 0)
 	return reason
 
 func _host() -> Node:
 	var tree: SceneTree = get_tree() if is_inside_tree() else null
 	var hub: Node = tree.get_first_node_in_group("mechanics") if tree != null else null
 	return hub.get("game") as Node if hub != null else null
+
+# ------------------------------------------------------------------ owed hours, pay notes, notebook
+
+## Shift hours Anon worked at `job_id` and was not paid for yet (saved, so a reload keeps them).
+func owed_hours(job_id: String) -> float:
+	var owed: Variant = _read().get("owed")
+	if not owed is Dictionary: return 0.0
+	var hours: Variant = (owed as Dictionary).get(job_id)
+	return clampf(float(hours), 0.0, 24.0) if (hours is float or hours is int) and is_finite(float(hours)) else 0.0
+
+## Saves the unpaid shift hours (0 clears them). Writes only on a change of at least `step` hours.
+func set_owed_hours(job_id: String, hours: float, step := 0.0) -> void:
+	if not _writable() or spec(job_id).is_empty() or not is_finite(hours): return
+	hours = clampf(hours, 0.0, 24.0)
+	var before := owed_hours(job_id)
+	if absf(hours - before) < maxf(step, 0.0001) and not (hours <= 0.0 and before > 0.0): return
+	var block := _block()
+	if not block.get("owed") is Dictionary: block["owed"] = {}
+	if hours <= 0.0: (block.owed as Dictionary).erase(job_id)
+	else: (block.owed as Dictionary)[job_id] = snappedf(hours, 0.01)
+	context._changed()
+
+## Anon was paid at `job_id`: `bits` for `units` units of work and/or `hours` of a shift. Merged into
+## that job's row for today, so the notebook reads one line per job and day.
+func note_pay(job_id: String, bits: int, units := 0, hours := 0.0) -> void:
+	if not _writable() or spec(job_id).is_empty() or (bits <= 0 and units <= 0 and hours <= 0.0): return
+	var block := _block()
+	if not block.get("pay") is Array: block["pay"] = []
+	var rows: Array = block.pay
+	var row: Dictionary = {}
+	for index in range(rows.size() - 1, -1, -1):
+		var seen: Variant = rows[index]
+		if seen is Dictionary and str((seen as Dictionary).get("job", "")) == job_id and _number((seen as Dictionary).get("day"), -1) == _today():
+			row = seen; rows.remove_at(index); break
+	if row.is_empty(): row = {"job": job_id, "day": _today(), "units": 0, "bits": 0, "hours": 0.0}
+	row["units"] = maxi(_number(row.get("units"), 0), 0) + maxi(units, 0)
+	row["bits"] = maxi(_number(row.get("bits"), 0), 0) + maxi(bits, 0)
+	row["hours"] = snappedf(maxf(float(row.get("hours", 0.0)) if (row.get("hours") is float or row.get("hours") is int) else 0.0, 0.0) + maxf(hours, 0.0), 0.01)
+	row["at"] = snappedf(_hours(), 0.01)
+	rows.append(row)
+	while rows.size() > PAY_ROWS: rows.pop_front()
+	context._changed()
+
+## The saved pay notes, oldest first (malformed rows left out).
+func pay_rows() -> Array[Dictionary]:
+	var rows: Array[Dictionary] = []
+	var saved: Variant = _read().get("pay")
+	if not saved is Array: return rows
+	for row: Variant in saved:
+		if row is Dictionary and (row as Dictionary).get("job") is String: rows.append(row)
+	return rows
+
+## "10:00" for 10.0, "16:30" for 16.5.
+static func clock_text(hours: float) -> String:
+	var minutes := int(roundf(fposmod(hours, 24.0) * 60.0))
+	return "%02d:%02d" % [int(minutes / 60.0) % 24, minutes % 60]
+
+## The notebook's "Work" lines (notebook_tool.gd): today's hires with hours and place, owed shift
+## hours, and pay notes (newest first). Empty when Anon has none of these.
+func notebook_lines() -> PackedStringArray:
+	var lines: PackedStringArray = []
+	for id: String in _order:
+		if not hired(id): continue
+		var row := spec(id)
+		var when := ""
+		var hours: Variant = row.get("hours")
+		if hours is Array and (hours as Array).size() == 2: when = ", today %s-%s" % [clock_text(float(hours[0])), clock_text(float(hours[1]))]
+		var place := str(row.get("place", ""))
+		var by := hired_by(id).replace("_", " ").capitalize()
+		lines.append("- Hired by %s: %s%s%s." % [by, str(row.get("name", id)), when, (", " + place) if not place.is_empty() else ""])
+	for id: String in _order:
+		var owed := owed_hours(id)
+		if owed >= 0.01: lines.append("- %s: %.1f h worked, not paid yet; paid at your next clock-out." % [str(spec(id).get("name", id)).capitalize(), owed])
+	var notes := pay_rows()
+	for index in range(notes.size() - 1, -1, -1):
+		var row: Dictionary = notes[index]
+		var job := spec(str(row.job))
+		var parts: PackedStringArray = []
+		var units := _number(row.get("units"), 0)
+		if units > 0: parts.append("%d %s%s" % [units, str(job.get("unit", "unit")), "" if units == 1 else "s"])
+		var worked: float = float(row.get("hours", 0.0)) if (row.get("hours") is float or row.get("hours") is int) else 0.0
+		if worked >= 0.01: parts.append("%.1f h" % worked)
+		var day := _number(row.get("day"), -1)
+		var at: float = float(row.get("at", 0.0)) if (row.get("at") is float or row.get("at") is int) else 0.0
+		var when := ("today, " if day == _today() else "day %d, " % day) + clock_text(at)
+		lines.append("- Paid %d bits: %s, %s (%s)." % [_number(row.get("bits"), 0), str(job.get("name", row.job)), ", ".join(parts) if not parts.is_empty() else "work", when])
+	if lines.is_empty(): return lines
+	lines.insert(0, "Work")
+	return lines
 
 # ------------------------------------------------------------------ AI surface
 

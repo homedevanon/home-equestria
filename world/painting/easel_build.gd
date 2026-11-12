@@ -97,6 +97,12 @@ static func refresh_canvas(easel: Node) -> void:
 	face.material_override = idle_material(texture)
 	var canvas := easel.get_node_or_null("Canvas")
 	if canvas != null:
+		# An emptied owned easel waits for a bought canvas (painting_registry.is_bare, M-ACT-03).
+		var bare := REGISTRY.is_bare(key)
+		if canvas is Node3D: (canvas as Node3D).visible = not bare
+		if bare:
+			canvas.set_meta("ai_label", "an empty painter's easel")
+			return
 		var owned := bool(easel.get_meta("painting_owned", false))
 		var colours := str(row.get("label", ""))
 		if texture != null and not colours.is_empty():

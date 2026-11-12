@@ -25,13 +25,17 @@
 		"goods:camera": ["tool"],
 		"goods:easel": ["tool"],
 		"goods:quill": ["tool"],
-		"river-fish": ["fish"]
+		"river-fish": ["fish"],
+		"rake": ["tool"]
 	},
 	"values": {
 		"notebook": 5,
 		"river-fish": 6,
 		"spray-bottle": 8,
 		"hoof-file": 0,
-		"food:banana": 1
+		"food:banana": 1,
+		"coal": 1,
+		"stick": 0,
+		"rake": 15
 	}
 }

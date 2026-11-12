@@ -2,6 +2,9 @@ extends RefCounted
 ## Runtime upgrade of streamed lamps, including old bakes with nonpersistent groups.
 const GROUP := "night_lights"
 const GLOW_SHADER := preload("res://shaders/street_lamp_glow.gdshader")
+## Look 2026-11-10: lamp halos use a real glow sprite, twice the old size. Rollback: LOOK_HALO = false.
+const LOOK_HALO := true
+const HALO_TEXTURE := preload("res://world/vfx/textures/glint_soft.png")
 const PREFIXES := ["lamp_lod0", "candle lantern", "lamp post", "lamppost", "circlelantern", "lantern"]
 static var _glow_mesh: QuadMesh
 static var _glow_material: ShaderMaterial
@@ -63,8 +66,11 @@ static func _setup(light: OmniLight3D) -> void:
 		pos.y = bounds.end.y - bounds.size.y * (0.23 if post else 0.45)
 		light.global_transform = Transform3D(Basis.IDENTITY, pos)
 	if _glow_mesh == null:
-		_glow_mesh = QuadMesh.new(); _glow_mesh.size = Vector2(0.8, 0.8)
+		_glow_mesh = QuadMesh.new(); _glow_mesh.size = Vector2(1.7, 1.7) if LOOK_HALO else Vector2(0.8, 0.8)
 		_glow_material = ShaderMaterial.new(); _glow_material.shader = GLOW_SHADER
+		if LOOK_HALO:
+			_glow_material.set_shader_parameter("use_halo", true)
+			_glow_material.set_shader_parameter("halo", HALO_TEXTURE)
 	var glow := MeshInstance3D.new()
 	glow.name = "Glow"
 	glow.mesh = _glow_mesh

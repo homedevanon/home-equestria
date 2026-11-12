@@ -66,7 +66,8 @@ const DEFAULTS := {
 		"voice_mode": "ponese",      # "ponese" = all local; "auto" = character TTS, unvoiced ponies Ponese; "tts" = force TTS
 		"chatter_fallback": true,        # local voice when synthesis fails
 	},
-	"lip_sync": {"rhubarb_path": ""},  # optional absolute path to the Rhubarb executable
+	# engine: "auto" = the in-process recogniser first (lip_sync_native.gd), "rhubarb" = skip it.
+	"lip_sync": {"rhubarb_path": "", "engine": "auto"},  # rhubarb_path: optional absolute path to the Rhubarb executable
 	"group_conversations": {"enabled": true, "ambient": true, "initial_delay_seconds": 12.0, "cooldown_seconds": 30.0,
 		"ambient_radius_m":30.0, "ambient_chance_per_pony_second":.012, "ambient_reply_chance":.8,
 		"ambient_cooldown_seconds":12.0, "ambient_pony_cooldown_seconds":75.0},

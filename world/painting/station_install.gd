@@ -29,6 +29,10 @@ static func attach(town: Node) -> void:
 		frame.add_child(holder)
 	frame.set_meta("painting_easel", easel.get_node("Wake"))
 	station.add_child(frame)
+	# Shopkeepers who buy finished paintings (art_buyer.gd, M-ACT-03): one node per town, a 1 Hz
+	# check that stops at once while Anon holds no painting.
+	var buyer: Script = load("res://world/painting/art_buyer.gd") as Script
+	if buyer != null and buyer.can_instantiate() and town.get_node_or_null("ArtBuyers") == null: town.add_child(buyer.new())
 
 ## [name, size, transform] boxes in easel space: the legs below the hanging tools, and the mast
 ## behind the canvas back, tilted with the canvas (its mount's axes).

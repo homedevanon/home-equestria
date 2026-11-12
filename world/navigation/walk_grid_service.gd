@@ -219,6 +219,8 @@ func _physics_process(delta: float) -> void:
 	# Spawn placement names the chunks it is waiting on; they behave like a waiting route.
 	if not urgent.is_empty():
 		urgent.assign(urgent.filter(func(c): return not grid.chunks.has(c) or grid.chunks[c].state != WalkChunk.State.READY))
+	# Any waiting route or spawn whose own chunks still need sampling or painting this tick.
+	var route_work := false
 	if not _jobs.is_empty() or not urgent.is_empty():
 		var wanted: Array[Vector2i] = []
 		var deriving: Array[Vector2i] = []
@@ -228,6 +230,7 @@ func _physics_process(delta: float) -> void:
 			elif grid.chunks[c].state == WalkChunk.State.DERIVING and c in _paint_queue: deriving.append(c)
 		# Player follows/commands/approaches, spawns: request_path queues them first.
 		var urgent_job := _jobs.is_empty() or bool(_jobs[0].get("priority", false))
+		route_work = not wanted.is_empty() or not deriving.is_empty()
 		if not deriving.is_empty():
 			if urgent_job: budget = base_budget * 6
 			# Keep partial progress, then finish chunks needed by the oldest route
@@ -251,6 +254,10 @@ func _physics_process(delta: float) -> void:
 				for c in wanted: _queue.erase(c)
 				for c in partial: wanted.erase(c); _queue.erase(c)
 				_queue = partial + wanted + _queue
+	# Only speculative chunks queued (the waiting routes' own ground is done or not admitted yet):
+	# the idle share, as with no route at all (W1/W2-PERF-STEP-OTHER: 466-694 us a step here, about
+	# 55% of all non-pony script time, spent on wander ground while a route waited elsewhere).
+	if not route_work: budget = mini(budget, int(base_budget * IDLE_BUDGET_SHARE))
 	# Publish sampled ground before sampling more. A busy town keeps _queue
 	# nonempty for minutes; spending the whole slice there starves DERIVING
 	# chunks, so every resident waits despite the ground already being sampled.

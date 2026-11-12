@@ -22,8 +22,13 @@ var _bed_retry_at := 0
 
 func set_sleepers(ids: Array) -> void:
 	var beds_before := (_sleepers.size() + 1) / 2
+	var previous := _sleepers
 	_sleepers = ids.duplicate()
 	_sleepers.sort()
+	# New sleepers: a bed search that gave up for the old household may try again (house_beds).
+	if _sleepers != previous:
+		_bed_retry_at = 0
+		if has_meta("bed_failures"): remove_meta("bed_failures")
 	var partner_id:=str(get_meta("player_partner",""))
 	if "player" in _sleepers and partner_id in _sleepers:
 		_sleepers.erase("player");_sleepers.erase(partner_id)

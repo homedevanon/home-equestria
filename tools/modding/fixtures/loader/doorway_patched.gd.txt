@@ -1,0 +1,6 @@
+extends Node
+## Test fixture (tools/modding/test_bundled_mods.gd): devanon's patch-pack copy of
+## world/buildings/open_doorway.gd, re-merged onto the current game.
+const PATCHED := true
+func request_passage(_pony: Node) -> bool: return true
+func release_passage(_pony: Node) -> void: pass

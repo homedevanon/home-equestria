@@ -14,6 +14,7 @@ extends Node
 signal event_started(event_id: String, day: int)   # each time an event goes live (daily hours included)
 signal event_ended(event_id: String, day: int)     # each time it stops being live
 const FACTS := preload("res://world/mechanics/facts.gd")
+const SEASON_STATE := preload("res://world/seasons/season_state.gd")
 const PLACES := preload("res://world/navigation/place_directory.gd")
 const DATA_PATH := "res://world/mechanics/data/events.json"
 const STATE_KEY := "town_events"
@@ -95,18 +96,21 @@ func _weather() -> Node:
 	var tree := get_tree() if is_inside_tree() else Engine.get_main_loop() as SceneTree
 	return tree.get_first_node_in_group("weather") if tree != null else null
 
-## The F1 debug season steps (weather.gd `_season_offset`), 0 without a Weather node.
+## The F1 debug season steps (and a bench --season pin): season_state's offset (W1-SEAS-A
+## 2026-11-08), else a Weather node's `_season_offset` (older fixtures), else 0.
 func _season_offset() -> int:
+	var tree := get_tree() if is_inside_tree() else Engine.get_main_loop() as SceneTree
+	var seasons: Node = tree.get_first_node_in_group(SEASON_STATE.GROUP) if tree != null else null
+	if seasons != null: return int(seasons.get("offset"))
 	var weather := _weather()
 	var offset: Variant = weather.get("_season_offset") if weather != null else null
 	return int(offset) if offset is int or offset is float else 0
 
-## The one season source: the same formula and F1 offset as weather.gd _update_season (Weather.season
-## for today), else posmod(floor(day / Settings.season_days()), 4).
+## The one season source: world/seasons/season_state.gd's formula (index_for) with its offset,
+## on this calendar's clock and season length.
 func season_index(day := -1) -> int:
 	var d: int = day if day >= 0 else today()
-	var length := season_days()
-	return posmod(floori(float(d + _season_offset() * length) / float(length)), 4)
+	return SEASON_STATE.index_for(d, season_days(), _season_offset())
 
 func season_name(day := -1) -> String:
 	return SEASONS[season_index(day)]
@@ -114,8 +118,7 @@ func season_name(day := -1) -> String:
 ## Days into the current season (0 .. season_days - 1).
 func day_into_season(day := -1) -> int:
 	var d: int = day if day >= 0 else today()
-	var length := season_days()
-	return posmod(d + _season_offset() * length, length)
+	return SEASON_STATE.into_for(d, season_days(), _season_offset())
 
 func _first_day(fraction: float) -> int:
 	return floori(fraction * float(season_days()) + EPSILON)
@@ -238,12 +241,21 @@ func invitable(pony_id: String) -> Array[String]:
 	var ids: Array[String] = []
 	var day := today()
 	var invited: Dictionary = _calendar_read().get("invited", {})
+	var drivers: Array[Node] = get_tree().get_nodes_in_group("event_drivers") if is_inside_tree() else []
 	for event: Dictionary in today_events():
 		var hosts: Array = event.get("hosts", []) if event.get("hosts") is Array else []
 		if not hosts.is_empty() and pony_id not in hosts: continue
 		if str(event.get("place", "")).is_empty() or int(invited.get(str(event.id), -1)) == day: continue
+		# A driver that refuses invitations today (Trixie's show on a rainy day, W1-MECHANICS hook 2):
+		# not offered, so the prompt does not suggest an [invite] asks.gd would refuse anyway.
+		if _invite_blocked(drivers, str(event.id)): continue
 		if _still_today(event) and not attended_today(str(event.id)): ids.append(str(event.id))
 	return ids
+
+func _invite_blocked(drivers: Array[Node], event_id: String) -> bool:
+	for driver: Node in drivers:
+		if is_instance_valid(driver) and driver.has_method("invite_block") and not str(driver.call("invite_block", event_id)).is_empty(): return true
+	return false
 
 ## Anon already counted at the event today: the same once-a-day key _attend gives its fact.
 func attended_today(event_id: String) -> bool:

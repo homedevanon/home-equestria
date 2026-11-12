@@ -47,6 +47,27 @@ var _limbs: Array = []                      # [upper, lower, leaf, target, pole]
 var knee_hints: Dictionary = {}
 var leg_stretch := true
 
+## Desktop renders several frames per physics tick, but anon_body.gd moves the targets and the
+## animated base pose only once per tick and counts each of those passes in input_serial. A frame
+## with the same serial, skeleton transform and settings as the last solve writes the bone poses
+## that solve produced instead of solving again (2026-11-08: the solve ran ~6 times per tick at
+## ~37 us each). The writes still happen because the skeleton restores its unmodified poses after
+## every frame. The frame time a replay skips joins the next solve's delta, so pole smoothing keeps
+## its pace. -1 (the headset, which moves the targets every frame, and any other driver) always
+## solves and records nothing.
+var input_serial := -1
+## Rollback: false always solves (the pre-2026-11-08 behaviour).
+const REPLAY := true
+## True when the latest pass replayed the previous solve (read by anon_body.gd).
+var replayed := false
+var _solved_serial := -1
+var _solved_skeleton := Transform3D()
+var _solved_orient := -1.0
+var _solved_stretch := -1.0
+var _solved_bones := PackedInt32Array()
+var _solved_poses: Array[Transform3D] = []
+var _skipped_delta := 0.0
+
 
 func _resolve(skel: Skeleton3D) -> void:
 	_pelvis = skel.find_bone(pelvis_bone)
@@ -119,15 +140,32 @@ func _modification_step() -> void:
 		return
 	if not head_target.is_inside_tree() or not hip_target.is_inside_tree():
 		return
+	var skel_global := skel.global_transform
+	if REPLAY and input_serial >= 0 and input_serial == _solved_serial and skel_global == _solved_skeleton \
+			and head_orient == _solved_orient and max_arm_stretch == _solved_stretch:
+		_skipped_delta += get_process_delta_time()
+		for i in _solved_bones.size():
+			skel.set_bone_pose(_solved_bones[i], _solved_poses[i])
+		replayed = true
+		return
+	replayed = false
+	_solved_serial = input_serial
+	if input_serial >= 0:
+		_solved_skeleton = skel_global
+		_solved_orient = head_orient
+		_solved_stretch = max_arm_stretch
+		_solved_bones.clear()
+		_solved_poses.clear()
 
-	var to_skel: Transform3D = skel.global_transform.affine_inverse()
+	var to_skel: Transform3D = skel_global.affine_inverse()
 	var head_t: Transform3D = (to_skel * head_target.global_transform).orthonormalized()
 	var hip_t: Transform3D = (to_skel * hip_target.global_transform).orthonormalized()
 	# One NaN here used to fan out into every bone write below, each printing an
 	# engine error: ~100 lines per frame, the hitch dev felt on a tracking drop.
 	if not to_skel.is_finite() or not head_t.is_finite() or not hip_t.is_finite():
 		return
-	var delta := get_process_delta_time()
+	var delta := get_process_delta_time() + _skipped_delta
+	_skipped_delta = 0.0
 	var leg_pole_blend := 1.0 - exp(-delta / .08)
 
 	# --- pelvis: position from the hip target, yaw from its basis, and the
@@ -403,3 +441,6 @@ func _write_global(skel: Skeleton3D, bone: int, pose: Transform3D) -> void:
 	if not local.is_finite():
 		return  # keep the bone where it was rather than poison the chain
 	skel.set_bone_pose(bone, local)
+	if input_serial >= 0:
+		_solved_bones.append(bone)
+		_solved_poses.append(local)

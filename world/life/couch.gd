@@ -104,7 +104,7 @@ func _wake() -> void:
 
 func begin_player(player: Node3D, seat: Node3D, camera: Camera3D, avatar: Node3D = null) -> Node:
 	if seat not in seats or (seat.get_meta("occupant") if seat.has_meta("occupant") else null) != player: return null
-	if avatar != null and float(avatar.model_scale) > 1.3: return null
+	if avatar != null and not anon_fits(float(avatar.model_scale)): return null
 	if player.has_meta("couch_sleeping") or not open(): return null
 	var rest := PLAYER_REST.new()
 	rest.name = "CouchRest"
@@ -164,9 +164,13 @@ func eligible(actor: Node3D) -> bool:
 	if not fits(actor): return false
 	var nav := actor.get_node_or_null("Navigator")
 	if nav != null and "reserved_by" in nav and not str(nav.reserved_by).is_empty(): return false
-	if nav == null or nav._has_target or is_instance_valid(nav._follow_target): return false
-	if not (nav.command_owner.is_empty() or nav.command_owner.begins_with("life:") or nav.command_owner.begins_with("bond:")): return false
-	return float(actor.get("actual_speed")) < 0.05 and actor.global_position.distance_to(global_position) < 3.5
+	if nav == null: return false
+	# Her AI choosing to join (accept(), M-AI-19): a chat's "social:" ownership, and its walk up to
+	# talk, are not a command of hers to keep.
+	var chatting: bool = _accepting and str(nav.command_owner).begins_with("social:")
+	if (nav._has_target and not chatting) or is_instance_valid(nav._follow_target): return false
+	if not (chatting or nav.command_owner.is_empty() or nav.command_owner.begins_with("life:") or nav.command_owner.begins_with("bond:")): return false
+	return (chatting or float(actor.get("actual_speed")) < 0.05) and actor.global_position.distance_to(global_position) < 3.5
 
 func rest_word() -> String:
 	return "couch"
@@ -185,6 +189,23 @@ func fits(actor: Node3D) -> bool:
 	var scale_factor := float(actor.get("body_scale"))
 	if scale_factor <= 1.05: return true
 	return MARE_OFF_CENTRE + MARE_HALF_LENGTH * scale_factor <= cushion_half_span()
+
+## Anon reclined on the cushions at body scale `scale` (avatar.model_scale: his height setting, and in
+## VR the headset's world scale too). Was a flat refusal above 1.3 (a chosen VR height over about
+## 6 ft 10 in, private board #360) that no geometry asked for. Measured instead: his eye rests at
+## sleep_eye (0.61 m off centre), the back of his head ANON_HEAD_BACK x scale beyond it must stay
+## within the sofa's end (cushions plus ANON_ARM_REST of armrest), and his hips, ANON_HIP_ALONG x scale
+## from the eye, must still lie on the cushions. The 1.6 m sofa takes him up to about 2.2.
+const ANON_HEAD_BACK := 0.12
+const ANON_HIP_ALONG := 0.63
+const ANON_ARM_REST := 0.1
+const ANON_EYE_OFF_CENTRE := 0.61
+func anon_fits(scale: float) -> bool:
+	if not is_finite(scale) or scale <= 0.0: return false
+	var span := cushion_half_span()
+	if span <= 0.0: span = WIDTH * 0.5
+	return ANON_EYE_OFF_CENTRE + ANON_HEAD_BACK * scale <= span + ANON_ARM_REST \
+		and ANON_EYE_OFF_CENTRE - ANON_HIP_ALONG * scale >= -span
 
 ## Half the seat cushions' length along the sofa (its SeatSolid boxes), measured once; 0 if none.
 func cushion_half_span() -> float:
@@ -291,6 +312,9 @@ func _physics_process(delta: float) -> void:
 				actor.request_posture("stand"); entry.waking = true
 			_release_company(actor)
 		actor.set_meta("couch_cuddle",cuddling)
+		# cuddle/player_input.gd READY_GROUP: its per-tick hover looks only at these ponies.
+		if cuddling: actor.add_to_group(&"couch_cuddle")
+		elif actor.is_in_group(&"couch_cuddle"): actor.remove_from_group(&"couch_cuddle")
 		if cuddling: actor.expressions.touch("couch",.15,.85)
 		else: actor.expressions.release_touch("couch")
 		if phase == "seated" and actor.posture_status().requested == "lie_down" and entry.elapsed > 60.0 and not actor.get_meta("cuddle_active",false):
@@ -338,6 +362,7 @@ func _release_pony(id: int, request_stand: bool) -> void:
 	if not is_instance_valid(entry.actor): return
 	var actor: Node3D = entry.actor
 	actor.remove_meta("couch_cuddle")
+	if actor.is_in_group(&"couch_cuddle"): actor.remove_from_group(&"couch_cuddle")
 	_release_company(actor)
 	actor.expressions.release_touch("couch")
 	actor.sleeping = false

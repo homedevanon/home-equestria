@@ -171,6 +171,13 @@ func work_action(action: String) -> bool:
 		# Jobs core (world/mechanics/jobs/job_shift.gd): a wage that could not be saved stays owed
 		# and is paid with this shift's; `-- --old-jobs` keeps the old reset.
 		if LEGACY.old_jobs(): duty_hours = 0.0
+		else:
+			# Owed hours are saved with the job state (M-MEC-05): after a reload they are still owed.
+			# The saved value wins, so loading an older save does not carry this session's hours over.
+			var jobs := _jobs()
+			var saved_world: Variant = jobs.get("context") if jobs != null else null
+			if saved_world is Node and not bool((saved_world as Node).get("_read_only")) and jobs.has_method("owed_hours"):
+				duty_hours = float(jobs.owed_hours("hayburger"))
 		_duty_clock = _clock_hours(); last_summary = ""
 		shift_group.clear()
 		return true
@@ -207,7 +214,17 @@ func _count_duty() -> void:
 	var now: float = _clock_hours()
 	if _working and now >= 0.0 and _duty_clock >= 0.0 and can_work():
 		duty_hours = minf(WAGE_MAX_HOURS, duty_hours + clampf(now - _duty_clock, 0.0, 1.0))
+		_save_owed(OWED_SAVE_STEP)
 	_duty_clock = now
+
+## Hours behind the counter not paid yet go into the saved job state (jobs.gd owed_hours), so a
+## save made mid-shift or after a failed payment still owes them after a reload. `step`: write
+## only once they moved that far (the environment tick calls this about once a second).
+const OWED_SAVE_STEP := 0.1
+func _save_owed(step := 0.0) -> void:
+	if LEGACY.old_jobs(): return
+	var jobs := _jobs()
+	if jobs != null and jobs.has_method("set_owed_hours"): jobs.set_owed_hours("hayburger", duty_hours, step)
 
 ## The shift's wage, paid once at clock-out: whole and part hours behind the counter.
 func wage_for(hours: float) -> int:
@@ -235,9 +252,15 @@ func _pay_wage(result: Dictionary) -> void:
 	var served: int = int(result.get("served", 0))
 	last_summary = "Shift over: %d hayburger%s served (%s in tips), %.1f h behind the counter.\nWage %s%s." % [
 		served, "" if served == 1 else "s", CURRENCY.amount(served * SHIFT.REWARD_BITS), duty_hours, CURRENCY.amount(wage),
-		" paid" if paid else " could not be paid; it is added to your next wage if you work another shift before leaving"]
+		" paid" if paid else " could not be paid; it is added to your next wage"]
 	last_summary_until_ms = Time.get_ticks_msec() + 90000
+	# The receipt line in Anon's notebook (jobs.gd note_pay / notebook_lines, M-MEC-05).
+	var jobs_core := _jobs()
+	if paid and wage > 0 and jobs_core != null and jobs_core.has_method("note_pay"):
+		jobs_core.note_pay("hayburger", wage, 0, duty_hours)
+		last_summary += "\nNoted in your notebook."
 	if paid: duty_hours = 0.0
+	_save_owed()
 
 ## The pre-port wage (`-- --old-jobs`): the town pays and the duty resets even when it failed.
 func _pay_wage_old(result: Dictionary) -> void:

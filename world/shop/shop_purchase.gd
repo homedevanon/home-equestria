@@ -34,7 +34,7 @@ static func take_world(inventory: Node, side: String, item: RigidBody3D, pose: T
 	if not TIDY.make_room(inventory):
 		_say(inventory, TIDY.full_text(inventory)); return false
 	var id := str(item.get_meta("item_id", ""))
-	if not ITEMS.has(id): return false
+	if not ITEMS.sellable(id): return false
 	var store: RefCounted = inventory.inventory
 	# Pony wear sells to human Anon too (dev 2026-10-22: "ponies still need to buy it"; bought as a
 	# gift, held up to a pony to give it: world/relationships/hand_feeding.gd).

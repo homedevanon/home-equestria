@@ -41,6 +41,9 @@ const DEFAULTS := {
 	"ponies/size": "canon",
 	"ponies/max_nearby": 0,
 	"ponies/boop_makes_mares_horny": false,
+	# How fast friendship and romance grow (M-AI-14): a multiplier on world/ai/impressions/
+	# pony_impressions.gd's gains and caps. 1.0 is the pace every number was tuned at.
+	"relationship/pace": 1.0,
 	"video/quality": "High",
 	# The tier a "Custom" quality started from: its keys stay under the edited rows (hidden).
 	"video/quality_base": "High",
@@ -52,12 +55,20 @@ const DEFAULTS := {
 	# "flat" and "volumetric" force one look on every tier.
 	"video/clouds": "preset",
 	"video/weather_particles": true,
+	# Seasonal effects (world/seasons/season_state.gd effects_level()): Off keeps season colours
+	# and snow cover but drops falling leaves and petals, snow trails and leaf piles.
+	"video/seasonal_effects": "full",
 	"video/vr_desktop_effects": false,
 	"video/color_grade": true,
 	"video/ocean": "preset",
 	# 0 = Auto: the preset's own scale, capped to about 1080p's pixel count on bigger windows.
 	"video/render_scale": 0,
 	"video/antialiasing": "preset",
+	# Two effects a weaker graphics card can drop on their own (2026-11-11, measured on High at the
+	# main street: 450 -> 507 FPS without ambient occlusion, about 4% more without glow).
+	# "preset" follows the quality tier (ambient occlusion is on from High up, glow from Medium up).
+	"video/ambient_occlusion": "preset",
+	"video/glow": "preset",
 	"video/upscaler": "preset",
 	"video/vsync": false,
 	"video/fps_cap": 0,
@@ -73,6 +84,9 @@ const DEFAULTS := {
 	"controls/mouse_sensitivity": 100,
 	"controls/invert_y": false,
 	"controls/fov": 75,
+	# Sprint key (M-INP-07, thread 43657405): false holds it to sprint (as always), true taps it on
+	# and off. Auto-run is a key of its own (CODE_ACTIONS "auto_run").
+	"controls/sprint_toggle": false,
 	"vr/start_mode": "ask",
 	"vr/seated": false,
 	"vr/turn_mode": "smooth",
@@ -131,6 +145,7 @@ const SPECS := {
 	"video/pony_impostors": {"type": "choice", "options": [["preset", "Preset"], [80, "80 m"], [100, "100 m"], [120, "120 m"], [150, "150 m"], [250, "250 m"], [0, "Unlimited"]]},
 	"ponies/max_nearby": {"type": "choice", "options": [[0, "Unlimited"], [4, "4"], [8, "8"], [12, "12"], [16, "16"], [24, "24"], [32, "32"], [48, "48"], [64, "64"]]},
 	"ponies/boop_makes_mares_horny": {"type": "bool", "labels": ["Off", "On"]},
+	"relationship/pace": {"type": "choice", "options": [[0.5, "Slow"], [1.0, "Normal"], [2.0, "Fast"]], "note": "friendship and romance"},
 	"video/quality": {"type": "choice", "options": [["Very Low", "Very Low"], ["Low", "Low"], ["Medium", "Medium"], ["High", "High"], ["Ultra", "Ultra"], ["Custom", "Custom"]]},
 	"video/quality_base": {"type": "choice", "options": [["Very Low", "Very Low"], ["Low", "Low"], ["Medium", "Medium"], ["High", "High"], ["Ultra", "Ultra"]]},
 	"video/shadows": {"type": "choice", "options": [["preset", "Follow preset"], ["off", "Off"], ["very_low", "Very Low"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]},
@@ -139,12 +154,15 @@ const SPECS := {
 	"video/foliage_density": {"type": "int", "min": 25, "max": 100, "step": 25, "fmt": "%d%%", "note": "new areas"},
 	"video/clouds": {"type": "choice", "options": [["preset", "Follow preset"], ["flat", "Flat sky clouds"], ["volumetric", "Volumetric"]]},
 	"video/weather_particles": {"type": "bool", "labels": ["Off", "On"]},
+	"video/seasonal_effects": {"type": "choice", "options": [["full", "Full"], ["reduced", "Reduced"], ["off", "Off"]]},
 	# dev 2026-09-25: try the desktop glow in the headset. Restart the game after changing it.
 	"video/vr_desktop_effects": {"type": "bool", "labels": ["Off (restart)", "On (restart)"]},
 	"video/color_grade": {"type": "bool", "labels": ["Off", "On"]},
 	"video/ocean": {"type": "choice", "options": [["preset", "Follow preset"], ["fft", "Stylized waves"], ["classic", "Classic flat"]]},
 	"video/render_scale": {"type": "choice", "options": [[0, "Auto"], [50, "50%"], [55, "55%"], [60, "60%"], [65, "65%"], [70, "70%"], [75, "75%"], [80, "80%"], [85, "85%"], [90, "90%"], [95, "95%"], [100, "100%"], [105, "105%"], [110, "110%"], [115, "115%"], [120, "120%"], [125, "125%"], [130, "130%"], [135, "135%"], [140, "140%"], [145, "145%"], [150, "150%"]]},
 	"video/antialiasing": {"type": "choice", "options": [["preset", "Follow preset"], ["off", "Off"], ["fxaa", "FXAA"], ["smaa", "SMAA"], ["taa", "TAA"], ["msaa2", "MSAA 2x"], ["msaa4", "MSAA 4x"]], "note": "desktop"},
+	"video/ambient_occlusion": {"type": "choice", "options": [["preset", "Follow preset"], ["off", "Off (faster)"], ["on", "On"]], "note": "soft shade in corners"},
+	"video/glow": {"type": "choice", "options": [["preset", "Follow preset"], ["off", "Off (faster)"], ["on", "On"]], "note": "desktop"},
 	"video/upscaler": {"type": "choice", "options": [["preset", "Follow preset"], ["bilinear", "Bilinear"], ["fsr1", "FSR 1"], ["fsr2", "FSR 2"]], "note": "below 100%"},
 	"video/vsync": {"type": "bool", "labels": ["Off", "On"], "note": "desktop"},
 	"video/frames_ahead": {"type": "choice", "options": [["preset", "Follow preset (restart)"], ["off", "Off (restart)"], ["on", "On (restart)"]], "note": "more FPS, +1 frame input lag"},
@@ -159,6 +177,7 @@ const SPECS := {
 	"controls/mouse_sensitivity": {"type": "int", "min": 1, "max": 400, "step": 1, "arrow_step": 5, "typed": true, "fmt": "%d%%"},
 	"controls/invert_y": {"type": "bool", "labels": ["Off", "On"]},
 	"controls/fov": {"type": "int", "min": 60, "max": 110, "step": 5, "fmt": "%d°"},
+	"controls/sprint_toggle": {"type": "bool", "labels": ["Hold", "Tap to toggle"]},
 	"vr/start_mode": {"type": "choice", "options": [["ask", "Ask every launch"], ["auto", "Auto (headset if found)"], ["on", "On"], ["off", "Off"]], "note": "applies on next launch"},
 	# Seated VR (dev 2026-10-01): headset view with keyboard and mouse; --seated / --room-scale win.
 	"vr/seated": {"type": "bool", "labels": ["Room-scale with controllers", "Seated: keyboard and mouse"], "note": "applies on next launch"},
@@ -203,30 +222,32 @@ const SPECS := {
 ## Actions offered for rebinding (project.godot [input]); debug actions are left out.
 const BINDABLE := [["Move forward", "move_forward"], ["Move back", "move_back"], ["Move left", "move_left"],
 	["Move right", "move_right"], ["Sprint", "move_sprint"], ["Jump / fly up", "move_jump"], ["Push to talk", "voice_talk"],
-	["Walk (tap to toggle)", "move_walk"], ["Turn carried pony", "carry_turn"], ["Get up / stay awake", "stand_up"]]
+	["Walk (tap to toggle)", "move_walk"], ["Turn carried pony", "carry_turn"], ["Get up / stay awake", "stand_up"],
+	["Auto-run (tap to toggle)", "auto_run"]]
 ## Actions the game creates itself with these default keys (not in project.godot's [input]): the
-## playtester's walk toggle and carry turn, and getting up (2026-10-24, made rebindable).
-const CODE_ACTIONS := {"move_walk": KEY_ALT, "carry_turn": KEY_B, "stand_up": KEY_Q}
+## playtester's walk toggle and carry turn, and getting up (2026-10-24, made rebindable). Auto-run
+## (M-INP-07) sits on NumLock, the usual auto-run key, which nothing else in the game uses.
+const CODE_ACTIONS := {"move_walk": KEY_ALT, "carry_turn": KEY_B, "stand_up": KEY_Q, "auto_run": KEY_NUMLOCK}
 ## Page rows: [label, key]. "bind:<action>" is a key capture, "action:<id>" a button.
 const TABS := [
 	["AI Settings", []],
 	["Prompts", []],
 	["Saved notes", []],
-	["Graphics", [["Quality preset", "video/quality"], ["Shadows", "video/shadows"], ["Draw distance", "video/draw_distance"],
+	["Graphics", [["Quality preset", "video/quality"], ["Shadows", "video/shadows"], ["Ambient occlusion", "video/ambient_occlusion"], ["Glow", "video/glow"], ["Draw distance", "video/draw_distance"],
 		["Grass density", "video/grass_density"], ["Trees & plants", "video/foliage_density"], ["Max nearby ponies", "ponies/max_nearby"], ["Pony pictures from", "video/pony_impostors"],
-["Clouds", "video/clouds"], ["Rain & snow particles", "video/weather_particles"], ["Ocean", "video/ocean"], ["Glow in VR", "video/vr_desktop_effects"], ["Colour grade", "video/color_grade"],
+["Clouds", "video/clouds"], ["Rain & snow particles", "video/weather_particles"], ["Seasonal effects", "video/seasonal_effects"], ["Ocean", "video/ocean"], ["Glow in VR", "video/vr_desktop_effects"], ["Colour grade", "video/color_grade"],
 		["Render scale", "video/render_scale"], ["Upscaler", "video/upscaler"], ["Anti-aliasing", "video/antialiasing"], ["V-Sync", "video/vsync"], ["FPS cap", "video/fps_cap"], ["Extra frame ahead", "video/frames_ahead"], ["Window", "video/window"], ["Window size", "video/window_size"]]],
 	["Controls", [["Mouse sensitivity", "controls/mouse_sensitivity"], ["Invert mouse Y", "controls/invert_y"], ["Field of view", "controls/fov"],
 		["Move forward", "bind:move_forward"], ["Move back", "bind:move_back"], ["Move left", "bind:move_left"], ["Move right", "bind:move_right"],
-		["Sprint", "bind:move_sprint"], ["Jump / fly up", "bind:move_jump"], ["Push to talk", "bind:voice_talk"],
-		["Walk (tap to toggle)", "bind:move_walk"], ["Turn carried pony", "bind:carry_turn"], ["Get up / stay awake", "bind:stand_up"],
+		["Sprint", "bind:move_sprint"], ["Sprint key", "controls/sprint_toggle"], ["Jump / fly up", "bind:move_jump"], ["Push to talk", "bind:voice_talk"],
+		["Walk (tap to toggle)", "bind:move_walk"], ["Auto-run (tap to toggle)", "bind:auto_run"], ["Turn carried pony", "bind:carry_turn"], ["Get up / stay awake", "bind:stand_up"],
 		["Reset keys to defaults", "action:reset_bindings"], ["Controls map", "action:controls_map"]]],
 	["Controls map", []],
 	["VR comfort", [["Start in VR", "vr/start_mode"], ["Play style", "vr/seated"], ["Turning", "vr/turn_mode"], ["Snap angle", "vr/snap_angle"], ["Smooth turn speed", "vr/turn_speed"], ["Movement stick", "vr/move_hand"],
 		["Measure my height now", "action:measure_height"], ["Forget measured height", "action:forget_height"]]],
 	["Audio", [["Master volume", "audio/master"], ["Voice volume", "audio/voice"], ["Effects volume", "audio/sfx"], ["Ambience volume", "audio/ambience"], ["Flight wind volume", "audio/wind"], ["Music volume", "audio/music"], ["Pony voices", "voice/tts"], ["Ponese syllables", "voice/ponese_syllables"]]],
 	["World", [["Day length (time speed)", "world/day_length_minutes"], ["Season length", "world/season_days"], ["Title screen view", "title/view"], ["Rain & snow frequency", "world/weather_frequency"], ["Opening", "world/opening"], ["Anon's height (your real height)", "player/height_cm"], ["Pony size", "ponies/size"],
-		["Boop Makes Mares Horny", "ponies/boop_makes_mares_horny"],
+		["Relationship pace", "relationship/pace"], ["Boop Makes Mares Horny", "ponies/boop_makes_mares_horny"],
 		["Ponies freeze while I talk or type", "ai/freeze_while_talking"], ["A pony freezes while she thinks", "ai/freeze_while_thinking"], ["Time-stop look (vignette, slow sound)", "ai/freeze_effect"], ["Summon the Great Evil", "action:spawn_barbiepone"]]],
 	["Accessibility", [["Subtitles", "access/subtitles"], ["Subtitle size", "access/subtitle_scale"], ["Caption background", "access/caption_card"], ["Background opacity", "access/caption_opacity"], ["Pony speech text", "access/speech_text"], ["Menu text size", "access/ui_scale"], ["Reduced motion", "access/reduced_motion"]]],
 	["Reading", [["Paper", "reading/paper"], ["Font", "reading/font"], ["Text size", "reading/size"]]],
@@ -320,8 +341,14 @@ func _register_mip_loader() -> void:
 	print("[settings] %s tier: imported textures load %d mip level(s) down" % [base, drop])
 
 
+## Takes gameplay keys out of the InputMap while a text field has focus (world/ui/typing_guard.gd).
+var typing_guard: Node
+
+
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	typing_guard = preload("res://world/ui/typing_guard.gd").new(); typing_guard.name = "TypingGuard"
+	add_child(typing_guard)
 	var config := ConfigFile.new()
 	var first_launch := config.load(PATH) != OK
 	if not first_launch:
@@ -403,6 +430,8 @@ static func validate(key: String, value: Variant) -> Variant:
 		"choice":
 			for option in spec.options:
 				if typeof(option[0]) == TYPE_INT and (value is int or value is float) and int(value) == int(option[0]) and float(value) == float(int(value)): return option[0]
+				# Fractional choices (relationship/pace): 2 or 2.0 picks 2.0.
+				if typeof(option[0]) == TYPE_FLOAT and (value is int or value is float) and is_equal_approx(float(value), float(option[0])): return option[0]
 				if typeof(option[0]) == TYPE_STRING and value is String and value == option[0]: return option[0]
 			return null
 	return null
@@ -629,7 +658,7 @@ static func route(player: Node, bus: String) -> void:
 func _apply(key: String) -> void:
 	if key == "video/quality": _write_frames_ahead()
 	if key.begins_with("audio/"): _apply_audio()
-	elif key in ["video/quality", "video/shadows", "video/draw_distance", "video/render_scale", "video/antialiasing", "video/upscaler"]: _apply_quality()
+	elif key in ["video/quality", "video/shadows", "video/draw_distance", "video/render_scale", "video/antialiasing", "video/upscaler", "video/ambient_occlusion", "video/glow"]: _apply_quality()
 	elif key in ["video/vsync", "video/fps_cap", "video/window"]: _apply_display(key == "video/window")
 	elif key == "video/window_size": _apply_window_size()
 	elif key == "video/frames_ahead": _write_frames_ahead()
@@ -677,6 +706,12 @@ func _apply_quality() -> void:
 	if AA_MODES.has(aa): overrides.merge(AA_MODES[aa])
 	var upscaler := str(get_value("video/upscaler"))
 	if UPSCALERS.has(upscaler): overrides["scaling_mode"] = UPSCALERS[upscaler]
+	# The headset keeps both off whatever these say (Quality.XR_OVERRIDES).
+	var occlusion := str(get_value("video/ambient_occlusion"))
+	if occlusion == "off": overrides["ssao"] = false; overrides["ssil"] = false
+	elif occlusion == "on": overrides["ssao"] = true
+	var glow := str(get_value("video/glow"))
+	if glow != "preset": overrides["glow"] = glow == "on"
 	quality.vr_desktop_effects = bool(get_value("video/vr_desktop_effects"))
 	_applying_quality = true
 	if index >= 0 and quality.preset != index: quality.preset = index
@@ -812,6 +847,11 @@ func weather_frequency() -> float:
 	return int(get_value("world/weather_frequency")) / 100.0
 
 
+## The relationship pace multiplier (M-AI-14): 0.5 slow, 1.0 normal, 2.0 fast.
+func relationship_pace() -> float:
+	return float(get_value("relationship/pace"))
+
+
 func season_days() -> int:
 	return int(get_value("world/season_days"))
 
@@ -876,7 +916,10 @@ static func key_name(keycode: int) -> String:
 
 func _action_key(action: String) -> int:
 	if not InputMap.has_action(action): return 0
-	for event in InputMap.action_get_events(action):
+	# While typing, the keys sit in the typing guard's stash; hints still name them.
+	var events: Array = InputMap.action_get_events(action)
+	if typing_guard != null: events += typing_guard.get("_stashed").get(StringName(action), [])
+	for event in events:
 		if event is InputEventKey:
 			var k := event as InputEventKey
 			return k.physical_keycode if k.physical_keycode != 0 else k.keycode

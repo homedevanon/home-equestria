@@ -26,6 +26,21 @@ bool deployed_footprint(vec2 xz) {
 	return false;
 }
 
+// Seasons (res://world/seasons/season.gdshaderinc; season_state.gd writes it): winter grass is
+// short and flattened under snow (season_snow = snow cover), wet grass darker.
+#include "res://world/seasons/season.gdshaderinc"
+// Tree-crown shelter near the camera, bound by res://world/seasons/snow_trail.gd on these
+// materials exactly as on the terrain (gaea_surface.gdshaderinc season_canopy).
+uniform sampler2D season_shelter_map : filter_linear, repeat_disable;
+uniform vec4 season_shelter_rect = vec4(0.0);
+float season_canopy(vec2 xz) {
+	if (season_shelter_rect.z <= 0.0) return 0.0;
+	vec2 suv = (xz - season_shelter_rect.xy) / season_shelter_rect.zw;
+	float edge = min(min(suv.x, suv.y), min(1.0 - suv.x, 1.0 - suv.y));
+	if (edge <= 0.0) return 0.0;
+	return textureLod(season_shelter_map, suv, 0.0).r * smoothstep(0.0, .12, edge);
+}
+
 uniform sampler2DArray height_maps : filter_nearest, repeat_disable;
 uniform sampler2DArray control_maps : filter_nearest, repeat_disable;
 uniform int region_map[1024];
@@ -45,7 +60,7 @@ uniform float clump_scale = 1.0;  // (unused, kept for older materials)
 uniform float blade_width = 0.035;
 uniform float tuft_radius = 0.0;  // >0: most blades gather in tufts of this radius (m)
 uniform float grass_height = 0.34;
-global uniform float season_snow;   // winter: grass short and flattened under snow
+const float LOOK_LEAF_PRESS = 0.55;
 uniform float inner_radius = 0.0;
 uniform float outer_radius = 22.0;
 uniform float band = 6.0;
@@ -68,6 +83,13 @@ varying float v_rand;
 varying float v_patch;
 varying float v_fade;
 varying vec3 v_normal;
+// Spring: rgb = the petal colour this blade's tip carries, a = 1 when it does (far flower drifts).
+varying vec4 v_flower;
+// Spring flower drifts past the reach of the real flowers (ground_flowers.gdshader, 34 m): there a
+// share of the blades inside a drift carry a petal-coloured tip, so the drifts run on to where
+// the grass ends instead of stopping in a ring round the player (shots of 2026-11-10).
+// 0.0 = no coloured tips.
+const float LOOK_SPRING_FAR_FLOWERS = 1.0;
 
 float hash12(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -168,20 +190,36 @@ void vertex() {
 	if (any(lessThan(guv, vec2(0.0))) || any(greaterThan(guv, vec2(1.0)))) gc = vec4(0.0);
 	if (keep && deployed_footprint(xz)) density = 0.0;
 	float cover = density;
-	// Winter snow: the same drift field the terrain whitens with (gaea_fragment.gdshaderinc).
-	// Blades on snowed-over ground are buried or whitened; the colour probe can lag the snow.
+	bool alive = keep && density > hash12(seed + 91.7) * 0.35 + 0.02 && gc.a >= 0.5;
+	// Winter snow: the terrain's own season_snow_on (gaea_fragment.gdshaderinc), minus the tree-
+	// crown shelter; the colour probe holds the terrain's snow, so where the ground shows bare
+	// (trodden roads and their verges, forest floor) blades are neither buried nor whitened.
+	// Only live blades pay for it.
 	float snow_cover = 0.0;
-	if (season_snow > 0.001) {
-		float s_drift = 0.5 + 0.25 * (sin(xz.x * 0.21 + sin(xz.y * 0.13)) + sin(xz.y * 0.17 + xz.x * 0.05));
-		snow_cover = clamp(smoothstep(0.55, 0.85, ground_n.y) * smoothstep(1.0 - season_snow, 1.35 - season_snow, s_drift + season_snow * 0.5), 0.0, 1.0);
+	if (alive && season_snow_cover > 0.001) {
+		snow_cover = season_snow_on(ground_n, vec3(xz.x, y, xz.y)) * (1.0 - season_canopy(xz) * 0.85);
+		snow_cover *= smoothstep(0.15, 0.45, min(gc.r, min(gc.g, gc.b)));
 	}
-	if (!keep || density <= hash12(seed + 91.7) * 0.35 + 0.02 || gc.a < 0.5 || snow_cover > hash12(seed + 61.3) * 0.5 + 0.35) {
+	v_flower = vec4(0.0);
+	if (!alive || snow_cover > hash12(seed + 61.3) * 0.5 + 0.35) {
 		VERTEX = origin;   // collapse: nothing rasterized
 		v_color = vec3(0.0);
 	} else {
+		if (season_spring > 0.0005 && LOOK_SPRING_FAR_FLOWERS > 0.0 && dist > 22.0) {
+			float far = smoothstep(22.0, 32.0, dist);
+			// The cheap test first: the drift (three noise lookups) only lowers the limit, and few blades pass.
+			float pick = hash12(seed + 44.1);
+			float most = season_flower_bloom() * far * 0.4;
+			if (pick < most) {
+				if (pick < most * season_flower_drift(xz))
+					v_flower = vec4(season_flower_palette(int(season_flower_pick(xz) * 8.0)), 1.0);
+			}
+		}
 		// a few metres of rendered ground, so single texture flecks do not tint a blade
 		v_color = gc.rgb;
 		v_color = mix(v_color, vec3(0.9, 0.93, 0.98), snow_cover);
+		// Rain-wet grass darkens with the ground (the probe leaves wetness out so it never lags).
+		if (season_wetness > 0.001) v_color *= mix(1.0, 0.7, clamp(season_wet_amount(vec3(xz.x, y, xz.y)), 0.0, 1.0));
 		// Two scales of world patches: lush and dry swathes, tall and short.
 		v_patch = value_noise(xz * 0.045 + 3.0) * 0.65 + value_noise(xz * 0.21 - 8.0) * 0.35;
 		// Heights vary gently, and grass shortens toward paths and thin cover instead of stopping at a line.
@@ -197,6 +235,10 @@ void vertex() {
 		else if (kind < 0.40) { hmul = mix(1.15, 1.35, h4); droop = mix(0.45, 0.8, h5); taper = 1.8; }               // droopy
 		float tall = grass_height * hmul * mix(0.8, 1.15, h2) * mix(0.8, 1.15, v_patch) * smoothstep(0.0, 0.9, cover);
 		tall *= (1.0 - season_snow * 0.65) * (1.0 - snow_cover * 0.6);
+		// Autumn: under a crown the grass lies pressed down by the leaves fallen on it, so the leaf
+		// carpet (world/seasons/leaf_carpet.gd) rests on top and shows instead of drowning in
+		// 0.3 m blades (shots of 2026-11-10). LOOK_LEAF_PRESS = 0.0 keeps the full height.
+		if (season_leaf_litter > 0.001) tall *= 1.0 - LOOK_LEAF_PRESS * season_canopy(xz) * smoothstep(0.05, 0.45, season_leaf_litter);
 		float width = blade_width * wmul * mix(0.7, 1.35, h3);
 		if (fade_out > 0.0) { v_fade = smoothstep(outer_radius, outer_radius - fade_out, dist); tall *= v_fade; } else { v_fade = 1.0; }
 		// Neighbouring blades lean the same way (a slow world flow field), like brushed fur.
@@ -248,10 +290,14 @@ void fragment() {
 	col *= mix(0.95, 1.05, v_rand);
 	// Far blades settle toward the plain ground colour so the fade into terrain is invisible.
 	col = mix(v_color, col, v_fade);
+	// Spring: the tip of a far blade in a flower drift is the flower.
+	float flower_tip = v_flower.a * smoothstep(0.45, 0.65, v_height) * v_fade;
+	col = mix(col, v_flower.rgb, flower_tip);
 	// Both faces of a blade use the same normal: no dark/light flip as blades turn.
 	NORMAL = normalize((VIEW_MATRIX * vec4(v_normal, 0.0)).xyz);
 	ALBEDO = col;
 	ROUGHNESS = 0.9;
 	SPECULAR = 0.3;
 	BACKLIGHT = col * 0.15 * v_height;
+	EMISSION = v_flower.rgb * (0.18 * flower_tip * sky_daylight);
 }

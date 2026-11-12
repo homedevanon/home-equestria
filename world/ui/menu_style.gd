@@ -414,7 +414,10 @@ static func sharp_picture(rect: TextureRect, source: Texture2D) -> void:
 		rect.texture = ImageTexture.create_from_image(image)
 	rect.set_meta(&"sharp_refit", refit)
 	rect.resized.connect(refit)
-	refit.call_deferred()
+	# Deferred through the rect itself: a deferred call on a freed object is dropped silently,
+	# whereas the lambda errored "Lambda capture at index 0 was freed" when the picture was freed
+	# in the same frame (W1-TEST-BASELINES).
+	Callable(rect, &"emit_signal").bind(&"resized").call_deferred()
 
 
 ## Fits a sharp_picture() again, once the layout has settled: after its scale on screen changed

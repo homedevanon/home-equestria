@@ -15,6 +15,14 @@ extends Node
 ## an install folder the player cannot write to, and Android/Quest only say a version is out and
 ## open the release page. No build key (world/update/release_public_key.pem missing) = no
 ## updater at all. Requests carry only a fixed User-Agent: no ids, no telemetry.
+##
+## GitHub's API allows 60 unauthenticated requests an hour per address, so a shared or busy
+## connection got HTTP 403 and "Could not reach the release" (player reports, Nov 4 2026). On a 403,
+## a 429 or a network error from the API the check falls back to the plain release download address
+## (releases/latest/download/update_manifest.json and .sig; the "setup" release is GitHub's Latest
+## and mirrors them), with the same signature check. A check that got a manifest and a valid
+## signature is kept for an hour (user://update_check.json), so repeated presses do not spend the
+## limit. The signed manifest's optional "mods" section goes to world/update/mod_updates.gd.
 
 signal changed
 
@@ -25,6 +33,12 @@ const ICON := preload("res://world/ui/menu_icon.gd")
 const VERSION := preload("res://world/debug/version.gd")
 const API := "https://api.github.com/repos/homedevanon/home-equestria/releases/latest"
 const DOWNLOADS := "https://github.com/homedevanon/home-equestria/releases/download/"
+## The non-API address of the Latest release's files: no rate limit, a redirect to DOWNLOADS/<tag>/.
+const LATEST_DOWNLOAD := "https://github.com/homedevanon/home-equestria/releases/latest/download/"
+## The API's own address for one release file (asked with Accept: application/octet-stream it
+## redirects to the file host). Used only when the API listed the release and the plain download
+## address failed with a server error (GitHub answered 504 for update_manifest.json there, Nov 8 2026).
+const API_ASSETS := "https://api.github.com/repos/homedevanon/home-equestria/releases/assets/"
 const RELEASES := "https://github.com/homedevanon/home-equestria/releases"
 ## GitHub answers a release download with a redirect to its file host.
 const FILE_HOSTS := ["objects.githubusercontent.com", "release-assets.githubusercontent.com"]
@@ -32,6 +46,9 @@ const MANIFEST := "update_manifest.json"
 const USER_AGENT := "HomeEquestria-updater"
 const STAGING := "user://update_staging"
 const STATE := "user://update_state.cfg"
+const CHECK_CACHE := "user://update_check.json"
+const CACHE_SECONDS := 3600
+const MOD_UPDATES := "res://world/update/mod_updates.gd"
 
 static var _told_no_key := false
 
@@ -43,6 +60,11 @@ var platform := ""
 var can_install := false
 var quit_game := Callable()      # the pause menu's quit (it autosaves first)
 var staging := STAGING           # tests use a temp folder
+var state_path := STATE          # tests use a temp file
+var cache_path := CHECK_CACHE    # tests use a temp file
+var running_version := ""        # tests: the version this copy claims to be ("" = world/debug/version.gd)
+## Tests: func(url, to_file, limit, accept) -> [result, code, headers, body] in place of the network.
+var transport := Callable()
 var _key: CryptoKey
 var _page := RELEASES
 var _manifest: Dictionary = {}
@@ -50,6 +72,9 @@ var _assets: Dictionary = {}     # release file name -> download address
 var _http: HTTPRequest
 var _own_roots := false          # this system's roots refused GitHub; the game's own are in use
 var _check_failed := false       # the last check could not reach GitHub (the version line says so)
+var _last_error := ""            # why the last check failed, for the install status line
+var _via := ""                   # how the last manifest came: "api" or "download" (the 403 fallback)
+var _tag := ""                   # the release tag the download address redirected to
 var _reply: Array = []
 var _thread: Thread
 var _stop := false
@@ -76,12 +101,12 @@ func _ready() -> void:
 	add_child(_http)
 	_after_install()
 	var saved := ConfigFile.new()
-	saved.load(STATE)
+	saved.load(state_path)
 	var known := str(saved.get_value("check", "latest", ""))
-	if VERIFY.newer(known, _version()):
+	if VERIFY.newer(known, _mine()):
 		latest = known; state = "available"
 		_page = str(saved.get_value("check", "page", RELEASES))
-	elif known == _version() or str(saved.get_value("check", "current_for", "")) == _version():
+	elif known == _mine() or str(saved.get_value("check", "current_for", "")) == _mine():
 		state = "current"
 	_refresh()
 	var wanted: Variant = Settings.get_value("updates/check")
@@ -103,13 +128,13 @@ static func shared(from: Node) -> Node:
 
 ## Which version this is and whether a newer one is out, for every menu that shows it.
 func version_line() -> String:
-	var mine := _version()
+	var mine := _mine()
 	if mine == "": return "Development copy (run from source)"
 	if latest != "" and state in ["available", "working", "failed"]:
 		return "You have an outdated version (%s). Newest: %s" % [mine, latest]
 	if state == "current": return "You have the newest version (%s)" % mine
 	if state == "checking": return "You have version %s. Checking for a newer one..." % mine
-	if state == "idle" and _check_failed: return "You have version %s. Could not check for a newer one." % mine
+	if state == "idle" and _check_failed: return "You have version %s. Could not check for a newer one (details in %s)." % [mine, log_path()]
 	return "You have version %s" % mine
 
 
@@ -161,73 +186,187 @@ func check() -> bool:
 	if state in ["off", "checking", "working"]: return false
 	var before := state
 	state = "checking"
-	var saved := ConfigFile.new(); saved.load(STATE)
-	saved.set_value("check", "last", Time.get_unix_time_from_system()); saved.save(STATE)
+	var saved := ConfigFile.new(); saved.load(state_path)
+	saved.set_value("check", "last", Time.get_unix_time_from_system()); saved.save(state_path)
 	var found := await _find_update()
 	if found.has("error"):
 		print("[update] check: %s" % found.error)
+		_last_error = str(found.error)
 		state = "current" if "not newer" in str(found.error) else before if before == "available" else "idle"
 		_check_failed = state == "idle"
-		if state == "current": saved.set_value("check", "current_for", _version()); saved.save(STATE)
+		if state == "current": saved.set_value("check", "current_for", _mine()); saved.save(state_path)
 		_refresh(); return false
 	_manifest = found
 	_check_failed = false
 	latest = str(found.version); state = "available"
-	saved.set_value("check", "latest", latest); saved.set_value("check", "page", _page); saved.save(STATE)
+	saved.set_value("check", "latest", latest); saved.set_value("check", "page", _page); saved.save(state_path)
 	print("[update] version %s is available (signed manifest verified)" % latest)
 	_refresh(); return true
 
 
 func _find_update() -> Dictionary:
+	var got := _cached_check()
+	if got.is_empty():
+		got = await _fetch_release()
+		if got.has("error"): return got
+		if VERIFY.signature_ok(got.manifest, got.sig, _key): _save_check(got)
+	_hand_mods(got.manifest, got.sig)
+	return VERIFY.verified_manifest(got.manifest, got.sig, _key, _mine())
+
+
+## The latest release's manifest and signature: {"manifest": bytes, "sig": text} or {"error"}.
+## The API first (it lists the release page and every file); on its rate limit (403/429) or a
+## network error, the release download address, which has no limit.
+func _fetch_release() -> Dictionary:
 	var reply := await _fetch(API, "", 4 << 20, "application/vnd.github+json")
-	if reply.has("error"): return reply
+	if reply.has("error"):
+		if not (int(reply.get("code", 0)) in [403, 429] or int(reply.get("result", 0)) != HTTPRequest.RESULT_SUCCESS): return reply
+		print("[update] the GitHub API refused the check (%s); trying the release download address instead" % reply.error)
+		var direct := await _fetch_latest_download()
+		if direct.has("error"): return {"error": "%s; the release download address failed too: %s" % [reply.error, direct.error]}
+		return direct
 	var release: Variant = JSON.parse_string((reply.body as PackedByteArray).get_string_from_utf8())
 	if not (release is Dictionary) or not ((release as Dictionary).get("assets") is Array): return {"error": "unexpected release reply"}
 	var page := str((release as Dictionary).get("html_url", ""))
 	if page.begins_with(RELEASES + "/"): _page = page
 	_assets.clear()
+	var by_api := {}
 	for asset: Variant in (release as Dictionary).assets:
 		if not (asset is Dictionary): continue
 		var url := str((asset as Dictionary).get("browser_download_url", ""))
 		if _allowed(url, false): _assets[str((asset as Dictionary).get("name", ""))] = url
+		var api_url := str((asset as Dictionary).get("url", ""))
+		if _api_asset(api_url): by_api[str((asset as Dictionary).get("name", ""))] = api_url
 	if not _assets.has(MANIFEST) or not _assets.has(MANIFEST + ".sig"): return {"error": "the latest release has no signed manifest"}
-	var manifest := await _fetch(str(_assets[MANIFEST]), "", 1 << 20, "application/octet-stream")
+	var manifest := await _fetch_listed(MANIFEST, 1 << 20, by_api)
 	if manifest.has("error"): return manifest
-	var signature := await _fetch(str(_assets[MANIFEST + ".sig"]), "", 64 << 10, "application/octet-stream")
+	var signature := await _fetch_listed(MANIFEST + ".sig", 64 << 10, by_api)
 	if signature.has("error"): return signature
-	return VERIFY.verified_manifest(manifest.body, (signature.body as PackedByteArray).get_string_from_ascii(), _key, _version())
+	_via = "api"; _tag = str(manifest.get("tag", ""))
+	if _tag == "": _tag = _tag_of(str(_assets[MANIFEST]))
+	return {"manifest": manifest.body, "sig": (signature.body as PackedByteArray).get_string_from_ascii()}
+
+
+## One small file the API listed, from its download address; on a server or network error there,
+## once more through the API's own address for that file (the signature is checked by the caller).
+func _fetch_listed(name: String, limit: int, by_api: Dictionary) -> Dictionary:
+	var reply := await _fetch(str(_assets[name]), "", limit, "application/octet-stream")
+	if not reply.has("error") or not by_api.has(name) or str(reply.error) == "stopped": return reply
+	if int(reply.get("result", 0)) == HTTPRequest.RESULT_SUCCESS and int(reply.get("code", 0)) < 500: return reply
+	print("[update] %s: %s; asking the GitHub API for the same file" % [name, reply.error])
+	var again := await _fetch(str(by_api[name]), "", limit, "application/octet-stream")
+	return again if not again.has("error") else {"error": "%s; through the API: %s" % [reply.error, again.error], "code": again.get("code", 0), "result": again.get("result", 0)}
+
+
+static func _api_asset(url: String) -> bool:
+	return url.begins_with(API_ASSETS) and RegEx.create_from_string("^[0-9]{1,20}$").search(url.trim_prefix(API_ASSETS)) != null
+
+
+static func _tag_of(url: String) -> String:
+	if not url.begins_with(DOWNLOADS): return ""
+	var tag := url.trim_prefix(DOWNLOADS).get_slice("/", 0)
+	return tag if RegEx.create_from_string(VERIFY.ASSET_NAME).search(tag) != null else ""
+
+
+## The 403 fallback: releases/latest/download/<file> redirects to the Latest release's file. The
+## file list is not known this way; install() asks for each archive by name (_find_assets()).
+func _fetch_latest_download() -> Dictionary:
+	var manifest := await _fetch(LATEST_DOWNLOAD + MANIFEST, "", 1 << 20, "application/octet-stream")
+	if manifest.has("error"): return manifest
+	var signature := await _fetch(LATEST_DOWNLOAD + MANIFEST + ".sig", "", 64 << 10, "application/octet-stream")
+	if signature.has("error"): return signature
+	_assets.clear()
+	_via = "download"; _tag = str(manifest.get("tag", ""))
+	_page = RELEASES + ("/tag/" + _tag if _tag != "" else "/latest")
+	return {"manifest": manifest.body, "sig": (signature.body as PackedByteArray).get_string_from_ascii()}
+
+
+## A check from the last hour for this same version: {"manifest", "sig"} (verified again by the
+## caller exactly like a fresh one), or {} when there is none.
+func _cached_check() -> Dictionary:
+	if not FileAccess.file_exists(cache_path): return {}
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(cache_path))
+	if not (parsed is Dictionary): return {}
+	var cached: Dictionary = parsed
+	var age := Time.get_unix_time_from_system() - float(cached.get("at", 0.0))
+	if age < 0.0 or age > CACHE_SECONDS or str(cached.get("for", "")) != _mine(): return {}
+	var assets: Variant = cached.get("assets", {})
+	if not (assets is Dictionary): return {}
+	_assets.clear()
+	for name: Variant in assets:
+		var url := str((assets as Dictionary)[name])
+		if _allowed(url, false): _assets[str(name)] = url
+	_via = str(cached.get("via", "")); _tag = str(cached.get("tag", ""))
+	var page := str(cached.get("page", ""))
+	if page.begins_with(RELEASES + "/"): _page = page
+	print("[update] using the check from %d minutes ago" % int(age / 60.0))
+	return {"manifest": Marshalls.base64_to_raw(str(cached.get("manifest", ""))), "sig": str(cached.get("sig", ""))}
+
+
+func _save_check(got: Dictionary) -> void:
+	var file := FileAccess.open(cache_path, FileAccess.WRITE)
+	if file == null: return
+	file.store_string(JSON.stringify({"at": Time.get_unix_time_from_system(), "for": _mine(), "via": _via, "tag": _tag,
+		"page": _page, "assets": _assets, "manifest": Marshalls.raw_to_base64(got.manifest), "sig": str(got.sig)}))
+
+
+## The signed manifest's "mods" section (bundled-mod updates) goes to world/update/mod_updates.gd,
+## whatever the game version: a signed mod update can come while the game is current.
+func _hand_mods(manifest: PackedByteArray, sig: String) -> void:
+	if not is_inside_tree() or not ResourceLoader.exists(MOD_UPDATES): return
+	var mods: Node = load(MOD_UPDATES).shared(self)
+	if mods != null: mods.call_deferred("from_signed_manifest", manifest, sig, _key)
+
+
+## Where this copy writes its log, for messages that send the player there.
+static func log_path() -> String:
+	return ProjectSettings.globalize_path(str(ProjectSettings.get_setting("debug/file_logging/log_path", "user://logs/godot.log")))
 
 
 ## One GET. Redirects are followed here, one hop at a time, so each address is checked: GitHub's
 ## release download path first, then only its file hosts. to_file streams the body to disk.
-func _fetch(url: String, to_file: String, limit: int, accept: String) -> Dictionary:
+## Failures carry "code" (HTTP status) and "result" (HTTPRequest result); a redirect through a
+## release's download path names its tag ("tag").
+func _fetch(url: String, to_file: String, limit: int, accept: String, follow := true) -> Dictionary:
+	var tag := ""
 	for hop in 5:
-		if not (url == API or _allowed(url, hop > 0)): return {"error": "refused address %s" % url.get_slice("?", 0)}
-		_http.download_file = to_file; _http.body_size_limit = limit
-		# A whole-request limit: none for multi-GB downloads, 30 s for the small replies.
-		_http.timeout = 0.0 if to_file != "" else 30.0
-		_reply = []
-		if _http.request(url, PackedStringArray(["User-Agent: " + USER_AGENT, "Accept: " + accept])) != OK: return {"error": "could not start a request"}
-		while _reply.is_empty():
-			if not await SHUTDOWN.frame(self): _http.cancel_request(); return {"error": "stopped"}
+		if not (url == API or (hop == 0 and _api_asset(url)) or _allowed(url, hop > 0)): return {"error": "refused address %s" % url.get_slice("?", 0)}
+		if url.begins_with(DOWNLOADS): tag = _tag_of(url)
+		var reply: Array = await _request(url, to_file, limit, accept)
+		if reply.is_empty(): return {"error": "stopped"}
 		# A PC whose root store lacks GitHub's roots (VERIFY.fallback_tls): the same address once
 		# more with the game's own roots, kept for the rest of this run.
-		if int(_reply[0]) == HTTPRequest.RESULT_TLS_HANDSHAKE_ERROR and not _own_roots:
+		if int(reply[0]) == HTTPRequest.RESULT_TLS_HANDSHAKE_ERROR and not _own_roots and _http != null and not transport.is_valid():
 			var roots := VERIFY.fallback_tls()
 			if roots != null:
 				_own_roots = true; _http.set_tls_options(roots)
 				print("[update] %s refused this system's certificates; trying the game's own root certificates" % _host(url))
 				continue
-		var code := int(_reply[1])
-		if code in [301, 302, 303, 307, 308]:
+		var code := int(reply[1])
+		if code in [301, 302, 303, 307, 308] and int(reply[0]) in [HTTPRequest.RESULT_SUCCESS, HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED]:
+			if not follow: return {"body": PackedByteArray(), "code": code, "tag": tag}
 			url = ""
-			for header: String in _reply[2]:
-				if header.to_lower().begins_with("location:"): url = header.substr(9).strip_edges()
+			for header: Variant in reply[2]:
+				if str(header).to_lower().begins_with("location:"): url = str(header).substr(9).strip_edges()
 			continue
-		if int(_reply[0]) != HTTPRequest.RESULT_SUCCESS or code != 200:
-			return {"error": "HTTP %d from %s" % [code, _host(url)] if int(_reply[0]) == HTTPRequest.RESULT_SUCCESS else _network_problem(int(_reply[0]), _host(url))}
-		return {"body": _reply[3]}
+		if int(reply[0]) != HTTPRequest.RESULT_SUCCESS or code != 200:
+			var why := "HTTP %d from %s" % [code, _host(url)] if int(reply[0]) == HTTPRequest.RESULT_SUCCESS else _network_problem(int(reply[0]), _host(url))
+			return {"error": why, "code": code, "result": int(reply[0])}
+		return {"body": reply[3], "code": code, "tag": tag}
 	return {"error": "too many redirects"}
+
+
+## One request, no redirects: [result, code, headers, body], or [] when the game is closing.
+func _request(url: String, to_file: String, limit: int, accept: String) -> Array:
+	if transport.is_valid(): return transport.call(url, to_file, limit, accept)
+	_http.download_file = to_file; _http.body_size_limit = limit
+	# A whole-request limit: none for multi-GB downloads, 30 s for the small replies.
+	_http.timeout = 0.0 if to_file != "" else 30.0
+	_reply = []
+	if _http.request(url, PackedStringArray(["User-Agent: " + USER_AGENT, "Accept: " + accept])) != OK: return [HTTPRequest.RESULT_CANT_CONNECT, 0, PackedStringArray(), PackedByteArray()]
+	while _reply.is_empty():
+		if not await SHUTDOWN.frame(self): _http.cancel_request(); return []
+	return _reply
 
 
 static func _host(url: String) -> String:
@@ -246,7 +385,7 @@ static func _network_problem(result: int, host: String) -> String:
 
 
 static func _allowed(url: String, redirected: bool) -> bool:
-	if url.begins_with(DOWNLOADS): return not ".." in url and not "@" in url.get_slice("/", 2)
+	if url.begins_with(DOWNLOADS) or url.begins_with(LATEST_DOWNLOAD): return not ".." in url and not "@" in url.get_slice("/", 2)
 	if not redirected or not url.begins_with("https://"): return false
 	var host := url.substr(8).get_slice("/", 0)
 	return host in FILE_HOSTS
@@ -257,7 +396,9 @@ func install() -> void:
 	if state == "working" or not can_install: return
 	if _manifest.is_empty():
 		status = "Checking the release..."; _refresh()
-		if not await check(): status = "Could not reach the release (see the log)."; _refresh(); return
+		if not await check():
+			status = "Could not reach the release (%s). Details in %s" % [_last_error if _last_error != "" else "see the log", log_path()]
+			_refresh(); return
 	state = "working"; _refresh(); set_process(true)
 	var error := await _download_and_install()
 	if error == "stopped": return
@@ -277,6 +418,10 @@ func _download_and_install() -> String:
 		return "Version %s is a small update for %s: download the full game from the release page." % [latest, patch_base]
 	var parts := VERIFY.files_for(_manifest, platform)
 	if parts.is_empty(): return "This release has no download for this system."
+	# Checked through the download address (the API was rate limited): no file list yet.
+	if _assets.is_empty():
+		var lookup := await _find_assets(parts)
+		if lookup != "": return lookup
 	var total := 0
 	var halves := false
 	for part: Dictionary in parts:
@@ -347,6 +492,33 @@ func _download_and_install() -> String:
 	return _hand_over(files, unpacked.files)
 
 
+## The 403 fallback has no file list: each signed archive is asked for by name, whole or in the
+## .001/.002 halves GitHub carries (2 GiB file limit). One redirect answer per file, no download.
+func _find_assets(parts: Array[Dictionary]) -> String:
+	var base := (DOWNLOADS + _tag + "/") if _tag != "" else LATEST_DOWNLOAD
+	for part: Dictionary in parts:
+		var name := str(part.name)
+		var found := await _exists(base + name)
+		if found < 0: return "Could not reach the release files (details in %s). Press again to retry." % log_path()
+		if found == 1: _assets[name] = base + name; continue
+		for n in range(1, 100):
+			var piece := "%s.%03d" % [name, n]
+			found = await _exists(base + piece)
+			if found < 0: return "Could not reach the release files (details in %s). Press again to retry." % log_path()
+			if found == 0: break
+			_assets[piece] = base + piece
+	return ""
+
+
+## 1 when the release has this file (GitHub answers with a redirect to its file host), 0 when it
+## answers 404, -1 when it could not be asked.
+func _exists(url: String) -> int:
+	var reply := await _fetch(url, "", 1 << 20, "application/octet-stream", false)
+	if not reply.has("error"): return 1
+	print("[update] looking for %s: %s" % [url.get_file(), reply.error])
+	return 0 if int(reply.get("code", 0)) == 404 else -1
+
+
 ## The release archive holds one top folder (HomeEquestria-<version>-<platform>/): its files go
 ## straight into the install folder.
 func _hand_over(files: String, written: Array) -> String:
@@ -361,7 +533,7 @@ func _hand_over(files: String, written: Array) -> String:
 	var install_dir := OS.get_executable_path().get_base_dir()
 	var script := _write_script(ProjectSettings.globalize_path(root), relative, install_dir)
 	if script.is_empty(): return "Could not write the install script."
-	var pid := OS.create_process("/bin/sh", [script]) if platform == "linux" else OS.create_process("cmd.exe", ["/c", script])
+	var pid := OS.create_process("/bin/sh", [script]) if platform == "linux" else OS.create_process("cmd.exe", cmd_arguments(script))
 	if pid <= 0: return "Could not start the installer."
 	print("[update] installing %s: %d files; the game closes and starts again" % [latest, relative.size()])
 	status = "Installing %s: the game restarts in a moment." % latest; _refresh()
@@ -407,8 +579,9 @@ func _write_script(source: String, relative: Array[String], install_dir: String)
 		path = staging.path_join("install.bat")
 		var quoted: PackedStringArray = []
 		for arg in args:
-			if "\"" in arg or "%" in arg: quoted.clear(); break   # odd arguments: start plain
-			quoted.append("\"%s\"" % arg)
+			var one := bat_argument(arg)
+			if one == "": print("[update] the restarted game leaves out the argument %s (a quote cannot pass through cmd)" % arg)
+			else: quoted.append(one)
 		var win := func(p: String) -> String: return p.replace("/", "\\").replace("%", "%%")
 		var lines: PackedStringArray = ["@echo off", "chcp 65001 >nul",
 			"rem Home: Equestria update to %s (world/update/updater.gd): waits for the game to close," % latest,
@@ -438,6 +611,27 @@ func _write_script(source: String, relative: Array[String], install_dir: String)
 	return ProjectSettings.globalize_path(path)
 
 
+## One argument of the restart line in install.bat: quoted (& ( ) @ ^ | and spaces stay literal
+## inside quotes), % doubled (cmd expands %NAME% even inside quotes in a batch file) and trailing
+## backslashes doubled (the game's command-line parser reads \" as a literal quote). An argument
+## holding a quote or a line break cannot pass through cmd safely: "" leaves it out. Until 0.3.1 one
+## such argument, or any argument with %, dropped every argument including --xr-mode.
+static func bat_argument(arg: String) -> String:
+	if "\"" in arg or "\n" in arg or "\r" in arg: return ""
+	var text := arg.replace("%", "%%")
+	var tail := 0
+	while tail < text.length() and text[text.length() - 1 - tail] == "\\": tail += 1
+	return "\"" + text + "\\".repeat(tail) + "\""
+
+
+## cmd.exe's arguments to run install.bat. Godot quotes an argument holding a space or & ( ) ^ and
+## similar, and "cmd /c" then strips those quotes when the path holds & ( ) @ ^ |, so a user folder
+## like C:\Users\Tom & Jerry ran "C:\Users\Tom" (found in the 0.3.1 quoting test). /s strips exactly the
+## outer pair, so the path is wrapped in one more pair of quotes that cmd keeps.
+static func cmd_arguments(script: String) -> PackedStringArray:
+	return PackedStringArray(["/s", "/c", "\"" + script.replace("/", "\\") + "\""])
+
+
 static func _sh(text: String) -> String:
 	return "'" + text.replace("'", "'\\''") + "'"
 
@@ -465,7 +659,7 @@ func _after_install() -> void:
 	var result := FileAccess.get_file_as_string(result_path).strip_edges()
 	if result.is_empty(): return
 	print("[update] last install: %s (log: %s)" % [result, ProjectSettings.globalize_path(staging.path_join("install.log"))])
-	if result == "ok " + _version():
+	if result == "ok " + _mine():
 		for name in DirAccess.get_files_at(staging):
 			if name.begins_with("part") or name == "archive.bin": FileAccess.open(staging.path_join(name), FileAccess.WRITE)
 	FileAccess.open(result_path, FileAccess.WRITE)
@@ -527,6 +721,10 @@ func _exit_tree() -> void:
 static func _version() -> String:
 	var version := VERSION.text()
 	return "" if version == "dev" else version
+
+
+func _mine() -> String:
+	return running_version if running_version != "" else _version()
 
 
 static func _length(path: String) -> int:

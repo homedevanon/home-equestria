@@ -14,7 +14,8 @@ const PLAYER_FORM := preload("res://world/life/player_form.gd")
 const APPLE := "apple"
 const STEPS := ["walk", "stash", "briefcase", "eat", "clothes"]
 const TITLES := {"walk": "Find your feet", "stash": "Pick something up", "briefcase": "Your briefcase",
-	"eat": "Eat something", "clothes": "Change your clothes", "inspect": "How ponies feel about you"}
+	"eat": "Eat something", "clothes": "Change your clothes", "inspect": "How ponies feel about you",
+	"talk": "Talk to her"}
 const GOLD := Color("edd6a2")
 var game: Node
 var pocket: Node3D
@@ -85,6 +86,7 @@ func _text(id: String) -> String:
 			"eat": return "Flip up your RIGHT hand: five quick slots appear above it. Point at the apple and pull TRIGGER or squeeze GRIP, then hold it to your mouth to eat. Lower your hand to dismiss the slots."
 			"clothes": return "Flip up your LEFT hand and touch the shirt button. Touch the wardrobe controls, then Save outfit or Cancel."
 			"inspect": return "Flip up your LEFT hand and touch the eye button. Point at Twilight and pull TRIGGER to see how she feels about you."
+			"talk": return "Answer her out loud: hold B or Y on a controller while you speak."
 	# Desktop AnonPony trots and has a quick menu, not a wrist.
 	var pony: bool = PLAYER_FORM.is_pony(PLAYER_FORM.active(get_tree())) if is_inside_tree() else false
 	match id:
@@ -101,6 +103,8 @@ func _text(id: String) -> String:
 			return "Press I, click an apple in your briefcase and press Equip. Then hold the left mouse button to eat it."
 		"clothes": return "Press U to open your wardrobe. Take your jacket off or change a colour, then Save outfit or Cancel."
 		"inspect": return "Press J, then click Twilight to see how she feels about you. Press J again to close it."
+		# M-ARR-05: after J the opening waits for him to answer her; nothing said what to do.
+		"talk": return "Answer her: hold T while you speak, or press Enter, type, and press Enter again."
 	return ""
 
 func _refresh_text() -> void:
@@ -113,7 +117,7 @@ func _refresh_text() -> void:
 
 # ---------------------------------------------------------------- has he done it?
 func _physics_process(delta: float) -> void:
-	if game == null: return
+	if not is_instance_valid(game) or not is_instance_valid(game.inventory): return
 	_observe_controls()
 	_recovery_wait = maxf(0.0, _recovery_wait - delta)
 	if step.is_empty(): return
@@ -168,6 +172,7 @@ func _inventory_changed() -> void:
 	if _apple_slot() >= 0: _record("stash")
 
 func _observe_controls() -> void:
+	if not is_instance_valid(game) or not is_instance_valid(game.inventory): return
 	if game.inventory.case.visible and game.inventory.case.opened: _case_seen = true
 	elif not game.inventory.case.visible and _case_seen: _record("briefcase")
 	if game.inventory.customizer.opened: _clothes_seen = true
@@ -216,22 +221,22 @@ func _apple_slot() -> int:
 	return -1
 
 func _feet() -> Vector3:
-	var camera: Camera3D = game._find_camera(game.player)
-	return camera.global_position if camera != null else Vector3.ZERO
+	var camera: Camera3D = game._find_camera(game.player) if is_instance_valid(game) and is_instance_valid(game.player) else null
+	return camera.global_position if camera != null and camera.is_inside_tree() else Vector3.ZERO
 
 static func _flat(a: Vector3, b: Vector3) -> float:
 	return Vector2(a.x - b.x, a.z - b.z).length()
 
 # ---------------------------------------------------------------- arrow and instructions
 func _process(delta: float) -> void:
-	if step.is_empty() or game == null: return
+	if step.is_empty() or not is_instance_valid(game): return
 	var camera: Camera3D = game._find_camera(game.player)
 	if camera == null: return
 	var target := _arrow_target()
 	_arrow.visible = target.is_finite()
 	if _arrow.visible:
 		var bob := sin(Time.get_ticks_msec() * 0.004) * 0.06
-		var small := not ["walk", "stash", "inspect"].has(step)
+		var small := not ["walk", "stash", "inspect", "talk"].has(step)
 		_arrow.scale = Vector3.ONE * (0.35 if small else 1.0)
 		_arrow.global_position = target + Vector3.UP * (bob * (0.35 if small else 1.0))
 		_arrow.rotation.y += delta * 1.6
@@ -244,7 +249,7 @@ func _arrow_target() -> Vector3:
 	match step:
 		"walk", "stash":
 			return pocket.stump_top + Vector3.UP * 0.55 if is_instance_valid(pocket) else Vector3.INF
-		"inspect":
+		"inspect", "talk":
 			return twilight.global_position + Vector3.UP * 2.0 if is_instance_valid(twilight) else Vector3.INF
 	if not game.xr_active: return Vector3.INF
 	if step == "eat" and _apple_slot() < 5:
@@ -342,8 +347,12 @@ func _queue_banner_layout() -> void:
 
 func _layout_banner() -> void:
 	_banner_layout_queued = false
-	if not is_instance_valid(_banner): return
-	var screen := get_viewport().get_visible_rect().size
+	# M-ARR-02: a deferred layout can run after the tutorial left the tree (quit or teleport):
+	# there is no viewport then.
+	if not is_instance_valid(_banner) or not is_inside_tree(): return
+	var viewport := get_viewport()
+	if viewport == null: return
+	var screen := viewport.get_visible_rect().size
 	var width := maxf(1.0, minf(860.0, screen.x - 32.0))
 	# Reset height after narrower text has wrapped; Container minimums supply the
 	# complete title/body height instead of clipping to the former fixed banner.

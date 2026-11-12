@@ -1,6 +1,7 @@
 extends Node
 ## Both adapters carry the same kitchen objects and release into the same stations.
 const FLIGHT_INPUT := preload("res://player/wing_flight.gd")
+const BENCH_SCRIPT := preload("res://world/minigames/hayburger/hayburger_workbench.gd")
 var bench: Node3D
 var inventory: Node
 var restaurant: Node
@@ -125,11 +126,53 @@ func _desktop_hit(mask: int, distance: float) -> Dictionary:
 	query.exclude = _player_excludes()
 	return camera.get_world_3d().direct_space_state.intersect_ray(query)
 
+## Where a desktop click puts the held food: the top surface under the crosshair. A short pony
+## (eye 0.82 m, below the 1.03 m worktop) aims at the counter's front edge: the top just behind
+## that edge counts, as reaching up onto it (M-INV-02, 2026-11-08: food "falling through").
 func _desktop_destination() -> Dictionary:
 	var hit: Dictionary = _desktop_hit(1, 1.65)
-	if hit.is_empty() or Vector3(hit.normal).y < .75: return {}
+	if hit.is_empty(): return {}
+	if Vector3(hit.normal).y < .75: hit = _top_behind_edge(hit)
+	if hit.is_empty(): return {}
 	var point: Vector3 = hit.position + hit.normal * .04
-	return {"pose": Transform3D(bench.global_basis.orthonormalized(), point), "point": point, "collider": hit.collider}
+	return {"pose": Transform3D(bench.global_basis.orthonormalized(), point), "point": point, "collider": hit.collider, "over_edge": bool(hit.get("over_edge", false))}
+
+## A steep face (the counter's front edge) hit by a view from below its top: the flat top
+## behind it that the aim points at. The nearest work spot (build board, grill, serving mat,
+## scraps bin) within EDGE_SIDE of the aim line and EDGE_DEPTH beyond the edge, else the top
+## EDGE_REACH behind the edge. The top is found by a ray down from EDGE_RISE above, so nothing
+## sits on it. {} when there is none.
+const EDGE_REACH := .14
+const EDGE_RISE := .45
+const EDGE_SIDE := .3
+const EDGE_DEPTH := 1.0
+func _top_behind_edge(hit: Dictionary) -> Dictionary:
+	var normal: Vector3 = hit.normal
+	var flat := Vector3(normal.x, 0.0, normal.z)
+	if flat.length_squared() < .01 or not is_instance_valid(inventory.camera): return {}
+	var edge: Vector3 = hit.position
+	if (inventory.camera as Camera3D).global_position.y > edge.y + .05: return {}
+	var camera: Camera3D = inventory.camera
+	var aim: Vector3 = -camera.global_basis.z; aim.y = 0.0
+	if aim.length_squared() < .0001: return {}
+	aim = aim.normalized()
+	var spot: Vector3 = edge + aim * EDGE_REACH
+	var gap := EDGE_SIDE
+	for local: Vector3 in [BENCH_SCRIPT.PREP, BENCH_SCRIPT.GRILL, BENCH_SCRIPT.PASS, BENCH_SCRIPT.BIN]:
+		var centre: Vector3 = bench.to_global(local)
+		var along := (centre - edge).dot(aim)
+		var side := absf((centre - edge).dot(Vector3(-aim.z, 0.0, aim.x)))
+		if along > 0.0 and along < EDGE_DEPTH and side < gap: spot = Vector3(centre.x, edge.y, centre.z); gap = side
+	var query := PhysicsRayQueryParameters3D.create(spot + Vector3.UP * EDGE_RISE, spot - Vector3.UP * .6, 1)
+	query.exclude = _player_excludes()
+	var top: Dictionary = bench.get_world_3d().direct_space_state.intersect_ray(query)
+	# The top must be the one over the face that was hit (the bin's floor is the exception: it is
+	# a drop into an open box), never a surface far below a face seen higher up.
+	if top.is_empty(): return {}
+	var y: float = Vector3(top.position).y
+	if Vector3(top.normal).y < .75 or y > edge.y + EDGE_RISE or (y < edge.y - .05 and gap >= EDGE_SIDE): return {}
+	top["over_edge"] = true
+	return top
 
 func _move_desktop() -> void:
 	var scale := 1.0
@@ -144,14 +187,20 @@ func _desktop_place_clear(destination: Dictionary) -> bool:
 	if destination.is_empty(): return false
 	var item: Node3D = bench.held.get("desktop")
 	if not is_instance_valid(item): return false
-	var query := PhysicsRayQueryParameters3D.create(item.global_position + Vector3.UP * .04, Vector3(destination.point) + Vector3.UP * .04, 1)
+	var space := bench.get_world_3d().direct_space_state
+	# Over a worktop edge (a short pony): the crosshair's own ray reached the edge, so the way is
+	# the reach up and over it; only the drop onto the top must be free.
+	var from: Vector3 = Vector3(destination.point) + Vector3.UP * EDGE_RISE if bool(destination.get("over_edge", false)) else item.global_position + Vector3.UP * .04
+	var query := PhysicsRayQueryParameters3D.create(from, Vector3(destination.point) + Vector3.UP * .04, 1)
 	query.exclude = _player_excludes()
-	return bench.get_world_3d().direct_space_state.intersect_ray(query).is_empty()
+	return space.intersect_ray(query).is_empty()
 
 func _place_desktop() -> bool:
 	var destination: Dictionary = _desktop_destination()
 	if not _desktop_place_clear(destination): return false
-	_move("desktop", destination.pose)
+	# Already checked clear: set it down there (the carry ray would stop a reach over an edge).
+	bench.move_held("desktop", destination.pose)
+	_present_desktop()
 	var item: Node3D = bench.held.get("desktop")
 	return is_instance_valid(item) and item.global_position.distance_to(destination.point) < .02
 
@@ -180,12 +229,44 @@ func _clear_desktop_pose() -> void:
 
 func _desktop_offer() -> Dictionary:
 	if not available() or inventory.hand_busy("desktop"): return {}
+	return desktop_pick()
+
+## The kitchen object under the crosshair (no input gates; tests call it). The first collider, or
+## for a short pony whose view meets the counter's edge just under it, the kitchen object sitting
+## on the top just behind that edge (M-INV-02, 2026-11-08: food "not clickable" on desktop).
+func desktop_pick() -> Dictionary:
 	var hit: Dictionary = _desktop_hit(3, 1.8)
-	if hit.is_empty() or hit.collider.get_parent() != bench or not hit.collider.has_meta("kitchen_role"): return {}
-	var action: String = bench.pickup_text(hit.collider)
-	return {} if action.is_empty() else {"target": hit.collider, "point": hit.position, "text": "[LMB/E] " + action}
+	if hit.is_empty(): return {}
+	var target: Node = hit.collider as Node
+	if target == null or target.get_parent() != bench or not target.has_meta("kitchen_role"):
+		target = _behind_edge(hit)
+		if target == null: return {}
+	var action: String = bench.pickup_text(target)
+	return {} if action.is_empty() else {"target": target, "point": hit.position, "text": "[LMB/E] " + action, "visible_pick": true}
+
+## The kitchen object on the top behind a counter edge the view meets from below: nearest to the
+## aim line (within EDGE_SIDE), at most EDGE_DEPTH beyond the edge, resting no lower than the edge.
+func _behind_edge(hit: Dictionary) -> Node3D:
+	var normal: Vector3 = hit.normal
+	if Vector3(normal.x, 0.0, normal.z).length_squared() < .01 or not is_instance_valid(inventory.camera): return null
+	var edge: Vector3 = hit.position
+	if (inventory.camera as Camera3D).global_position.y > edge.y + .05: return null
+	var camera: Camera3D = inventory.camera
+	var aim: Vector3 = -camera.global_basis.z; aim.y = 0.0
+	if aim.length_squared() < .0001: return null
+	aim = aim.normalized()
+	var best: Node3D = null
+	var gap := EDGE_SIDE * .7
+	for child: Node in bench.get_children():
+		if not child is PhysicsBody3D or not child.has_meta("kitchen_role") or child in bench.held.values() or child.is_queued_for_deletion(): continue
+		var at: Vector3 = (child as Node3D).global_position
+		var along := (at - edge).dot(aim)
+		var side := absf((at - edge).dot(Vector3(-aim.z, 0.0, aim.x)))
+		if along > 0.0 and along < EDGE_DEPTH and at.y > edge.y - .05 and at.y < edge.y + EDGE_RISE and side < gap: best = child; gap = side
+	return best
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventKey and preload("res://world/ui/typing_guard.gd").active(): return  # typing never drives the game
 	if not is_instance_valid(inventory) or not inventory._desktop or not available(): return
 	if bench.held.has("desktop"):
 		var place: bool = event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT

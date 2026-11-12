@@ -445,7 +445,10 @@ func _unprofiled_process(delta: float) -> void:
 ## The reaction; the gates above or a desktop pet on the head call it.
 func boop() -> void:
 	_play_squee()
-	if not bool(Settings.get_value("ponies/boop_makes_mares_horny")): return
+	# Read through the tree, not the autoload identifier: SceneTree test scripts compile this
+	# file before autoloads exist. No Settings node means the setting's default (off).
+	var settings: Node = get_node_or_null("/root/Settings")
+	if settings == null or not bool(settings.get_value("ponies/boop_makes_mares_horny")): return
 	# A spa client is not booped: no count, blush, hearts or "boop" for her AI
 	# (SPA_PLAN_2026_10_29.md section 3).
 	# Her eyes still squeeze shut and she squeaks (dev 2026-10-29: "they keep their eyes open"):

@@ -36,6 +36,11 @@ const RESCUE_AFTER := 2.5
 const RESCUE_RADII: Array[float] = [1.5, 2.5, 3.5, 5.0, 7.0, 10.0, 14.0, 20.0, 28.0, 40.0, 56.0]
 ## A rescue farther than this across moves straight there instead of climbing over.
 const RESCUE_CLIMB_ACROSS := 4.0
+## W2-NAV-TERRAIN hook 3 (M-NAV-04): true ranks a gorge top by horizontal distance first, height
+## second. Measured 2026-11-08 (tools/water/test_river_exit.gd, river_ponyville_sea): true lifted
+## the swimmer 36-39 m onto a nearer, higher top; the older cost (false) lifts 23-25 m. Kept false;
+## the lasting fix is widening that river ribbon to its bank (water footprint).
+const NEAREST_GORGE_TOP := false
 var climbing := false
 ## How the last exit happened: "climb", "rescue_climb" or "rescue_move" (tests and logs).
 var last_exit := ""
@@ -168,11 +173,12 @@ func dry_spot(body: CharacterBody3D, feet: Vector3, direction: Vector3) -> Vecto
 	var level := _level()
 	var base := maxf(level,feet.y) if is_finite(level) else feet.y
 	if not goal.is_finite() or goal.y<base-.3:
-		var high := _dry_spot(body,feet,direction,60.0)
+		# Gorge tops: NEAREST_GORGE_TOP chooses the ranking (W2-NAV-TERRAIN M-NAV-04).
+		var high := _dry_spot(body,feet,direction,60.0,NEAREST_GORGE_TOP)
 		if high.is_finite() and high.y>=base-.3: return high
 	return goal
 
-func _dry_spot(body: CharacterBody3D, feet: Vector3, direction: Vector3, ceiling: float) -> Vector3:
+func _dry_spot(body: CharacterBody3D, feet: Vector3, direction: Vector3, ceiling: float, nearest_first := false) -> Vector3:
 	var space := body.get_world_3d().direct_space_state
 	var mask := body.collision_mask & ~WATER.MASK
 	var excluded: Array[RID] = [body.get_rid()]
@@ -190,8 +196,9 @@ func _dry_spot(body: CharacterBody3D, feet: Vector3, direction: Vector3, ceiling
 			var goal: Vector3 = hit.position+Vector3.UP*.06
 			if WATER.surface_above(space,goal)>goal.y+.03: continue
 			var cost := radius*(1.0-.4*offset.normalized().dot(forward))+1.5*maxf(0.0,goal.y-base-1.5)
+			if nearest_first: cost = radius*(1.0-.4*offset.normalized().dot(forward))*1000.0+maxf(0.0,goal.y-base)
 			# A dry pit below the water level only when no spot at the level exists in reach.
-			if goal.y<base-.3: cost += 1000.0
+			if goal.y<base-.3: cost += 1.0e7 if nearest_first else 1000.0
 			var sky := PhysicsRayQueryParameters3D.create(goal+Vector3.UP*.1,goal+Vector3.UP*12.0,mask,excluded)
 			if not space.intersect_ray(sky).is_empty(): cost += 10.0
 			spots.append([cost,goal])

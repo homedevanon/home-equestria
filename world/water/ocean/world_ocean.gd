@@ -81,9 +81,10 @@ var _ocean_time_written := NAN
 ## Dry land (2026-10-23 GPU pass, dev: "we're never gonna see it from ponyville"): the sea is an
 ## infinite plane at sea level, so its finest patches were drawn under the town's ground (155-184k
 ## triangles at 230-300 m). Per quadtree level, 1 where a node and DRY_BORDER around it are all at
-## least DRY_HEIGHT above the sea in the baked coast field; such nodes are skipped. Built on a
-## worker from coast_a.res; until then nothing is skipped. Outside the coast field counts as sea.
+## least DRY_HEIGHT above the sea in the baked ground heights; such nodes are skipped. Built on a
+## worker from dry_heights.res; until then nothing is skipped. Outside the field counts as sea.
 const DRY_HEIGHT := 4.0
+const DRY_HEIGHTS := "res://world/water/ocean/dry_heights.res"
 const FFT_RATE := 60.0
 var _fft_delta := 0.0
 const DRY_BORDER := 64.0
@@ -140,10 +141,17 @@ func _ready() -> void:
 		material.set_shader_parameter("coast_t", load("res://world/water/ocean/coast_t.res"))
 		var cell := float(coast.cell)
 		material.set_shader_parameter("coast_rect", Vector4(float(coast.origin[0]), float(coast.origin[1]), float(coast.width) * cell, float(coast.height) * cell))
-		var image: Image = (material.get_shader_parameter("coast_a") as Texture2D).get_image()
+		# The shore field is stored compressed (texture diet, 2026-09-29) and cannot give heights;
+		# dry_heights.res holds the lowest ground of every LEAF cell (tools/ocean/bake_dry_heights.gd).
+		var image: Image = null
+		var image_cell := cell
+		if ResourceLoader.exists(DRY_HEIGHTS):
+			image = load(DRY_HEIGHTS) as Image
+			image_cell = LEAF
+		if image == null: image = (material.get_shader_parameter("coast_a") as Texture2D).get_image()
 		if image != null:
 			_dry_origin = Vector2(float(coast.origin[0]), float(coast.origin[1]))
-			_dry_task = WorkerThreadPool.add_task(_build_dry.bind(image, cell, _dry_result), false, "Ocean dry land")
+			_dry_task = WorkerThreadPool.add_task(_build_dry.bind(image.duplicate(), image_cell, _dry_result), false, "Ocean dry land")
 	else:
 		material.set_shader_parameter("shore_enabled", 0.0)
 	multimesh = MultiMesh.new()
@@ -159,6 +167,10 @@ func _ready() -> void:
 	visual.multimesh = multimesh
 	visual.material_override = material
 	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# The patch buffer is rewritten from the camera every rendered frame, so there is nothing to
+	# interpolate; interpolated, every write logged "MultiMesh interpolation is being triggered
+	# from outside physics process" (M-INP-06) and blended a reused slot between two patches.
+	visual.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	add_child(visual)
 
 func _exit_tree() -> void:

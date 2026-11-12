@@ -220,6 +220,9 @@ void fragment() {
 
 ## Pages the last render() would make (a preview renders only the first).
 var page_count := 0
+## Set as the picture leaves the tree: a render still waiting ends with no pages.
+var _leaving := false
+var _waiting: _Wait
 var _look: Dictionary
 var _o: Dictionary
 var _width := 1280
@@ -287,7 +290,8 @@ func render(spec: Dictionary) -> Array[Image]:
 	_viewport.add_child(_content)
 	_build(spec)
 	_page_note = _label("", STYLE.REGULAR, 17, _look.faint); _viewport.add_child(_page_note)
-	for i in 3: await get_tree().process_frame
+	for i in 3:
+		if not await _wait(get_tree().process_frame): return [] as Array[Image]
 	var pages := _pages()
 	page_count = pages.size()
 	if bool(spec.get("preview", false)): pages = pages.slice(0, 1)
@@ -309,10 +313,35 @@ func render(spec: Dictionary) -> Array[Image]:
 		_page_note.position = Vector2(_width - _side - 60, height - 34); _page_note.size.x = 60
 		_page_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-		await RenderingServer.frame_post_draw
-		await RenderingServer.frame_post_draw
+		for wait in 2:
+			if not await _wait(RenderingServer.frame_post_draw): return [] as Array[Image]
 		images.append(_viewport.get_texture().get_image())
 	return images
+
+
+## One wait of render(), which also ends when the picture leaves the tree (the journal closing, the
+## game quitting): a render left waiting on a frame that never comes keeps its material alive past
+## exit. Not world/shutdown_waits.gd: that stays shut on the title after a game, where the journal
+## lives. False when the picture is leaving.
+class _Wait extends RefCounted:
+	signal done
+	func finish() -> void: done.emit()
+
+func _wait(event: Signal) -> bool:
+	if _leaving or not is_inside_tree(): return false
+	_waiting = _Wait.new()
+	var wait := _waiting
+	event.connect(wait.finish, CONNECT_ONE_SHOT)
+	if not tree_exiting.is_connected(_leave): tree_exiting.connect(_leave, CONNECT_ONE_SHOT)
+	await wait.done
+	if event.is_connected(wait.finish): event.disconnect(wait.finish)
+	_waiting = null
+	return not _leaving
+
+
+func _leave() -> void:
+	_leaving = true
+	if _waiting != null: _waiting.finish()
 
 
 ## [top, bottom] of each page in content pixels, cut between rows. Pages share the height evenly

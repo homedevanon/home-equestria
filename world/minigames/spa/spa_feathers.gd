@@ -235,8 +235,24 @@ static func clear(actor: Node3D) -> void:
 	for child in skeleton.get_children():
 		# Matched by tag, not name: Godot renames a duplicate child name to @BoneAttachment3D@N.
 		if child is BoneAttachment3D and child.has_meta("spa_mount"):
+			drop_tints(child)
 			skeleton.remove_child(child)
 			child.queue_free()
+
+
+## Takes the tinted (one per feather) materials off its meshes before the node is freed. Freed
+## with the node, a tint went before the mesh's render instance, whose free still read it
+## ("Parameter material is null", M-TST-03). Off first, the instance holds none of them.
+static func drop_tints(node: Node) -> void:
+	var held: Array[Material] = []
+	for mi in meshes(node):
+		if mi.mesh == null: continue
+		for surface in mi.mesh.get_surface_count():
+			var tinted := mi.get_surface_override_material(surface)
+			if tinted == null: continue
+			held.append(tinted)
+			mi.set_surface_override_material(surface, null)
+	held.clear()
 
 
 ## A plucked feather: follows a hand while held, otherwise drifts down with a little sway and rests on
@@ -257,7 +273,12 @@ class LooseFeather:
 		_age += delta
 		if _age >= LIFETIME:
 			scale = Vector3.ONE * maxf(0.01, 1.0 - (_age - LIFETIME) / FADE)
-			if _age >= LIFETIME + FADE: queue_free()
+			if _age >= LIFETIME + FADE:
+				# As drop_tints(): the tint off its mesh before the node (and the tint) are freed.
+				for mi in find_children("*", "MeshInstance3D", true, false):
+					var mesh := (mi as MeshInstance3D).mesh
+					for surface in (mesh.get_surface_count() if mesh != null else 0): (mi as MeshInstance3D).set_surface_override_material(surface, null)
+				queue_free()
 			return
 		if not held_by.is_empty() or _resting or in_basket: return
 		_phase += delta * 2.4

@@ -57,10 +57,21 @@ func use(inventory: Node, _side: String) -> bool:
 	else: _close(sheet)
 	return true
 
-## The page text: the open favours from the asks module, or the empty page.
+## The page text: today's work first (a job hire with its hours and place, owed shift hours and
+## pay notes, jobs.gd notebook_lines; M-MEC-04/05 2026-11-08), then the open favours from the asks
+## module, or the empty page.
 func text() -> String:
-	var asks: Node = get_tree().get_first_node_in_group("mechanics_asks") if is_inside_tree() else null
-	return str(asks.call("notebook_text")) if asks != null and asks.has_method("notebook_text") else EMPTY
+	return compose(get_tree() if is_inside_tree() else null)
+
+static func compose(tree: SceneTree) -> String:
+	var asks: Node = tree.get_first_node_in_group("mechanics_asks") if tree != null else null
+	var jobs: Node = tree.get_first_node_in_group("mechanics_jobs") if tree != null else null
+	var favours := str(asks.call("notebook_text")) if asks != null and asks.has_method("notebook_text") else EMPTY
+	var lines: Variant = jobs.call("notebook_lines") if jobs != null and jobs.has_method("notebook_lines") else null
+	var work: PackedStringArray = lines if lines is PackedStringArray else PackedStringArray()
+	if work.is_empty(): return favours
+	if favours == EMPTY: return "\n".join(work) # asks.gd NOTEBOOK_EMPTY is the same words
+	return "\n".join(work) + "\n" + favours
 
 func _close(sheet: Node3D) -> void:
 	sheet.fold()

@@ -13,8 +13,19 @@ const SELF := "res://world/buildings/window_glow/window_glow.gd"
 ## Card behind the glass's inner face, in metres, and how much it overlaps the frame.
 const INSET := 0.012
 const GROW := 1.06
+## Panes whose glow card shows outside the glass (M-WLD-03, board #220, W2-PROPS-ART): "design/pane"
+## -> (height scale, drop as a share of the pane's half height). house_a's left window glass is
+## taller than its frame opening: the trimmed card took 395 outside-glass sight lines to 5 at 85 m.
+const CARD_TRIM := {"house_a/LeftWindow01Glass": Vector2(0.7, 0.2)}
 static var _panes: Dictionary = {}
 static var _material: ShaderMaterial
+## Look 2026-11-10: lit houses inside the lining range get the lamp's glow added over the real
+## room (window_glow_near.gdshader explains why). A second instance of the same cards, so the
+## lit state above reaches it with no bookkeeping. Rollback: LOOK_NEAR_GLOW = false.
+const LOOK_NEAR_GLOW := true
+const NEAR_SHADER := preload("res://world/buildings/window_glow/window_glow_near.gdshader")
+static var _near_material: ShaderMaterial
+var _near: MultiMeshInstance3D
 ## Houses waiting for the next (deferred) build, per parent instance id.
 static var _pending: Dictionary = {}
 
@@ -81,6 +92,15 @@ func _ready() -> void:
 		_material = ShaderMaterial.new()
 		_material.shader = SHADER
 	material_override = _material
+	if LOOK_NEAR_GLOW:
+		if _near_material == null:
+			_near_material = ShaderMaterial.new()
+			_near_material.shader = NEAR_SHADER
+		_near = MultiMeshInstance3D.new(); _near.name = "NearGlow"
+		_near.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_near.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+		_near.material_override = _near_material
+		add_child(_near)
 
 static func _load_panes() -> Dictionary:
 	if _panes.is_empty() and FileAccess.file_exists(PANES):
@@ -105,7 +125,8 @@ func add(houses: Array) -> void:
 		if not is_instance_valid(entry) or not (entry as Node3D).is_inside_tree(): continue
 		var house := entry as Node3D
 		kept.append(house)
-		var data: Dictionary = designs[house.scene_file_path.get_file().get_basename()]
+		var design := house.scene_file_path.get_file().get_basename()
+		var data: Dictionary = designs[design]
 		var to_world := house.global_transform
 		var centre := to_world * _vec(data.centre)
 		# Seeded by the house, like its furniture: the same house keeps its night habits.
@@ -118,11 +139,12 @@ func add(houses: Array) -> void:
 		for pane: Dictionary in data.panes:
 			var normal := _vec(pane.n)
 			var half_width := _vec(pane.u).length() * GROW
-			var half_height := _vec(pane.v).length() * GROW
+			var trim: Vector2 = CARD_TRIM.get(design + "/" + str(pane.get("name", "")), Vector2(1.0, 0.0))
+			var half_height := _vec(pane.v).length() * GROW * trim.x
 			# QuadMesh faces +Z: X = up x normal keeps the basis right-handed (front faces out).
 			var across := Vector3.UP.cross(normal).normalized()
 			var basis := Basis(across * half_width * 2.0, Vector3.UP * half_height * 2.0, normal * 0.01)
-			var origin := _vec(pane.c) - normal * (float(pane.thick) * 0.5 + INSET / metres)
+			var origin := _vec(pane.c) - normal * (float(pane.thick) * 0.5 + INSET / metres) - Vector3.UP * _vec(pane.v).length() * trim.y
 			transforms.append(to_world * Transform3D(basis, origin))
 			customs.append(Color(centre.x, centre.y, centre.z, seed + lit_flag))
 	_houses = kept
@@ -138,3 +160,4 @@ func add(houses: Array) -> void:
 		cards.set_instance_custom_data(i, customs[i])
 	_customs = customs
 	multimesh = cards
+	if _near != null: _near.multimesh = cards

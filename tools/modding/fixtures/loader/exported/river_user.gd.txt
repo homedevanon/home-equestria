@@ -1,0 +1,15 @@
+extends RefCounted
+## Stands in for a game script that preloads a game script with a global class_name and also names
+## that class (exported game scripts keep their class_name inside the binary tokens).
+const RIVER := preload("res://world/water/river_support.gd")
+
+static func describe() -> String:
+	var flat := func(_point: Vector3) -> float: return 0.0
+	return "supported" if RiverSupport.supported(Vector3(0, 1, 0), Vector3.RIGHT, flat) else "not supported"
+
+static func modded() -> bool:
+	var script: Script = RIVER
+	while script != null:
+		if script.get_script_constant_map().has("MODDED"): return true
+		script = script.get_base_script()
+	return false

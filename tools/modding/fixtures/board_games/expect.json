@@ -1,0 +1,27 @@
+{
+	"comment": "tools/modding/test_board_games_bundle.gd: text that must (has) or must not (lacks) stand in the game scripts as mounted. base: game fixes made after 0.3.0 that board_games 1.2.0's copies would undo; hooks: MLPChag's board-game wiring that must survive the merge; fixes: devanon's compat fixes (bundled_mods/board_games_compat/fixes/). Besides these, every function the game's own copy of an overridden script declares must be declared by the mounted copy.",
+	"base": {
+		"player/desktop_player.gd": ["func typing() -> bool", "not _typing and InputMap.has_action(\"stand_up\")"],
+		"world/game.gd": ["\"SeasonState\"", "get_nodes_in_group(\"spa_venue\")"],
+		"world/game_town_adapters.gd": ["res://world/minigames/spa/spa_venue.gd"],
+		"world/game_saves.gd": ["func _preserve_autosave("],
+		"world/ai/conversation_director.gd": ["func _commit_targets(", "func _still_valid("],
+		"world/inventory/inventory_store.gd": ["func _park_unknown("],
+		"world/inventory/briefcase_drops.gd": ["func _refuse("],
+		"world/ai/pony_action_schema.gd": ["func is_player_name("]
+	},
+	"hooks": {
+		"world/game.gd": ["board_games/board_adjourned.gd"],
+		"world/game_saves.gd": ["BOARD_GAMES.snapshot()", "BOARD_GAMES.restore("],
+		"world/buildings/golden_oak/interior.gd": ["func _build_game_nook("],
+		"world/ai/pony_action_schema.gd": ["const AFTER_SPEECH", "\"board_game\": [\"game\", \"with\"]"],
+		"world/ai/conversation_director.gd": ["ACTION_SCHEMA.AFTER_SPEECH", "\"actions\":later"],
+		"world/inventory/inventory_store.gd": ["func set_board_open("],
+		"world/shop/shop_items.gd": ["\"game-board\""]
+	},
+	"fixes": {
+		"world/minigames/board_games/board_table.gd": {"has": ["const SHUTDOWN := preload(\"res://world/shutdown_waits.gd\")", "if not await SHUTDOWN.seconds(self, 1.2): return"], "lacks": ["create_timer(1.2)"]},
+		"world/ai/pony_action_schema.gd": {"has": [], "lacks": ["\"boardgame\": \"board_game\", \"board\": \"board_game\"", "\"game_table\": \"board_game\""]},
+		"world/ai/pony_action_executor.gd": {"has": ["table.call(\"can_play\", actor)", "var busy: bool"], "lacks": []}
+	}
+}

@@ -19,6 +19,10 @@ const CATALOGUE := preload("res://world/saves/save_catalogue.gd")
 const SHELF := preload("res://world/saves/save_shelf.gd")
 const PREVIEW := preload("res://world/saves/save_preview.gd")
 const CURRENCY := preload("res://world/ui/currency.gd")
+## Scenario mods (world/modding/scenario.gd): a save that cannot load with this launch's mods is
+## shown greyed out with the plain reason ("Needs the <Name> mod", "Turn off the <Name> mod to load
+## this"), never hidden; its Load is off. Read from the header only (entry "blocked").
+const SCENARIO := preload("res://world/modding/scenario.gd")
 const ALL := "*all"
 const STARRED := "*starred"
 const CARD_MIN := 230.0
@@ -220,6 +224,7 @@ func refresh() -> void:
 
 func _reload() -> void:
 	_entries = CATALOGUE.catalogue(root)
+	for entry in _entries: entry["blocked"] = SCENARIO.entry_block(entry)
 	_groups = CATALOGUE.groups(_entries)
 	# The running world is a folder even before its first save.
 	if _here != "" and not _has_world(_here):
@@ -614,7 +619,7 @@ func _card(entry: Dictionary, width: float) -> Button:
 	else:
 		title = STYLE.label(CATALOGUE.title_text(entry), "", font_size - 2); title.add_theme_font_override("font", STYLE.BOLD)
 	var lines: Array = [title, STYLE.label(CATALOGUE.game_time_text(entry) + (" · " + str(entry.place) if str(entry.place) != "" else ""), "Muted", font_size - 5),
-		STYLE.label(_saved_line(entry), "Faint", font_size - 6)]
+		STYLE.label(_saved_line(entry), "Faint", font_size - 6) if _blocked(entry).is_empty() else STYLE.label(_blocked(entry), "Warn", font_size - 6)]
 	for line: Control in lines:
 		if line is Label:
 			(line as Label).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS; (line as Label).clip_text = true
@@ -622,7 +627,18 @@ func _card(entry: Dictionary, width: float) -> Button:
 		line.custom_minimum_size.x = texts.size.x
 		texts.add_child(line)
 	if bool(entry.archived) or bool(entry.newer): card.modulate = Color(1, 1, 1, 0.78)
+	if not _blocked(entry).is_empty(): card.modulate = Color(0.78, 0.78, 0.78, 0.55); card.tooltip_text = _blocked(entry)
 	return card
+
+
+## Why this save cannot load with this launch's mods ("" when it can).
+func _blocked(entry: Dictionary) -> String:
+	return str(entry.get("blocked", ""))
+
+
+## Load is off for a newer-version save, a save the mods running now cannot load, or while busy.
+func _cannot_load(entry: Dictionary, busy: bool) -> bool:
+	return bool(entry.newer) or busy or not _blocked(entry).is_empty()
 
 
 ## A card's own buttons (Load, Star, More), shown while the pointer or the focus is on it.
@@ -632,8 +648,8 @@ func _add_quick(card: Button, entry: Dictionary) -> void:
 	var quick := HBoxContainer.new(); quick.add_theme_constant_override("separation", 4); quick.visible = false
 	card.add_child(quick); card.set_meta("quick", quick)
 	var busy := saves != null and bool(saves.busy)
-	var play := _small_round(quick, "play", "Load this save", func() -> void: load_requested.emit(entry))
-	play.disabled = bool(entry.newer) or busy
+	var play := _small_round(quick, "play", "Load this save" if _blocked(entry).is_empty() else _blocked(entry), func() -> void: load_requested.emit(entry))
+	play.disabled = _cannot_load(entry, busy)
 	var star_button := _small_round(quick, "star_filled" if bool(entry.star) else "star", "Unstar" if bool(entry.star) else "Star", _star.bind(entry))
 	star_button.add_theme_color_override("icon_normal_color", STYLE.BUTTER)
 	var more := _small_round(quick, "dots", "More", func() -> void: pass)
@@ -655,6 +671,7 @@ func _kind_badge(entry: Dictionary) -> Control:
 	var tint: Color = {"quit": STYLE.LILAC, "autosave": STYLE.SKY}.get(kind, STYLE.PINK)
 	if bool(entry.archived): text = "Archived"; tint = STYLE.FAINT
 	if bool(entry.newer): text = "Newer version"; tint = STYLE.CORAL
+	elif not _blocked(entry).is_empty(): text = "Needs a mod" if _blocked(entry).begins_with("Needs") else "Turn a mod off"; tint = STYLE.CORAL
 	var pill := PanelContainer.new(); pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pill.add_theme_stylebox_override("panel", STYLE.rounded(STYLE.box(Color(0.08, 0.04, 0.14, 0.78), Color(tint, 0.9), 1, 99, 9, 1)))
 	var label := STYLE.label(text, "", font_size - 8); label.add_theme_color_override("font_color", tint.lerp(Color.WHITE, 0.35))
@@ -751,6 +768,9 @@ func _show_save(entry: Dictionary) -> void:
 		var text := STYLE.label(str(fact[0]), "Muted", font_size - 3); text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		text.size_flags_horizontal = Control.SIZE_EXPAND_FILL; line.add_child(text)
 	if bool(entry.newer): info.add_child(STYLE.label("Made by a newer version of the game: it cannot be loaded here.", "Warn", font_size - 4))
+	elif not _blocked(entry).is_empty():
+		var why := STYLE.label(_blocked(entry) + ".", "Warn", font_size - 4); why.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info.add_child(why)
 	elif bool(entry.backup): info.add_child(STYLE.label("Recovered from its backup copy.", "Warn", font_size - 4))
 	if _editing == "rename_save":
 		_rename_editor(str(entry.get("name", "")), _rename_save.bind(entry))
@@ -771,7 +791,7 @@ func _show_save(entry: Dictionary) -> void:
 	var actions := HBoxContainer.new(); actions.add_theme_constant_override("separation", 10); _detail.add_child(actions)
 	var busy := saves != null and bool(saves.busy)
 	var load_button := _button(actions, "Load this save", func() -> void: load_requested.emit(entry), "Primary", "play")
-	load_button.disabled = bool(entry.newer) or busy
+	load_button.disabled = _cannot_load(entry, busy)
 	load_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var here := saves != null and str(entry.world_id) == _here
 	if here and str(entry.kind) == "manual" and not bool(entry.archived) and not bool(entry.newer):
@@ -936,7 +956,7 @@ func _open_save_menu(entry: Dictionary, anchor: Control, at: Vector2, flip := 0.
 			{"text": "Keep it", "icon": "back", "do": Callable()}], flip)
 		return
 	var items: Array = [
-		{"text": "Load", "icon": "play", "do": load_requested.emit.bind(entry), "off": bool(entry.newer) or busy},
+		{"text": "Load", "icon": "play", "do": load_requested.emit.bind(entry), "off": _cannot_load(entry, busy)},
 		{"text": "Open", "icon": "image", "do": _show_save.bind(entry)},
 		{"text": "Rename", "icon": "pencil", "do": _start_rename.bind(path)},
 		{"text": "Unstar" if bool(entry.star) else "Star", "icon": "star_filled", "do": _star.bind(entry)},

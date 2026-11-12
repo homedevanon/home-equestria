@@ -23,6 +23,15 @@ const PRIORITY := 112
 const FADE_OUT := 0.6
 ## What the title's cover hands the game's: {title, line, icon, tint, progress}.
 static var trip := {}
+## Flavour lines (dev 2026-11-11: "on loading screens, add flavor splash text ... in the
+## equestrian font"): one is drawn per load, in the heading font, under the logo. The title's
+## cover and the game's cover of the same load show the same line.
+const SPLASHES := [
+	"THREE STARS - GR15", ">everycreature", "No hooves", "MARES", "/)", ":ilovethem:", ">rape", "IWTCIRD", "Lurk moar",
+	"Ziggers tongue my ponut!", "The best cheap knockoff of PonyPonyParadise crudely stuffed into goat simulator!",
+	"Giddy up!", ">aislop >>>/trash/", "MARESMARESMARESMARES", "I LOVE THEM!", "Full of snowpity!", "Mare is for care!",
+]
+static var splash := ""
 
 const BAR_SHADER := """
 shader_type canvas_item;
@@ -70,6 +79,8 @@ var _line: Label
 var _bar: Control
 var _caption: Label
 var _note: Label
+var _splash: Label
+var _splash3d: Label3D
 var _gaps: Array[Control] = []
 var _rig: Node3D
 var _logo3d: Sprite3D
@@ -118,6 +129,9 @@ func setup(camera: Camera3D, xr: bool) -> void:
 	_build_page()
 	if xr and camera != null: _build_headset(camera)
 	get_viewport().size_changed.connect(_fit)
+	if splash.is_empty(): splash = SPLASHES[randi() % SPLASHES.size()]
+	_splash.text = splash
+	if _splash3d != null: _splash3d.text = splash
 	show_text("Loading Equestria…")
 	if not trip.is_empty():
 		show_trip(str(trip.get("title", "")), str(trip.get("line", "")), str(trip.get("icon", "")), trip.get("tint", STYLE.FAINT))
@@ -141,6 +155,12 @@ func _build_page() -> void:
 	_picture.size_flags_horizontal = Control.SIZE_SHRINK_CENTER; _picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	STYLE.sharp_picture(_picture, LOGO)
 	_content.add_child(_picture)
+	_splash = STYLE.label("", "Heading")
+	_splash.add_theme_font_override("font", STYLE.HEADING)
+	_splash.add_theme_color_override("font_color", GOLD)
+	_splash.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_splash.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_content.add_child(_splash)
 	_gap()
 	var row := HBoxContainer.new(); row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 14); row.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -196,6 +216,7 @@ func _fit() -> void:
 	_name.add_theme_font_size_override("font_size", name_size)
 	_line.add_theme_font_size_override("font_size", int(round(22 * k)))
 	_caption.add_theme_font_size_override("font_size", int(round(21 * k)))
+	_splash.add_theme_font_size_override("font_size", int(round(30 * k)))
 	_note.add_theme_font_size_override("font_size", int(round(17 * k)))
 	_badge.custom_minimum_size = Vector2.ONE * round(44 * k)
 	_badge.add_theme_stylebox_override("panel", STYLE.rounded(STYLE.box(Color(_tint(), 0.22), Color(_tint(), 0.75), maxi(1, int(2 * k)), 99, 0, 0)))
@@ -240,6 +261,9 @@ func _build_headset(camera: Camera3D) -> void:
 	_fill3d = _bar3d(STYLE.PINK, 0.001)
 	_label3d = _words3d(STYLE.REGULAR, 36, 0.00026, STYLE.MUTED, -0.134)
 	_label3d.name = "LoadingText"
+	_splash3d = _words3d(STYLE.HEADING, 48, 0.00026, GOLD, -0.168)
+	_splash3d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; _splash3d.width = 1150.0
+	_splash3d.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 
 func _words3d(font: Font, font_size: int, pixel: float, colour: Color, y: float) -> Label3D:
 	var words := Label3D.new()
@@ -327,7 +351,7 @@ func is_settled() -> bool:
 func _set_alpha(alpha: float) -> void:
 	if is_instance_valid(_root): _root.modulate.a = alpha
 	if is_instance_valid(_sphere): (_sphere.mesh.surface_get_material(0) as StandardMaterial3D).albedo_color.a = alpha
-	for words: Node3D in [_logo3d, _title3d, _line3d, _label3d]:
+	for words: Node3D in [_logo3d, _title3d, _line3d, _label3d, _splash3d]:
 		if is_instance_valid(words): words.set("modulate", Color(words.get("modulate"), alpha))
 	for bar in [_track3d, _fill3d]:
 		if is_instance_valid(bar): ((bar.mesh as QuadMesh).material as StandardMaterial3D).albedo_color.a = float(bar.get_meta(&"alpha")) * alpha
@@ -349,6 +373,10 @@ func show_logo() -> void:
 	_label.offset_bottom = -60
 	_label.add_theme_font_size_override("font_size", 22)
 	_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+	_splash.reparent(_root)
+	_splash.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	_splash.offset_top = -150; _splash.offset_bottom = -100
+	_splash.add_theme_font_size_override("font_size", 28)
 	_logos.append(logo_rect(_layer))
 	if is_instance_valid(_sphere):
 		(_sphere.mesh.surface_get_material(0) as StandardMaterial3D).albedo_color = Color.BLACK
@@ -356,6 +384,7 @@ func show_logo() -> void:
 		_label3d.text = _label.text
 		_label3d.position = Vector3(0, -0.2, -0.45); _label3d.pixel_size = 0.00035
 		_label3d.modulate = Color(1, 1, 1, 0.45)
+		_splash3d.position.y = -0.245
 		_logos3d.append(logo_sprite(_sphere.get_parent()))
 
 ## Desktop logo: one centred TextureRect on `layer` (shared with the launch scene's card).
@@ -384,6 +413,8 @@ static func logo_sprite(camera: Node3D) -> Sprite3D:
 func reveal(seconds: float, logo_seconds: float) -> void:
 	if is_instance_valid(_label): _label.text = ""
 	if is_instance_valid(_label3d): _label3d.text = ""
+	if is_instance_valid(_splash): _splash.text = ""
+	if is_instance_valid(_splash3d): _splash3d.text = ""
 	var tree := Engine.get_main_loop() as SceneTree
 	var sphere_mat: StandardMaterial3D = _sphere.mesh.surface_get_material(0) if is_instance_valid(_sphere) else null
 	var t := 0.0
@@ -409,7 +440,7 @@ func reveal(seconds: float, logo_seconds: float) -> void:
 ## arrival story, needs, visits) starts while it fades.
 func finish() -> void:
 	set_progress(1.0)
-	trip = {}
+	trip = {}; splash = ""
 	if _logo_mode or STYLE.still() or not is_inside_tree():
 		_free(); return
 	name = "LoadingCoverFading"

@@ -12,9 +12,51 @@ var rest_label := "grass"
 var seat_offsets: Array[Vector3] = [Vector3.ZERO, Vector3(.60, 0, 0)]
 
 ## Open ground has no cushion ends: a mare of any size setting lies here (couch.gd fits() measures
-## sofas); her hop and lie-down still check the room around her.
-func fits(_actor: Node3D) -> bool:
-	return true
+## sofas). M-LIF-06 (player board #56, 2026-11-08): it was always true, so a big mare or a stallion lay
+## at the canon 0.60 m beside him, half inside him. She now lies BESIDE_GROUND apart at both sizes
+## (shared_bed.gd BESIDE: his half at his height setting, hers at her body_scale), never closer than
+## the seat, and a bigger body than the nap's own clearance box measured (supported_ground) needs
+## clear room for her whole lying body there. Canon pairs keep exactly the old spot and answer.
+const BESIDE_GROUND := 0.44
+const LYING_HEIGHT := 0.45
+## Half her barrel's width lying down at canon size (shared_bed.gd MARE_HALF_WIDTH).
+const LYING_HALF_WIDTH := 0.22
+func fits(actor: Node3D) -> bool:
+	if actor == null or seats.size() < 2 or not is_instance_valid(seats[1]): return true
+	var scale := _body_scale(actor)
+	var shift := _size_shift(actor)
+	if scale <= 1.05 and shift == Vector3.ZERO: return true
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(LYING_HALF_WIDTH * 2.0, LYING_HEIGHT, MARE_HALF_LENGTH * 2.0) * scale
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = shape
+	query.collision_mask = 1
+	var skip: Array[RID] = []
+	for body: Node in [actor, player] + (player.find_children("*", "CollisionObject3D", true, false) if is_instance_valid(player) else []):
+		if body is CollisionObject3D: skip.append((body as CollisionObject3D).get_rid())
+	query.exclude = skip
+	var at := seats[1].global_position + shift
+	query.transform = Transform3D(global_basis.orthonormalized(), at + Vector3.UP * (0.05 + shape.size.y * 0.5))
+	return get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()
+
+static func _body_scale(actor: Node3D) -> float:
+	var value: Variant = actor.get("body_scale") if actor != null else null
+	return float(value) if value != null else 1.0
+
+## Anon's height setting over the 6 ft Anon (1.0 without the Settings autoload).
+func _anon_scale() -> float:
+	var settings: Node = get_node_or_null("/root/Settings")
+	return float(settings.call("anon_height_scale")) if settings != null and settings.has_method("anon_height_scale") else 1.0
+
+## How much farther out than her seat she lies at her size and his height (zero at canon sizes).
+func _size_shift(actor: Node3D) -> Vector3:
+	if actor == null or seats.size() < 2 or not is_instance_valid(seats[0]) or not is_instance_valid(seats[1]): return Vector3.ZERO
+	var gap := seats[1].global_position - seats[0].global_position
+	gap.y = 0.0
+	var have := gap.length()
+	var need := BESIDE_GROUND * 0.5 * (_anon_scale() + _body_scale(actor))
+	if have < 0.01 or need <= have: return Vector3.ZERO
+	return gap / have * (need - have)
 
 ## Physical blanket adapter: caller validates and owns support and placement. It supplies
 ## world frame and two edge seats; food/blanket save ownership stays with the caller.
@@ -106,7 +148,7 @@ func touch_zone(point: Vector3) -> bool:
 	return absf(local.x) < .8 and absf(local.z) < .8 and absf(local.y) < .25
 func approach(seat: Node3D) -> Vector3: return seat.global_position + global_basis.z * .3
 func pony_transform(seat: Node3D, actor: Node3D = null) -> Transform3D:
-	var at := seat.global_position + Vector3.UP * .01
+	var at := seat.global_position + Vector3.UP * .01 + (_size_shift(actor) if seats.size() > 1 and seat == seats[1] else Vector3.ZERO)
 	if temporary and actor != null:
 		var mode := NAP_COMPANY.closeness(actor)
 		if mode == "shoulder": at = to_global(Vector3(.18, .01, -.22))

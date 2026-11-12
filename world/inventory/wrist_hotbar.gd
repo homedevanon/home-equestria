@@ -46,6 +46,11 @@ var _carrier: CARRIER
 var _footer_carrier: CARRIER
 var _carrier_pending := false
 var _message_tween: Tween
+## A message clears itself after this long unless a newer one replaced it (player board #58/#60:
+## "Insufficient funds!" and "That slot cannot accept this item." stayed until a reload). The
+## standing control hints are what shows when no message is up, so they are never cleared.
+const MESSAGE_SECONDS := 4.0
+var _message_serial := 0
 const ERROR_RED := Color("ff5252")
 const VR_HINT := "Point + grip: equip  ·  L / R grip: cycle\n[ Inventory ]       [ Empty hand ]"
 const DESKTOP_HINT := "Click: equip  ·  Shift-click two slots: move  ·  I: briefcase  ·  Q: drop"
@@ -159,9 +164,15 @@ func refresh() -> void:
 	if _hud_hint != null: _hud_hint.visible = not message.is_empty()
 	_queue_carrier()
 
-func set_message(value: String, flash_red: bool = false) -> void:
+## `seconds` <= 0 keeps the message until it is replaced or cleared.
+func set_message(value: String, flash_red: bool = false, seconds: float = MESSAGE_SECONDS) -> void:
 	if _message_tween != null: _message_tween.kill()
 	message = value
+	_message_serial += 1
+	if not value.is_empty() and seconds > 0.0 and is_inside_tree():
+		var serial := _message_serial
+		get_tree().create_timer(seconds).timeout.connect(func() -> void:
+			if is_instance_valid(self) and serial == _message_serial and not message.is_empty(): set_message(""))
 	if _hint != null:
 		_hint.visible = not world_popup or not value.is_empty()
 		_hint.text = value if not value.is_empty() else HEAD_HINT if head_controls else VR_HINT

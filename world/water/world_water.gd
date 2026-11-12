@@ -24,6 +24,14 @@ var ocean: Node3D
 var _sea: MeshInstance3D
 var sea_level := -80.0
 var river_audit: Dictionary = {}
+## Seasons (W2-SEAS-G): the still water that can freeze over (lake discs, Ponyville canals) and every
+## toon water material made here, read by res://world/seasons/ice_slabs.gd (walkable ice slabs, the
+## ice look's ice_solid uniform, rain ripples). Shader ice_kind: 0 sea, 1 still, 2 river.
+const ICE_NONE := 0
+const ICE_STILL := 1
+const ICE_RIVER := 2
+var still_water: Array[MeshInstance3D] = []
+var water_materials: Array[ShaderMaterial] = []
 
 
 static func ensure(parent: Node) -> WorldWater:
@@ -66,9 +74,11 @@ static func _load_json(path: String) -> Variant:
 	return JSON.parse_string(FileAccess.get_file_as_string(path))
 
 
-func _material(sea: bool) -> ShaderMaterial:
+func _material(sea: bool, ice_kind := ICE_NONE) -> ShaderMaterial:
 	var material := ShaderMaterial.new()
 	material.shader = load(TOON_WATER)
+	material.set_shader_parameter("ice_kind", ice_kind)
+	water_materials.append(material)
 	if sea:
 		material.set_shader_parameter("wave_amplitude", 0.35)
 		material.set_shader_parameter("wave_frequency", 0.12)
@@ -88,12 +98,13 @@ func _material(sea: bool) -> ShaderMaterial:
 	return material
 
 
-func _add_water(mesh: Mesh, name: String, sea: bool, xform := Transform3D.IDENTITY) -> MeshInstance3D:
+func _add_water(mesh: Mesh, name: String, sea: bool, xform := Transform3D.IDENTITY, ice_kind := ICE_NONE) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.name = name
 	mi.mesh = mesh
 	mi.transform = xform
-	mi.material_override = _material(sea)
+	mi.material_override = _material(sea, ice_kind)
+	if ice_kind == ICE_STILL: still_water.append(mi)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	mi.add_to_group("navigation_water")
 	add_child(mi)
@@ -162,7 +173,7 @@ func _build_lake(lake: Dictionary) -> void:
 	disc.height = 0.02
 	disc.radial_segments = 48
 	disc.rings = 1
-	_add_water(disc, "Lake_" + String(lake.id), false, Transform3D(Basis.IDENTITY, Vector3(float(c[0]), float(c[1]), float(c[2]))))
+	_add_water(disc, "Lake_" + String(lake.id), false, Transform3D(Basis.IDENTITY, Vector3(float(c[0]), float(c[1]), float(c[2]))), ICE_STILL)
 
 
 ## A ribbon along the river's surface polyline (points carry the surface height).
@@ -208,7 +219,7 @@ func _build_ribbon(points: Array, half: float, name: String) -> void:
 		st.set_uv(Vector2(1.0, uv1)); st.add_vertex(right[i + 1])
 		st.set_uv(Vector2(0.0, uv1)); st.add_vertex(left[i + 1])
 	st.generate_normals()
-	_add_water(st.commit(), name, false)
+	_add_water(st.commit(), name, false, Transform3D.IDENTITY, ICE_RIVER)
 
 
 ## A surface over a height grid (NaN = dry), meshed every `STRIDE` samples. Triangles need
@@ -263,5 +274,5 @@ func _build_canals(doc: Dictionary) -> void:
 	arrays[Mesh.ARRAY_INDEX] = tris
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	_add_water(mesh, "PonyvilleCanals", false)
+	_add_water(mesh, "PonyvilleCanals", false, Transform3D.IDENTITY, ICE_STILL)
 	print("[water] Ponyville canals: ", tris.size() / 3, " triangles")

@@ -49,8 +49,11 @@ const POINTER_PRIORITY := 116
 const RECENTRE_DEGREES := 60.0
 ## Enter or Space held over from before the panel opened must not answer it at once.
 const GRACE := 0.35
+## The last answer given in this panel, the next new game's starting choice (player board #46:
+## a new game started on Anonmare). Human Anon until something is saved.
+const LAST_PATH := "user://creator_last.cfg"
 var game: Node
-var _pony := true
+var _pony := false
 var _form: Dictionary = PLAYER_FORM.default_pony()
 var _row := "kind"
 var _hover := ""
@@ -120,6 +123,7 @@ static func _automated() -> bool:
 # ---------------------------------------------------------------- open and close
 func _open_ui() -> void:
 	_open = true; _done = false; _elapsed = 0.0
+	_load_last()
 	_rig = game.get("player")
 	_camera = game._find_camera(_rig) as Camera3D if is_instance_valid(_rig) else null
 	_headset = _camera is XRCamera3D
@@ -278,7 +282,24 @@ func _confirm() -> void:
 	_answer.call_deferred(_result())
 
 func _answer(form: Dictionary) -> void:
+	_save_last(form)
 	chosen.emit(form)
+
+## Starts the panel on the last saved answer (normalised like a world's saved form), else human.
+func _load_last() -> void:
+	var file := ConfigFile.new()
+	if file.load(LAST_PATH) != OK: return
+	var stored: Variant = file.get_value("creator", "form", {})
+	var form: Dictionary = PLAYER_FORM.saved({PLAYER_FORM.KEY: stored}) if stored is Dictionary else {}
+	if form.is_empty(): return
+	_pony = PLAYER_FORM.is_pony(form)
+	if _pony: _form = form.duplicate()
+
+static func _save_last(form: Dictionary) -> void:
+	if not PLAYER_FORM.valid(form): return
+	var file := ConfigFile.new()
+	file.set_value("creator", "form", form.duplicate())
+	if file.save(LAST_PATH) != OK: push_warning("[creator] could not remember the choice at " + LAST_PATH)
 
 # ---------------------------------------------------------------- frame
 func _process(delta: float) -> void:

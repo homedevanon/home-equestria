@@ -17,6 +17,7 @@ signal produced(station_id: String, outputs: Array, worker: String)
 signal ticked(at_hours: float)
 const RULES := preload("res://world/mechanics/stations/station_rules.gd")
 const FACTS := preload("res://world/mechanics/facts.gd")
+const SEASON_STATE := preload("res://world/seasons/season_state.gd")
 const ITEM_CATALOG := preload("res://world/inventory/item_catalog.gd")
 const STATE_KEY := "stations"
 const VERSION := 1
@@ -180,16 +181,15 @@ func _calendar() -> Node:
 	if from_hub is Node and is_instance_valid(from_hub): return from_hub
 	return get_tree().get_first_node_in_group("town_calendar") if is_inside_tree() else null
 
-## The season name: the town calendar's (WP7), else the weather's, else the day count.
+## The season name: the town calendar's (WP7), else the weather's, else season_state's formula on
+## the day count (its offset and Settings season length; the old 7-day fallback is gone, M-SEA-04).
 func season() -> String:
 	var cal := _calendar()
 	if cal != null and cal.has_method("season_name"): return str(cal.season_name())
 	var weather: Node = get_tree().get_first_node_in_group("weather") if is_inside_tree() else null
 	if weather != null and str(weather.get("season")) in RULES.SEASONS: return str(weather.get("season"))
-	var tree := Engine.get_main_loop() as SceneTree
-	var settings: Node = tree.root.get_node_or_null("Settings") if tree != null else null
-	var length: int = maxi(1, int(settings.call("season_days"))) if settings != null and settings.has_method("season_days") else 7
-	return str(RULES.SEASONS[posmod(int(floor(float(FACTS.clock().day) / float(length))), 4)])
+	var index := SEASON_STATE.index_for(int(FACTS.clock().day), SEASON_STATE.current_season_days(), SEASON_STATE.current_offset())
+	return str(RULES.SEASONS[index])
 
 ## "" when the station's season, hours and event needs hold now, else the reason.
 func needs_met(id: String) -> String:

@@ -1,0 +1,293 @@
+{
+ "about": "Teases, insults, pushback, Rainbow Crash and cooldowns, with the expected result per shove setting.",
+ "cases": [
+  {
+   "pony": "twilight_sparkle",
+   "said": "Look at you, blank flank!",
+   "reply": "Hey! Quit it!",
+   "mood": "shy",
+   "friendship": -1,
+   "romance": 0,
+   "name": "blank flank, she pushes back flustered",
+   "expect": {
+    "a_lot": true,
+    "normal": true,
+    "sometimes": true
+   },
+   "heavy": false
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "Look at you, blank flank!",
+   "reply": "Hey! Quit it!",
+   "mood": "shy",
+   "friendship": -1,
+   "romance": 0,
+   "name": "the same again at once: cooldown",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   },
+   "keep_cooldown": true
+  },
+  {
+   "pony": "rainbow_dash",
+   "said": "You're such a slowpoke, Rainbow",
+   "reply": "Excuse me?! Take that back!",
+   "mood": "annoyed",
+   "friendship": -2,
+   "romance": 0,
+   "name": "real tease, she is annoyed",
+   "expect": {
+    "a_lot": true,
+    "normal": true,
+    "sometimes": false
+   },
+   "heavy": true
+  },
+  {
+   "pony": "fluttershy",
+   "said": "You're so stupid",
+   "reply": "Th-that's not very nice...",
+   "mood": "sad",
+   "friendship": -3,
+   "romance": 0,
+   "thought": "That really hurt.",
+   "name": "insult, she is hurt",
+   "expect": {
+    "a_lot": true,
+    "normal": true,
+    "sometimes": true
+   }
+  },
+  {
+   "pony": "rarity",
+   "said": "Nice flank, Rarity",
+   "reply": "Why thank you, darling! I do keep myself in shape.",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "name": "tease taken calmly",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "Look at you, blank flank!",
+   "reply": "Hey! Quit it!",
+   "mood": "shy",
+   "friendship": -1,
+   "romance": 0,
+   "age": 30,
+   "name": "tease said 30 s ago",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "fluttershy",
+   "said": "Look at you, blank flank!",
+   "reply": "Oh my... um...",
+   "mood": "shy",
+   "friendship": 0,
+   "romance": 0,
+   "current": "twilight_sparkle",
+   "name": "tease said to another pony",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "pinkie_pie",
+   "said": "",
+   "reply": "Hey, quit it, you dork! That tickles!",
+   "mood": "annoyed",
+   "friendship": -1,
+   "romance": 0,
+   "touch": "Anon booped her nose three times.",
+   "name": "she pushes back at his boops",
+   "expect": {
+    "a_lot": true,
+    "normal": true,
+    "sometimes": false
+   },
+   "heavy": true
+  },
+  {
+   "pony": "applejack",
+   "said": "What's going on?",
+   "reply": "Apple Bloom, quit it! Stop pulling my tail!",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "name": "pushback at someone else",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "Are you blushing?",
+   "reply": "N-no I'm not! I'm not blushing!",
+   "mood": "neutral",
+   "friendship": 0,
+   "romance": 0,
+   "name": "tease, she only stammers",
+   "expect": {
+    "a_lot": true,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rainbow_dash",
+   "rainbow_crash": "Nice landing, Rainbow Crash!",
+   "name": "Rainbow Crash",
+   "expect": {
+    "a_lot": true,
+    "normal": true,
+    "sometimes": true
+   },
+   "heavy": true
+  },
+  {
+   "pony": "rainbow_dash",
+   "rainbow_crash": "Rainbow Crash strikes again!",
+   "name": "Rainbow Crash again: cooldown",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   },
+   "keep_cooldown": true
+  },
+  {
+   "pony": "applejack",
+   "said": "",
+   "reply": "Hey! Quit it, you big jerk!",
+   "mood": "annoyed",
+   "friendship": -1,
+   "romance": 0,
+   "touch": "[Observed physical event, not spoken dialogue] Anon booped your nose.",
+   "name": "pushback 'you big jerk' at his boop, though Big McIntosh is a known name",
+   "expect": {
+    "a_lot": true,
+    "normal": true,
+    "sometimes": false
+   },
+   "heavy": true
+  },
+  {
+   "pony": "rarity",
+   "said": "",
+   "reply": "Leave me alone, I'm thinking.",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "touch": "[Observed physical event, not spoken dialogue] The player has been quiet since your last reply. Sometimes just relish the moment with them.",
+   "name": "pushback after the director's 'he has been quiet' nudge, not Anon's doing",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "Spike is being such a dork today",
+   "reply": "Ugh, tell me about it! He hid my quills again.",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "name": "a tease word about Spike, she is annoyed at Spike",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rarity",
+   "said": "This stupid rain ruined my mane",
+   "reply": "I know! It's simply dreadful!",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "name": "an insult word about the rain, she is annoyed at the rain",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "Twilight, you're such an egghead!",
+   "reply": "Hey! Take that back!",
+   "mood": "annoyed",
+   "friendship": -1,
+   "romance": 0,
+   "name": "her own first name is shared with Twilight Velvet: still aimed at her",
+   "expect": {
+    "a_lot": true,
+    "normal": true,
+    "sometimes": false
+   },
+   "heavy": true
+  },
+  {
+   "pony": "rarity",
+   "said": "How was the market?",
+   "reply": "Ugh, she was so rude to me at the market! Can you believe it?",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "name": "pushback phrase about an unnamed third pony, she is annoyed at her",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "applejack",
+   "said": "Did your brother help today?",
+   "reply": "Nope. I told him to back off and let me work.",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "name": "pushback phrase she said to her brother, not to Anon",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rarity",
+   "said": "",
+   "touch": "[Observed physical event, not spoken dialogue] Anon booped your nose three times.",
+   "reply": "She would never let you do that, so how rude of you!",
+   "mood": "annoyed",
+   "friendship": -1,
+   "romance": 0,
+   "name": "pushback at his boop that also mentions a third pony and says you",
+   "expect": {
+    "a_lot": true,
+    "normal": true,
+    "sometimes": false
+   },
+   "heavy": true
+  }
+ ]
+}

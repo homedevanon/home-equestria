@@ -1,8 +1,8 @@
 extends Control
 ## Journal page (dev 2026-10-28: "export in PNG format to show other our discussions/adventures",
 ## recent or older lines, one character or a group): a world's talk read back as scenes, newest
-## first (world/ui/journal_data.gd), narrowed to some ponies, a day, with or without the moments
-## between. Click lines to pick them, or take a whole scene; "Make picture" opens the picture
+## first (world/ui/journal_data.gd), narrowed to some ponies, a day, the words in the search box,
+## with or without the moments between. A long scene shows its newest lines first. Click lines to pick them, or take a whole scene; "Make picture" opens the picture
 ## studio: the look, layout, width, text size, a title and which parts show, with a live preview
 ## (world/ui/journal_picture.gd), then Save puts the PNG in Pictures/Home Equestria. Same embedding as the
 ## AI context page: `setup(surface)`, `open(world)`, `closed`, `controls`, `relayout()`; the title
@@ -20,6 +20,9 @@ const OVERHEAD := preload("res://world/ai/overhead_dialogue.gd")
 const FONT := 20
 ## Scenes shown at first, newest first; a button adds as many older ones.
 const SCENES_SHOWN := 10
+## A scene's lines shown at first: its newest ones (a long talk can run to hundreds of lines); a
+## button at the top of the card shows the earlier ones.
+const LINES_SHOWN := 30
 ## Pony chips shown before "+N more".
 const CHIPS_SHOWN := 10
 ## [option, label, tooltip] for the studio's Show switches.
@@ -47,6 +50,11 @@ var _day := -1
 var _moments := true
 var _all_chips := false
 var _limit := SCENES_SHOWN
+## The search box's words, and the scenes (by index) whose earlier lines were asked for.
+var _query := ""
+var _unfolded: Dictionary = {}
+var _search: LineEdit
+var _search_wait: Timer
 ## Picked entry ids -> true.
 var _picked: Dictionary = {}
 var _shown: Array = []
@@ -133,10 +141,22 @@ func setup(surface: Node) -> void:
 	_moments_chip.toggle_mode = true; _moments_chip.icon = ICON.texture("sparkle", FONT - 4)
 	_moments_chip.tooltip_text = "Arrivals, rumours, a Sonic Rainboom and other moments between the lines"
 	_moments_chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER; _moments_chip.custom_minimum_size.y = FONT * 1.8
+	# Search (dev 2026-11-11: a player's journal held 10,000 lines): words or a pony's name. The
+	# list follows a moment after the typing stops, or at once on Enter.
+	_search = LineEdit.new(); _search.placeholder_text = "Search words or a name"; _search.max_length = 80
+	_search.clear_button_enabled = true; _search.add_theme_font_size_override("font_size", FONT - 3)
+	_search.right_icon = ICON.texture("search", FONT - 2)
+	_search.custom_minimum_size = Vector2(FONT * 13, FONT * 1.8); _search.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_search_wait = Timer.new(); _search_wait.one_shot = true; _search_wait.wait_time = 0.3; add_child(_search_wait)
+	_search_wait.timeout.connect(_apply_search)
+	_search.text_changed.connect(func(_text: String) -> void: _search_wait.start())
+	_search.text_submitted.connect(func(_text: String) -> void: _search_wait.stop(); _apply_search())
+	_search.focus_entered.connect(_refresh_panel)
+	when.add_child(_search)
 	_count = STYLE.label("", "Faint", FONT - 5); _count.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_count.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; _count.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	when.add_child(_count)
-	_filters = [_day_back, _day_on, _moments_chip]
+	_filters = [_day_back, _day_on, _moments_chip, _search]
 	_scroll = ScrollContainer.new(); _scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED; _scroll.follow_focus = true
 	_scroll.get_v_scroll_bar().value_changed.connect(func(_value: float) -> void: _refresh_panel())
@@ -306,21 +326,32 @@ func open(world := "") -> void:
 	(controls[0] if not controls.is_empty() else _back).grab_focus()
 
 
-## The studio's title field has the keyboard (the title forwards keys to it, also in a headset).
+## The studio's title field or the search box has the keyboard (the title forwards keys to it,
+## also in a headset).
 func typing() -> bool:
-	return visible and _studio.visible and _title_edit.has_focus()
+	return visible and (_title_edit.has_focus() if _studio.visible else _search.has_focus())
 
 
-## Escape and the grip: the studio closes first, then the page.
+## Escape and the grip: the studio closes first, then a search is cleared, then the page.
 func back() -> void:
 	if _studio.visible: _close_studio()
+	elif not _query.is_empty() or not _search.text.is_empty():
+		_search.text = ""; _search_wait.stop(); _apply_search()
 	else: closed.emit()
+
+
+func _apply_search() -> void:
+	var query := _search.text.strip_edges()
+	if query == _query: return
+	_query = query; _limit = SCENES_SHOWN; _show()
 
 
 # ------------------------------------------------------------------ choosing
 func _load_world() -> void:
 	_world = DATA.read_world(worlds_root, worlds[world_index]) if not worlds.is_empty() else {}
 	_chosen.clear(); _day = -1; _picked.clear(); _limit = SCENES_SHOWN; _all_chips = false
+	_query = ""; _unfolded.clear()
+	if _search != null: _search.text = ""; _search_wait.stop()
 
 
 func _step_world(direction: int) -> void:
@@ -354,19 +385,54 @@ func _toggle_pick(entry: Dictionary, row: Control) -> void:
 	if _picked.has(int(entry.id)): _picked.erase(int(entry.id))
 	else: _picked[int(entry.id)] = true
 	_style_row(row, _picked.has(int(entry.id)), true)
+	var card: Dictionary = row.get_meta("scene_card", {})
+	_sync_card(card)
 	_update_picks()
 
 
 ## Picks a whole scene, or unpicks it when every line of it was picked.
 func _pick_scene(scene: Dictionary, rows: Array[Control], button: Button) -> void:
 	var all := (scene.entries as Array).all(func(e: Dictionary) -> bool: return _picked.has(int(e.id)))
-	for i in scene.entries.size():
-		var id := int(scene.entries[i].id)
-		if all: _picked.erase(id)
-		else: _picked[id] = true
-		_style_row(rows[i], not all, false)
+	for entry: Dictionary in scene.entries:
+		if all: _picked.erase(int(entry.id))
+		else: _picked[int(entry.id)] = true
+	# A long scene shows only its newest lines: the rows are fewer than the entries.
+	for row in rows: _style_row(row, not all, false)
 	button.text = "Pick all" if all else "Unpick"
+	if not rows.is_empty():
+		var card: Dictionary = rows[0].get_meta("scene_card", {})
+		_sync_card(card)
 	_update_picks()
+
+
+## This scene's picked lines, in order.
+func _scene_picks(scene: Dictionary) -> Array:
+	return (scene.entries as Array).filter(func(e: Dictionary) -> bool: return _picked.has(int(e.id)))
+
+
+## A scene card's buttons follow its picks (M-INP-08, thread 43664589: "I picked 5 lines but when I
+## chose picture mode all the other lines were selected too"): Picture takes only the picked lines
+## once some are picked, and says how many; Pick all reads Unpick only while every line is picked
+## (it used to keep "Pick all" after the lines were picked one by one, then unpicked them all).
+func _sync_card(card: Dictionary) -> void:
+	if card.is_empty() or not is_instance_valid(card.get("pick")) or not is_instance_valid(card.get("picture")): return
+	var scene: Dictionary = card.scene
+	var picked := _scene_picks(scene).size()
+	var total := (scene.entries as Array).size()
+	(card.pick as Button).text = "Unpick" if total > 0 and picked == total else "Pick all"
+	var picture := card.picture as Button
+	picture.text = "Picture" if picked == 0 else "Picture · %d" % picked
+	picture.tooltip_text = "Make a picture of this whole scene" if picked == 0 \
+		else "Make a picture of the %d picked %s" % [picked, "line" if picked == 1 else "lines"]
+
+
+## The scene's Picture button: its picked lines when some are picked, else the whole scene.
+func _scene_picture(scene: Dictionary) -> void:
+	var kept := _scene_picks(scene)
+	if kept.is_empty() or kept.size() == (scene.entries as Array).size():
+		_open_studio(scene.entries, [scene]); return
+	var copy := scene.duplicate(); copy.entries = kept
+	_open_studio(kept, [copy])
 
 
 func _clear_picks() -> void:
@@ -390,12 +456,14 @@ func _show() -> void:
 	elif str(_world.get("error", "")) != "" or (_world.entries as Array).is_empty():
 		_empty("chat", "Nothing said yet", str(_world.error) if str(_world.get("error", "")) != "" else "Talk with the ponies in this world and the conversations show here.")
 	else:
-		_shown = DATA.filtered(_world.scenes, _chosen, _day, _moments)
+		_shown = DATA.filtered(_world.scenes, _chosen, _day, _moments, _query)
 		var lines := 0
 		for scene: Dictionary in _shown: lines += scene.entries.size()
-		_count.text = "%d %s · %d %s" % [_shown.size(), "scene" if _shown.size() == 1 else "scenes", lines, "line" if lines == 1 else "lines"]
+		_count.text = "%d %s · %d %s%s" % [_shown.size(), "scene" if _shown.size() == 1 else "scenes", lines, "line" if lines == 1 else "lines",
+			"" if _query.is_empty() else " with \"%s\"" % _query]
 		if _shown.is_empty():
-			_empty("search", "Nothing here", "No conversation matches. Choose other ponies or another day.")
+			_empty("search", "Nothing here", "No conversation matches. Choose other ponies or another day." if _query.is_empty()
+				else "No line holds \"%s\". Try other words, other ponies or another day." % _query)
 		for scene: Dictionary in _shown.slice(0, _limit): _scene_card(scene)
 		if _shown.size() > _limit:
 			var older := _button(_body, "Show older scenes (%d more)" % (_shown.size() - _limit), Callable(), "Ghost")
@@ -532,16 +600,32 @@ func _scene_card(scene: Dictionary) -> void:
 	var pick := _button(top, "Unpick" if all else "Pick all", Callable(), "Chip")
 	pick.icon = ICON.texture("check", FONT - 4); pick.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	pick.pressed.connect(_pick_scene.bind(scene, lines, pick))
-	var picture := _button(top, "Picture", _open_studio.bind(scene.entries, [scene]), "Chip")
+	var picture := _button(top, "Picture", _scene_picture.bind(scene), "Chip")
 	picture.icon = ICON.texture("image", FONT - 4); picture.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	picture.tooltip_text = "Make a picture of this whole scene"
 	_extra.append_array([pick, picture])
+	var card_state := {"scene": scene, "pick": pick, "picture": picture}
 	rows.add_child(_spacer(4))
+	# Newest lines first in view: a long scene opens on its last LINES_SHOWN lines, in the order
+	# they were said, with the earlier ones behind a button.
+	var entries: Array = scene.entries
+	var hidden := entries.size() - LINES_SHOWN
+	if hidden > 0 and not _unfolded.has(int(scene.index)):
+		entries = entries.slice(hidden)
+		var earlier := _button(rows, "Show %d earlier %s of this scene" % [hidden, "line" if hidden == 1 else "lines"], Callable(), "Ghost")
+		earlier.icon = ICON.texture("plus", FONT - 2)
+		earlier.pressed.connect(func() -> void:
+			var keep := _scroll.scroll_vertical
+			_unfolded[int(scene.index)] = true; _show()
+			_scroll.set_deferred("scroll_vertical", keep))
+		_extra.append(earlier)
 	var last := ""
-	for entry: Dictionary in scene.entries:
+	for entry: Dictionary in entries:
 		var row := _line_row(entry, str(entry.speaker) != last)
+		row.set_meta("scene_card", card_state)
 		rows.add_child(row); lines.append(row)
 		last = str(entry.speaker) if entry.kind == "say" else ""
+	_sync_card(card_state)
 
 
 ## One line: her disc and name on the first of a run, the words; click to pick it.

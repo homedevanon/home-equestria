@@ -56,11 +56,6 @@ func _physics_process(delta: float) -> void:
 	var camera := _camera()
 	if camera == null: return
 	_light_in -= delta
-	if _light_in <= 0.0:
-		_light_in = 1.0
-		_lights = get_tree().get_nodes_in_group("night_lights")
-		for light in get_tree().get_nodes_in_group("creature_repelling_lights"):
-			if not _lights.has(light): _lights.append(light)
 	var eye := camera.global_position
 	for wolf in wolves: wolf.observer = eye
 	_think_in -= delta
@@ -68,6 +63,13 @@ func _physics_process(delta: float) -> void:
 	if _think_in > 0.0: return
 	_think_in = 0.25
 	var inside := habitat(eye) > 0.5
+	# The light list is read only by think() and try_spawn() (via dark/bright), so it is gathered
+	# only when one of them can run: no group scan every second in town. Still at most 1 s old.
+	if _light_in <= 0.0 and (inside or not wolves.is_empty()):
+		_light_in = 1.0
+		_lights = get_tree().get_nodes_in_group("night_lights")
+		for light in get_tree().get_nodes_in_group("creature_repelling_lights"):
+			if not _lights.has(light): _lights.append(light)
 	if not wolves.is_empty():
 		_cursor %= wolves.size()
 		var wolf: CharacterBody3D = wolves[_cursor]; _cursor += 1

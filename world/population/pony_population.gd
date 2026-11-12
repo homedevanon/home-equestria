@@ -41,6 +41,9 @@ var overnight_visitors: Node
 var saved: Dictionary = {}
 ## Today's day-plan progress from the loaded save (game_saves.gd), taken once by DayRunner.
 var resumed_plans: Dictionary = {}
+## Sky-home afternoon trips already taken on that day ({id: day}) from the loaded save
+## (game_saves.gd), read by NightRest so a load does not roll the trip again.
+var resumed_sky_visits: Dictionary = {}
 var _resumes_settled := false
 var retry_at: Dictionary = {}
 var status: Dictionary = {}
@@ -182,6 +185,14 @@ func residents_of(place_id: String) -> Array:
 const ASSIGN_ONCE_PER_FRAME := true
 var _assign_frame := -1
 var _house_by_place := {}
+
+## A house reservation changed this frame (arrival_story.gd grant_home: the player's new home):
+## the once-per-frame pass already ran, so assign again now. Residents who lived there move out
+## in the same frame and the map, beds and place directory see one consistent town.
+func reassign_houses() -> void:
+	_house_signature = 0
+	_assign_frame = -1
+	_assign_houses()
 
 func _assign_houses() -> void:
 	if ASSIGN_ONCE_PER_FRAME and _houses_loaded:
@@ -413,6 +424,17 @@ func _resume(id: String, actor: Node3D, resume: Dictionary) -> void:
 	elif str(resume.get("rest", "")) in ["sit", "lie_down", "seat"]:
 		var kind := "sit_on_seat" if str(resume.rest) == "seat" else str(resume.rest)
 		executor.submit([{"id": "resume_rest:" + id, "type": kind}], {}, turn)
+	elif resume.get("move") is Dictionary:
+		# A go_to, lead or approach still under way at save time (game_saves.gd _saved_move).
+		var move: Dictionary = (resume.move as Dictionary).duplicate()
+		var origin := bool(move.get("ai", false))
+		move.erase("ai")
+		move["id"] = "resume_move:" + id
+		var targets := {}
+		var player: Variant = director.get("player_head")
+		if is_instance_valid(player): targets["player"] = player
+		elif move.has("target_id"): return
+		executor.submit([move], targets, turn, origin)
 
 func activate_distance(id: String) -> float:
 	return SKY_ACTIVATE_DISTANCE if NIGHT_REST.SKY_HOMES.has(id) else ACTIVATE_DISTANCE
@@ -511,10 +533,12 @@ func reconcile() -> void:
 			host._despawn_resident(id, actor); live.erase(id)
 	if _spawning != "": return
 	var candidates: Array = []
+	# Loop invariants, read once per reconcile instead of once per resident (W2 perf pass).
+	var railway: Node = host.railway if "railway" in host and is_instance_valid(host.railway) else null
+	var cap := nearby_limit()
 	for id: String in config.assignments:
 		if live.has(id) or visiting.has(id) or _clock < float(retry_at.get(id, 0.0)): continue
-		var rider: bool = "railway" in host and is_instance_valid(host.railway) and host.railway.owns(id)
-		var cap := nearby_limit()
+		var rider: bool = railway != null and railway.owns(id)
 		if cap > 0 and live.size() >= cap and not rider: continue
 		var pos := candidate_position(id)
 		var distance := flat_distance(pos, anchor.global_position)
@@ -574,6 +598,7 @@ func _spawn(candidate: Dictionary) -> void:
 			var resource := ResourceLoader.load_threaded_get(dependency)
 			_spawn_loading.erase(dependency)
 			if resource != null: held.append(resource)
+	var from_save := resuming(id)
 	candidate.position = candidate_position(id)
 	if generation != _generation or flat_distance(candidate.position, anchor.global_position) >= activate_distance(id):
 		_spawning = ""; _timer = 0.0; return
@@ -587,6 +612,7 @@ func _spawn(candidate: Dictionary) -> void:
 			_sky_started[id] = true
 			status.erase(id)
 			if saved.has(id) and saved[id].region == region_id: actor.rotation = saved[id].rotation
+			if from_save: _step_off_prop(actor)
 			if is_instance_valid(life) and not ("railway" in host and is_instance_valid(host.railway) and host.railway.owns(id)): life.attach(id, actor)
 			if saved.has(id) and saved[id].has("resume"):
 				var resume: Dictionary = saved[id].resume
@@ -602,6 +628,19 @@ func _spawn(candidate: Dictionary) -> void:
 	_spawning = ""
 	# Next one straight away instead of waiting for the 1 s reconcile tick.
 	_timer = 0.0
+
+## A saved spot on top of a prop solid (W1-LIFE-BEDS: Octavia saved standing on flowerbed_22, an
+## island with no route anywhere): onto the walkable ground right beside it, once, at spawn. The
+## walk grid's escape_point only answers when her spot is not walkable, the ground is within a
+## couple of cells and a short step down (< 0.4 m) reaches it; otherwise she stays where she was.
+func _step_off_prop(actor: Node3D) -> void:
+	if not actor.is_inside_tree() or actor.get("profile") == null or not actor.has_method("reset_motion"): return
+	var service: Node = get_tree().get_first_node_in_group("pony_navigation")
+	if service == null or not service.has_method("escape_point"): return
+	var spot: Vector3 = service.escape_point(actor.global_position, actor.get("profile"))
+	if not spot.is_finite() or spot.distance_to(actor.global_position) > 3.0: return
+	print("[population] %s was saved on top of a prop; set down beside it at %s" % [actor.name, spot.round()])
+	actor.reset_motion(Transform3D(actor.global_basis, spot))
 
 ## What the new rig's _ready loads synchronously: her hair scene, and for background mares
 ## the anchored tail meshes background_pony.gd reads from support/.

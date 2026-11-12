@@ -1,9 +1,15 @@
 extends RefCounted
 ## Decision-time check, never a per-frame scene scan. Traversable entrances are
 ## useful route segments, but not autonomous destinations or resting places.
+const FAR_HOUSE := 80.0
+const FAR_DOOR := 20.0
+
 static func passage(tree: SceneTree, at: Vector3, radius: float) -> bool:
 	if not at.is_finite(): return true
 	for home: Node3D in tree.get_nodes_in_group("house_interiors"):
+		# Most houses are far away: both tests below only pass within a door's width of the
+		# entrance, and no entrance lies this far from its house.
+		if at.distance_squared_to(home.global_position) > FAR_HOUSE * FAR_HOUSE: continue
 		var outside: Vector3 = home.outside()
 		var doorway: Vector3 = home.to_global(Vector3(home.doorway.x, home.floor_y, home.doorway.z))
 		var inside: Vector3 = home.inside()
@@ -14,6 +20,7 @@ static func passage(tree: SceneTree, at: Vector3, radius: float) -> bool:
 		if _on_segment(at, outside, doorway, width) or _on_segment(at, doorway, inside, width): return true
 	# Standalone shop doors do not necessarily have a residential interior.
 	for door: Node3D in tree.get_nodes_in_group("house_doors"):
+		if at.distance_squared_to(door.global_position) > FAR_DOOR * FAR_DOOR: continue
 		var box: AABB = door.navigation_box
 		if not box.has_volume(): continue
 		# navigation_box is authored in the closed leaf frame; an open leaf's

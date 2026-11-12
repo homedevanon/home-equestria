@@ -61,6 +61,8 @@ var _row_hover: StyleBoxFlat
 var _debug_button: Button
 var _updates_presses := 0
 var _updates_pressed_at := -10.0
+## Settings → Mods switches by pack file, so switching a scenario mod on shows the others go off.
+var _mod_toggles: Dictionary = {}
 
 
 ## `size` is the page's full size; `back_text` names the host's button ("" for none).
@@ -454,31 +456,120 @@ static func _option_index(key: String) -> int:
 	return 0
 
 
-## Settings → Mods (world/modding/mod_loader.gd): every mod pack found this launch with an On/Off
-## switch, kept in user://mods/mods.cfg; entry-only mods switch at once (Mods.switch()).
+## Settings → Mods (world/modding/mod_loader.gd pack_rows()): two sections, the player's own mods
+## and under them the mods included with the game, each pack with its name, version and author, an On/Off switch
+## (kept in user://mods/mods.cfg; entry-only mods switch at once, Mods.switch()) and a muted line
+## saying why it is held, superseded, waiting for another mod or patched. A patch pack has no
+## switch of its own: it is listed under the pack it patches and follows it.
 func _build_mods(list: VBoxContainer) -> void:
 	var loader := preload("res://world/modding/mod_loader.gd")
 	_note(list, "Mods can run code on your computer. Only install mods from people you trust. Most mods switch on and off at once; the rest apply the next time the game starts.")
 	_button(list, "Open mods folder", _open_mods_folder).size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	if loader.packs.is_empty():
-		_note(list, "No mods installed. Put .pck mods in the mods folder, then restart the game.")
-		return
-	for pack: Dictionary in loader.packs:
-		var line := HBoxContainer.new(); line.add_theme_constant_override("separation", 6); list.add_child(line)
-		var label := Label.new(); label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL; label.add_theme_font_size_override("font_size", font_size - 2)
-		label.text = _mod_text(pack, loader.mods); line.add_child(label)
-		if str(pack.file).begins_with("(source)"): continue
-		var file := str(pack.file)
-		var toggle := _button(line, "", func() -> void: pass)
-		toggle.custom_minimum_size.x = font_size * 6
-		var show := func() -> void:
-			var on := loader.switched_on(file)
-			toggle.text = "On" if on else "Off"
-			if on != bool(pack.enabled): Settings.message = "Restart the game to apply mod changes."
-			refresh()
-		toggle.pressed.connect(func() -> void: Mods.switch(file, not loader.switched_on(file)); show.call())
-		toggle.text = "On" if loader.switched_on(file) else "Off"
+	var rows := loader.pack_rows()
+	var shipped := rows.filter(func(row: Dictionary) -> bool: return bool(row.bundled) and str(row.patch_of).is_empty())
+	var own := rows.filter(func(row: Dictionary) -> bool: return not bool(row.bundled) and str(row.patch_of).is_empty())
+	# The player's own mods first, then the ones the game came with, told apart plainly (dev
+	# 2026-11-11: a player may wonder why there are mods he did not install).
+	_mods_heading(list, "Your mods", "Installed by you: %d" % own.size())
+	if own.is_empty():
+		_note(list, "You have not installed any mods. Put .pck mods in the mods folder, then restart the game.")
+	for row: Dictionary in own: _mod_row(list, row)
+	if shipped.is_empty(): return
+	_mods_heading(list, "Included with the game", "%d community mods that are part of the game" % shipped.size())
+	_note(list, "You did not install these. They are mods made by players that the game includes, and they update with it. Switch off any you do not want.")
+	_mod_updates(list, shipped)
+	for row: Dictionary in shipped: _mod_row(list, row)
+
+
+## A section title in the heading font with a quiet line under it, set off from the rows above.
+func _mods_heading(list: VBoxContainer, text: String, detail := "") -> void:
+	var space := Control.new(); space.custom_minimum_size.y = font_size * 0.6; list.add_child(space)
+	list.add_child(STYLE.label(text, "Heading", font_size + 4))
+	if not detail.is_empty(): list.add_child(STYLE.label(detail, "Faint", maxi(12, font_size - 5)))
+
+
+## One pack: its name and description, a muted line of reasons, and its switch.
+func _mod_row(list: VBoxContainer, row: Dictionary) -> void:
+	var loader := preload("res://world/modding/mod_loader.gd")
+	var line := HBoxContainer.new(); line.add_theme_constant_override("separation", 6); list.add_child(line)
+	var texts := VBoxContainer.new(); texts.size_flags_horizontal = Control.SIZE_EXPAND_FILL; line.add_child(texts)
+	var label := Label.new(); label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL; label.add_theme_font_size_override("font_size", font_size - 2)
+	label.text = _mod_text(row, loader.mods); texts.add_child(label)
+	var notes := _mod_notes(row)
+	if not notes.is_empty():
+		var muted := STYLE.label(notes, "Muted", font_size - 4); muted.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		muted.size_flags_horizontal = Control.SIZE_EXPAND_FILL; texts.add_child(muted)
+	if not bool(row.get("switchable", true)): return
+	var file := str(row.file)
+	var toggle := _button(line, "", func() -> void: pass)
+	toggle.custom_minimum_size.x = font_size * 6; toggle.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_mod_toggles[file] = toggle
+	var show := func() -> void:
+		var on: bool = loader.switched_on(file)
+		toggle.text = "On" if on else "Off"
+		if on != bool(row.enabled): Settings.message = "Restart the game to apply mod changes."
+		refresh()
+	toggle.pressed.connect(func() -> void:
+		var on := not loader.switched_on(file)
+		Mods.switch(file, on)
+		var note := _one_scenario_switch(row, on) if on else ""
+		for other: String in _mod_toggles:
+			var button: Variant = _mod_toggles[other]
+			if is_instance_valid(button) and button is Button: (button as Button).text = "On" if loader.switched_on(other) else "Off"
+		show.call()
+		if not note.is_empty(): Settings.message = note; refresh())
+	toggle.text = "On" if loader.switched_on(file) else "Off"
+
+
+## One scenario mod at a time (world/modding/scenario.gd): switching one on switches every other
+## scenario mod off. Returns the one-line note ("" when nothing else changed). Scenario switches
+## apply at the next launch only (mod_loader.gd switch()).
+func _one_scenario_switch(row: Dictionary, on: bool) -> String:
+	var loader := preload("res://world/modding/mod_loader.gd")
+	if not on or (row.get("scenario", {}) as Dictionary).is_empty(): return ""
+	var off := PackedStringArray()
+	for other: Dictionary in loader.pack_rows():
+		if other.file == row.file or (other.get("scenario", {}) as Dictionary).is_empty() or not bool(other.get("switchable", true)): continue
+		if not loader.switched_on(str(other.file)): continue
+		Mods.switch(str(other.file), false)
+		off.append(str(other.scenario.name))
+	var head := "%s switches on the next time the game starts." % str(row.scenario.name)
+	if off.is_empty(): return head
+	return head + " Switched off %s: only one scenario mod runs at a time." % ", ".join(off)
+
+
+## Updates for bundled mods (world/update/mod_updates.gd): a check that asks the authors who
+## publish an update address, and a button per update found. Nothing downloads until pressed.
+func _mod_updates(list: VBoxContainer, shipped: Array) -> void:
+	var path := "res://world/update/mod_updates.gd"
+	if not shipped.any(func(row: Dictionary) -> bool: return not str(row.get("update_url", "")).is_empty()) or not ResourceLoader.exists(path): return
+	var script := load(path) as GDScript
+	if script == null or not script.can_instantiate(): return
+	var updater: Variant = script.call("shared", self)
+	if not updater is Node or not (updater as Node).has_method("available") or not (updater as Node).has_method("check_authors") or not (updater as Node).has_method("install"): return
+	var node: Node = updater
+	var box := VBoxContainer.new(); box.add_theme_constant_override("separation", 6); list.add_child(box)
+	var fill := func() -> void:
+		if not is_instance_valid(box): return
+		for child in box.get_children(): child.queue_free()
+		var busy: bool = node.get("busy") == true
+		var check := _button(box, "Check for mod updates from their authors", func() -> void: node.call("check_authors"))
+		check.size_flags_horizontal = Control.SIZE_EXPAND_FILL; check.disabled = busy
+		for offer: Dictionary in node.call("available"):
+			var id := str(offer.get("id", ""))
+			var press := _button(box, "Update %s to %s (from the author)" % [str(offer.get("title", id)), str(offer.get("version", ""))], func() -> void: node.call("install", id))
+			press.size_flags_horizontal = Control.SIZE_EXPAND_FILL; press.disabled = busy
+		var status := str(node.get("status"))
+		if not status.is_empty(): _note(box, status)
+	fill.call()
+	if node.has_signal("changed"):
+		var again := func() -> void:
+			fill.call()
+			if is_inside_tree(): _redraw()
+		node.connect("changed", again)
+		box.tree_exiting.connect(func() -> void:
+			if node.is_connected("changed", again): node.disconnect("changed", again))
 
 
 ## Which version this is, an update button while a newer one is out, and a check on demand
@@ -547,6 +638,8 @@ func _debug_run(text: String) -> void:
 	refresh()
 
 
+## A pack's name, version, author and description (every mod in it), and its file name for the
+## player's own packs.
 func _mod_text(pack: Dictionary, mods: Array) -> String:
 	var loader := preload("res://world/modding/mod_loader.gd")
 	var lines := PackedStringArray()
@@ -557,16 +650,48 @@ func _mod_text(pack: Dictionary, mods: Array) -> String:
 		lines.append(head)
 		if loader.claims_game_author(str(mod.author)): lines.append("Third-party mod: its author field names the game itself.")
 		if not str(mod.description).is_empty(): lines.append(str(mod.description))
-		if not mod.errors.is_empty(): lines.append("Not loaded: " + "; ".join(PackedStringArray(mod.errors)))
-	if lines.is_empty() and not str(pack.get("title", "")).is_empty(): lines.append(str(pack.title))
-	lines.append(str(pack.file))
-	if not str(pack.error).is_empty(): lines.append("Not loaded: " + str(pack.error))
-	# Old mods that replace game files hide newer game features (thread 43671981, mod_loader.gd is_old()).
-	var overrides: PackedStringArray = pack.get("overrides", PackedStringArray())
-	if loader.is_old(pack):
-		var made := "Made for game %s, this is %s. Old mods that replace game files can hide newer features." % [pack.game_version, loader.game_version()]
-		if bool(pack.get("held", false)): made += " Switched on: it loads the next time the game starts." if loader.switched_on(str(pack.file)) else " Kept off; switch it on to use it anyway."
-		lines.append(made)
+	if lines.is_empty():
+		var title := str(pack.get("title", ""))
+		var version := str(pack.get("version", "")); var author := str(pack.get("author", ""))
+		if not title.is_empty(): lines.append(title + ("  " + version if not version.is_empty() else "") + ("  by " + author if not author.is_empty() else ""))
+	if not bool(pack.get("bundled", false)): lines.append(str(pack.file))
+	return "\n".join(lines)
+
+
+## The muted line under a pack (a mod_loader.gd pack_rows() row): why it is off, held, superseded
+## or waiting for another mod, what patches it, cautions, and the game files it replaces. Old mods
+## that replace game files hide newer game features (thread 43671981, mod_loader.gd is_old()).
+func _mod_notes(row: Dictionary) -> String:
+	var loader := preload("res://world/modding/mod_loader.gd")
+	var lines := PackedStringArray()
+	var reason := str(row.get("reason", ""))
+	if not reason.is_empty(): lines.append(reason)
+	var scenario: Dictionary = row.get("scenario", {}) if row.get("scenario") is Dictionary else {}
+	if not scenario.is_empty():
+		lines.append("Scenario: %s. It changes how new worlds start; its saves load only while it is on, and other saves only while it is off. Applies the next time the game starts." % str(scenario.get("name", "")))
+	if bool(row.get("held", false)) and bool(row.get("switched_on", false)) and not bool(row.get("scenario_held", false)): lines.append("Switched on: it loads the next time the game starts.")
+	elif bool(row.get("bundled", false)) and not bool(row.get("default_on", true)) and not bool(row.get("switched_on", false)) and reason.is_empty():
+		lines.append("Off until you switch it on.")
+	if loader.is_old(row) and not bool(row.get("held", false)):
+		lines.append("Made for game %s, this is %s. Old mods that replace game files can hide newer features." % [row.game_version, loader.game_version()])
+	for patch: Dictionary in row.get("patched_by", []):
+		var name := ("%s %s" % [str(patch.get("title", "")), str(patch.get("version", ""))]).strip_edges()
+		lines.append(("Includes devanon's patch %s." if bool(patch.get("bundled", false)) else "Patched by %s.") % name)
+	match str(row.get("update", "")):
+		"manifest": lines.append("Updated to %s with the game's updates." % str(row.get("version", "")))
+		"author": lines.append("Updated to %s from its author." % str(row.get("version", "")))
+	var warning := str(row.get("warning", ""))
+	if not warning.is_empty(): lines.append(warning)
+	var caution := str(row.get("caution", ""))
+	if not caution.is_empty(): lines.append(caution)
+	# Packs that are off never ran read_manifest(), so _mod_text() cannot flag them: their mod.json authors.
+	var declared: Dictionary = row.get("declared", {}) if row.get("declared") is Dictionary else {}
+	if not bool(row.get("mounted", false)):
+		for id: Variant in declared:
+			var info: Variant = declared[id]
+			if info is Dictionary and loader.claims_game_author(str((info as Dictionary).get("author", ""))):
+				lines.append("Third-party mod: its author field names the game itself."); break
+	var overrides: PackedStringArray = row.get("overrides", PackedStringArray())
 	if not overrides.is_empty():
 		var shown := ", ".join(overrides.slice(0, 6)) + (" and %d more" % (overrides.size() - 6) if overrides.size() > 6 else "")
 		lines.append("Replaces game files: " + shown)

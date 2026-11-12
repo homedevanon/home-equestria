@@ -12,6 +12,9 @@ const PACKS := preload("res://tools/build/packs.gd")
 const CATALOGUE := preload("res://world/saves/save_catalogue.gd")
 const PREVIEW := preload("res://world/saves/save_preview.gd")
 const SHELF := preload("res://world/saves/save_shelf.gd")
+## Scenario mods (world/modding/scenario.gd): Continue says when the newest save needs another mod
+## setup, and why the game came back here (its notice). Light: it preloads only the mod loader.
+const SCENARIO := preload("res://world/modding/scenario.gd")
 # Header labelling only; selected files are always validated by GameSaves.
 # Keep this lightweight menu constant aligned with GameSaves.FORMAT.
 const SAVE_HEADER_FORMAT := CATALOGUE.HEADER_FORMAT
@@ -89,6 +92,13 @@ var _settings_ui: Control
 var _provider_page:Control
 var _provider_button:Button
 var _setup_window: Window
+## Room-scale VR: the on-panel keyboard (world/ui/panel_keyboard.gd) under any text field of the
+## settings or the first-run AI setup, as on the in-game World Panel (GitHub #1: the title's AI
+## Settings took only physical keys). Shown and hidden on focus and page changes, never polled.
+const KEYBOARD := preload("res://world/ui/panel_keyboard.gd")
+const KEYBOARD_TOP := 500.0
+var keyboard: Control
+var _keyboard_queued := false
 ## AI context (world/ui/ai_context_page.gd): what ponies remember, what a request sends, errors.
 var _context_page: Control
 var _context_button: Button
@@ -170,6 +180,9 @@ func _ready() -> void:
 	if overlay_host != null:
 		_ready_overlay()
 		return
+	# The headset's view first (GitHub #16): whatever fails below, OpenXR then has a viewport to
+	# show instead of a silent black void ("No viewport was marked with use_xr").
+	_claim_headset()
 	# Labs that watch the whole opening (tools/title/) live on the root, across the scene change.
 	var args := preload("res://world/dev_tools.gd").user_args()
 	var lab_at := args.find("--lab")
@@ -181,8 +194,7 @@ func _ready() -> void:
 		return
 	if game_scene == GAME and preload("res://world/launch_config.gd").should_ask():
 		if not await _ask_play_mode(): return
-	var iface := XRServer.find_interface("OpenXR")
-	xr_active = iface != null and iface.is_initialized()
+	xr_active = _openxr_ready()
 	if game_scene == GAME and not xr_active: await _ask_quality()
 	seated = xr_active and preload("res://world/launch_config.gd").seated()
 	if preload("res://world/launch_config.gd").require_vr() and not xr_active:
@@ -204,6 +216,17 @@ func _ready() -> void:
 	else:
 		panel.hide()
 		_build_card()
+
+## True while an OpenXR session runs (tools/ui/test_title_without_data.gd stands in for one).
+func _openxr_ready() -> bool:
+	var iface := XRServer.find_interface("OpenXR")
+	return iface != null and iface.is_initialized()
+
+## Marks the root viewport for the headset before anything else runs. The desktop-or-VR prompt
+## (world/ui/play_mode_prompt.gd) is a flat window: it keeps the window until it is answered.
+func _claim_headset() -> void:
+	if _openxr_ready() and not preload("res://world/launch_config.gd").should_ask():
+		get_viewport().use_xr = true
 
 ## The launch card: everything black but the menu's own logo, which fades in where the menu draws
 ## it; then the black fades away around it. Desktop and headset alike: a black sphere around the
@@ -406,6 +429,8 @@ func _update_card() -> void:
 	panel.tick = 0.0 if home else 1.0 / 20.0
 	_lay_out()
 	_bring_forward(not home)
+	# _lay_out() gives the settings page its full height back; the keyboard takes its share again.
+	_queue_keyboard()
 
 
 func _wide_pages() -> bool:
@@ -593,6 +618,7 @@ func _build_panel() -> void:
 	_fx = preload("res://world/ui/menu_fx.gd").new(); _fx.name = "Flourishes"
 	panel.content.add_child(_fx); _fx.attach(panel.content, panel.refresh)
 	_browser.fx = _fx
+	_build_keyboard()
 	get_viewport().size_changed.connect(_window_resized)
 	_place_panel()
 	if not bool(Settings.get_value("setup/completed")) and _installation_problem().is_empty():
@@ -623,6 +649,8 @@ func _build_continue_preview() -> void:
 	continue_preview = _thumbnail(_page(), Rect2(170, 330, 160, 90), str(_continue_entry.get("preview", "")))
 	continue_line = Label.new()
 	continue_line.text = CATALOGUE.line(_continue_entry) if not bool(_continue_entry.newer) else "Made by a newer version of the game · " + str(_continue_entry.world_name)
+	var blocked := SCENARIO.entry_block(_continue_entry)
+	if not bool(_continue_entry.newer) and not blocked.is_empty(): continue_line.text = blocked + " · " + str(_continue_entry.world_name)
 	continue_line.position = Vector2(40, 426); continue_line.size = Vector2(820, 34)
 	continue_line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	continue_line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -695,7 +723,8 @@ func _pick_entry(entry: Dictionary) -> void:
 	if entering: return
 	var saves := _save_api()
 	if saves == null or not saves.stage(entry):
-		_browser.set_status("That save cannot be loaded (invalid or from another version).")
+		var problem: String = str(saves.get("last_problem")) if saves != null and saves.get("last_problem") is String else ""
+		_browser.set_status((problem + ".") if not problem.is_empty() else "That save cannot be loaded (invalid or from another version).")
 		return
 	_browser.set_status("Loading “%s”…" % CATALOGUE.title_text(entry))
 	_staged = true
@@ -816,12 +845,15 @@ func _choose_opening(opening: String) -> void:
 	_start_new_game(0)
 
 
-## The season follows the day count (world/weather/weather.gd: day / season length), so a
-## new game starts on the first day of the chosen season. New games pass spring (0).
-func _start_new_game(season: int) -> void:
+## New worlds start in late summer (dev decision D-01, 2026-11-08: no season picker, no random),
+## so autumn and winter arrive in the first sessions. The day comes from the one season formula
+## (world/seasons/season_state.gd, W1-SEAS-A hook): summer, its last third. `_season` is kept for
+## older callers and ignored.
+func _start_new_game(_season: int) -> void:
 	if entering or not ready_for_entry: return
 	_setup_start = false
-	var start_day: int = season * maxi(1, int(Settings.season_days()))
+	var start_day := late_summer_day(int(Settings.season_days()))
+	var season := 1
 	if not _clock.is_empty(): _clock.day = start_day
 	else: TimeOfDay.day = start_day
 	var saves := _save_api()
@@ -833,9 +865,22 @@ func _start_new_game(season: int) -> void:
 	# The opening page stays under the loading screen; a failed entry goes back home.
 	var opening: Array = OPENINGS[1] if str(Settings.get_value(OPENING_KEY)) == "skip" else OPENINGS[0]
 	var look := SHELF.world_look(world, {})
-	_destination = {"title": CATALOGUE.world_name(world), "line": "A new world · %s, day 1 · %s" % [SEASON_NAMES[season], opening[1]],
+	_destination = {"title": CATALOGUE.world_name(world), "line": "A new world · late %s · %s" % [SEASON_NAMES[season].to_lower(), opening[1]],
 		"icon": str(look.icon), "tint": MENU_STYLE.SWATCHES[int(look.color) % MENU_STYLE.SWATCHES.size()]}
 	enter_game()
+
+
+## The first day of a new world: in summer, on the first day of its last third (whatever the
+## season length). Loaded on New game only; the idle title never compiles the season core.
+static func late_summer_day(season_days: int) -> int:
+	var length := maxi(1, season_days)
+	var into := mini(length - 1, ceili(2.0 * length / 3.0))
+	var formula: Variant = load("res://world/seasons/season_state.gd")
+	var day := length + into
+	# The calendar formula decides; this only guards a changed season order.
+	if formula != null and int(formula.index_for(day, length)) != 1:
+		push_warning("[title] late summer day %d is not summer by season_state.gd" % day)
+	return day
 
 
 func _close_load() -> void:
@@ -921,7 +966,9 @@ func _close_credits() -> void:
 	credits_button.grab_focus(); panel.refresh()
 
 func _open_provider()->void:
-	if _provider_page.setup_mode and OS.get_name() in ["Windows", "Linux", "macOS"]:
+	# Desktop only: in a headset (room-scale or seated) a desktop window is out of sight, so the
+	# first-run setup stays on the panel with its keyboard (GitHub #1).
+	if _provider_page.setup_mode and OS.get_name() in ["Windows", "Linux", "macOS"] and _desktop_pages():
 		if is_instance_valid(_setup_window): _setup_window.show(); return
 		_setup_window = preload("res://world/ui/ai_setup_window.gd").new()
 		add_child(_setup_window); _setup_window.close_requested.connect(_quit)
@@ -932,6 +979,46 @@ func _open_provider()->void:
 		_open_settings(); _settings_ui.show_tab("AI Settings"); return
 	_set_card(false)
 	_settings_page.hide();_home_page.hide();_provider_page.open();_focused=0;panel.refresh()
+
+func _build_keyboard() -> void:
+	if not xr_active or seated: return
+	keyboard = KEYBOARD.new(); keyboard.name = "Keyboard"
+	keyboard.theme = MENU_STYLE.theme()
+	panel.content.add_child(keyboard)
+	keyboard.setup(panel, 880, 20); keyboard.position = Vector2(10, KEYBOARD_TOP); keyboard.hide()
+	panel.viewport.gui_focus_changed.connect(func(_node: Control) -> void: _queue_keyboard())
+	for page: Control in [_settings_page, _provider_page, _settings_ui.provider, _settings_ui.prompts]:
+		page.visibility_changed.connect(_queue_keyboard)
+
+## Once per batch of focus and page changes, after they settle (hiding a page drops its focus).
+func _queue_keyboard() -> void:
+	if keyboard == null or _keyboard_queued: return
+	_keyboard_queued = true
+	_tend_keyboard.call_deferred()
+
+## A focused text field on the settings or AI setup page: the keyboard comes in under the page,
+## which shortens to end above it (its lists scroll); otherwise the page has its whole height.
+func _tend_keyboard() -> void:
+	_keyboard_queued = false
+	if keyboard == null or not is_instance_valid(panel): return
+	var focus: Control = panel.viewport.gui_get_focus_owner()
+	var typing := (focus is LineEdit or focus is TextEdit) and focus.is_visible_in_tree() \
+		and (_settings_open() or _provider_page.visible)
+	var settings_height := KEYBOARD_TOP - _settings_ui.position.y - 2.0 if typing else _settings_page.size.y - 50.0
+	var setup_height := KEYBOARD_TOP if typing else float(PANEL.PIXELS.y)
+	var changed := keyboard.visible != typing
+	keyboard.visible = typing
+	if not is_equal_approx(_settings_ui.size.y, settings_height):
+		_settings_ui.custom_minimum_size.y = settings_height; _settings_ui.size.y = settings_height; changed = true
+	if not is_instance_valid(_setup_window) and not is_equal_approx(_provider_page.size.y, setup_height):
+		_provider_page.size.y = setup_height; changed = true
+	if not changed: return
+	if typing:
+		# The field stays in sight above the keyboard once the shorter page has laid out.
+		var scroll: Node = focus.get_parent()
+		while scroll != null and not scroll is ScrollContainer: scroll = scroll.get_parent()
+		if scroll != null: (scroll as ScrollContainer).ensure_control_visible.call_deferred(focus)
+	_settings_ui.refresh(); panel.refresh()
 
 func _close_provider()->void:
 	if _provider_page.setup_mode:
@@ -1031,6 +1118,10 @@ func _poll_asset() -> void:
 			# creep keeps the bar moving meanwhile. The title's part is the first half.
 			var creep := 1.0 - exp(-float(Time.get_ticks_msec() - _cover_raised) / 14000.0)
 			_cover.set_progress(0.03 + 0.42 * maxf(fraction, creep), true)
+			# Past about 40% the bar barely moves on a slow machine: say it is still working, once.
+			if maxf(fraction, creep) > 0.4 and not _slow_note:
+				_slow_note = true
+				_cover.show_note("Still loading… this can take a minute on slower computers.")
 			return
 		status.text = "Entering Equestria… %d%%" % int(fraction * 100) if not progress.is_empty() else "Entering Equestria…"
 		panel.refresh()
@@ -1051,6 +1142,7 @@ func _poll_asset() -> void:
 	_hand_off(packed)
 
 var _download: Node
+var _slow_note := false
 
 func _installation_problem() -> String:
 	return PACKS.installation_problem(OS.has_feature("android") and OS.has_feature("template"), ResourceLoader.exists)
@@ -1077,6 +1169,9 @@ func _finish_scenery() -> void:
 	if not ready_for_entry: _focused = _focus_list().find(settings_button) # Settings stays usable while data is absent.
 	_focus_button(0)
 	status.text = problem
+	# The game refused a world (scenario mods) and came back here: say why, once.
+	if problem.is_empty() and not SCENARIO.notice.is_empty():
+		status.text = SCENARIO.notice; SCENARIO.notice = ""
 	panel.refresh()
 	# Quest: fetch this version's data from its GitHub release, then reload the title with it.
 	if not ready_for_entry and OS.has_feature("android") and _download == null:
@@ -1111,7 +1206,8 @@ func enter_game() -> void:
 		if not newest.is_empty():
 			var saves := _save_api()
 			if saves == null or not saves.stage(newest):
-				status.text = "The most recent save could not be loaded. Use Load game to choose another."
+				var problem: String = str(saves.get("last_problem")) if saves != null and saves.get("last_problem") is String else ""
+				status.text = ("The most recent save cannot load: %s. Use Load game to choose another." % problem) if not problem.is_empty() else "The most recent save could not be loaded. Use Load game to choose another."
 				panel.refresh()
 				return
 			_staged = true

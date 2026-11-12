@@ -12,6 +12,10 @@ const LOADER := preload("res://world/modding/mod_loader.gd")
 const GAME_SCRIPT := "res://world/game.gd"
 const SHUTDOWN := preload("res://world/shutdown_waits.gd")
 
+## A world is starting (world/game.gd, under the loading cover, after its save is restored and
+## before the arrival story reads it): `is_new` for a brand-new world, which a running scenario mod
+## has just stamped (world/modding/scenario.gd). world_context is open; the world is not loaded yet.
+signal world_starting(game: Node, is_new: bool)
 ## A world finished loading (world/game.gd ready). `game` exposes player, world_context, etc.
 signal world_ready(game: Node)
 ## The world is being left (back to the title or quitting).
@@ -62,8 +66,19 @@ func _stop(id: String) -> void:
 ## Every mod found this launch, loaded or not (Settings → Mods lists these).
 func list() -> Array: return LOADER.mods.duplicate(true)
 
-## Every mod pack seen this launch, with its switch.
+## Every mod pack seen this launch, with its switch (the loader's own rows; prefer pack_rows()).
 func packs() -> Array: return LOADER.packs.duplicate(true)
+
+## Every mod pack seen this launch in mount order, in a stable shape for mod managers and the Mods
+## screen (world/modding/mod_loader.gd pack_rows()): {file, ids, title, author, version, bundled,
+## default_on, enabled, mounted, switched_on, switchable, held, superseded_by, reason, warning, overrides,
+## patches, patch_of, patched_by, update, update_url, game_version, error, covered}. `file` is what switch() takes;
+## bundled mods are "bundled/<file>".
+func pack_rows() -> Array[Dictionary]: return LOADER.pack_rows()
+
+## The scenario of the scenario mod running this launch ({id, name, version, mod, start, skip_opening,
+## initial_state, description}), {} when none (world/modding/scenario.gd active_scenario()).
+func scenario() -> Dictionary: return preload("res://world/modding/scenario.gd").active_scenario()
 
 func is_active(id: String) -> bool:
 	return LOADER.active().any(func(mod: Dictionary) -> bool: return mod.id == id)

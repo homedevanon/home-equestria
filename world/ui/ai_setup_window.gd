@@ -1,5 +1,6 @@
 extends Window
-## A real desktop window, including when the root viewport is presenting to OpenXR.
+## A real desktop window for the first-run AI setup on a flat screen. In a headset the title keeps
+## that setup on its panel with the on-panel keyboard (world/ui/title_screen.gd _open_provider).
 var page: Control
 
 func _init() -> void:

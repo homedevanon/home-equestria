@@ -18,6 +18,15 @@ var save_path := ""
 var last_error := ""
 var writable := true
 var _serial := 0
+## Briefcase entries whose item the catalogue does not know now, such as an item from a mod that
+## was removed (M-MOD-02). A removed mod used to fail the whole document, which emptied the case
+## and the bits. Each row is {"kind": "slot", "at": index, "entry": slot} or
+## {"kind": "loan", "token": token, "entry": loan}. They are written with the document (key
+## "parked", only while not empty) and come back to the case in restore_document once the item is
+## known again, or stay parked while there is no room. Only restore_document changes this list.
+var parked: Array = []
+const MAX_PARKED := 1024
+const MAX_PARKED_COUNT := 1_000_000
 
 func _init() -> void:
 	slots.resize(SLOT_COUNT)
@@ -59,7 +68,9 @@ func open(path: String = save_path, starter: bool = false) -> bool:
 
 ## Detached snapshot for game saves; callers cannot mutate live items through it.
 func document() -> Dictionary:
-	return {"version": 1, "slots": slots.duplicate(true), "checked_out": loans.duplicate(true), "bits": bits}
+	var doc := {"version": 1, "slots": slots.duplicate(true), "checked_out": loans.duplicate(true), "bits": bits}
+	if not parked.is_empty(): doc.parked = parked.duplicate(true)
+	return doc
 
 ## The caller owns served-order deduplication. True means the payment was saved.
 func credit_bits(amount: int) -> bool:
@@ -89,6 +100,9 @@ func restore_document(doc: Dictionary) -> bool:
 	if not valid_document(doc): return false
 	# Validate the original before migration; never mutate a caller's checkpoint.
 	var migrated: Dictionary = doc.duplicate(true)
+	# Items the catalogue does not know now leave the live case first (M-MOD-02); they return
+	# below, after recovery, once they are known again.
+	var held_back: Array = _park_unknown(migrated)
 	# Legacy home keys no longer exist in Equestria. Validate first, then remove
 	# only exact old identities in this detached transaction; all other items remain.
 	for index in migrated.slots.size():
@@ -100,7 +114,7 @@ func restore_document(doc: Dictionary) -> bool:
 	var mixed: Dictionary = {}
 	var spellings: Dictionary = {}
 	for slot: Dictionary in doc.slots:
-		if slot.is_empty() or int(slot.count) <= 0: continue
+		if slot.is_empty() or int(slot.count) <= 0 or not _known(slot.get("id")): continue
 		var id: String = CATALOG.canonical(str(slot.id))
 		if spellings.has(id) and spellings[id] != slot.id: mixed[id] = true
 		else: spellings[id] = slot.id
@@ -133,7 +147,89 @@ func restore_document(doc: Dictionary) -> bool:
 				recovered[target].count += amount
 				recovered[source].count -= amount
 				if recovered[source].count == 0: recovered[source] = {}
-	return _commit(recovered, dropped, mini(MAX_BITS, int(migrated.get("bits", 0))))
+	var next_bits: int = mini(MAX_BITS, int(migrated.get("bits", 0)))
+	var still: Array = _return_parked(held_back, recovered, dropped, next_bits)
+	var before: Array = parked
+	parked = still
+	if not _commit(recovered, dropped, next_bits):
+		parked = before
+		return false
+	if not still.is_empty() or held_back.size() != still.size():
+		print("[inventory] %d briefcase entries kept aside for items not in the game now (a removed mod?); %d came back" % [still.size(), held_back.size() - still.size()])
+	return true
+
+static func _known(id: Variant) -> bool:
+	return id == "house-key" or CATALOG.has(str(id))
+
+## Moves every slot and loan whose item is unknown out of `doc` (detached) and returns the parked
+## rows: those already in the document first, then the new ones. An equipped loan only points at a
+## unit of its stack, which is parked with the stack, so it is simply released.
+static func _park_unknown(doc: Dictionary) -> Array:
+	var rows: Array = (doc.get("parked", []) as Array).duplicate(true)
+	doc.erase("parked")
+	for token: Variant in doc.checked_out.keys():
+		var loan: Dictionary = doc.checked_out[token]
+		if _known(loan.get("id")): continue
+		COOKING_STATE.detach(doc.checked_out, str(token))
+		doc.checked_out.erase(token)
+		if not loan.get("equipped", false): rows.append({"kind": "loan", "token": str(token), "entry": loan})
+	for i in SLOT_COUNT:
+		var slot: Dictionary = doc.slots[i]
+		if slot.is_empty() or _known(slot.get("id")): continue
+		if int(slot.count) > 0: rows.append({"kind": "slot", "at": i, "entry": slot})
+		doc.slots[i] = {}
+	if rows.size() > MAX_PARKED:
+		push_warning("[inventory] %d parked entries; the oldest beyond %d are dropped" % [rows.size(), MAX_PARKED])
+		rows = rows.slice(rows.size() - MAX_PARKED)
+	return rows
+
+## Parked rows whose item is known again go back into `slots`/`loans` (both changed in place)
+## when there is room and the result is a valid document; the rest are returned, still parked.
+func _return_parked(rows: Array, next: Array, checked: Dictionary, next_bits: int) -> Array:
+	var still: Array = []
+	for row: Dictionary in rows:
+		var entry: Dictionary = (row.entry as Dictionary).duplicate(true)
+		var id := CATALOG.canonical(str(entry.get("id", "")))
+		if not CATALOG.has(id):
+			still.append(row); continue
+		entry.id = id
+		# An empty parked stack (count 0) holds nothing; it is simply let go.
+		if row.kind == "slot" and int(entry.get("count", 0)) <= 0: continue
+		var trial: Array = next.duplicate(true)
+		var trial_loans: Dictionary = checked.duplicate(true)
+		if row.kind == "slot":
+			var at := _parked_place(trial, entry, int(row.at))
+			if at < 0:
+				still.append(row); continue
+			if trial[at].is_empty(): trial[at] = entry
+			else: trial[at].count = int(trial[at].count) + int(entry.count)
+		elif entry.has("world_transform"):
+			# A unit lying in the world (or placed at home) returns where it was.
+			var token := str(row.token)
+			while trial_loans.has(token): token += "r"
+			trial_loans[token] = entry
+		else:
+			var at := _place(trial, id, int(entry.slot), int(entry.get("bites", 0)))
+			if at < 0:
+				still.append(row); continue
+			_add_unit(trial, at, entry)
+		if not valid_document({"version": 1, "slots": trial, "checked_out": trial_loans, "bits": next_bits}):
+			still.append(row); continue
+		for i in SLOT_COUNT: next[i] = trial[i]
+		checked.clear(); checked.merge(trial_loans)
+	return still
+
+## A returning parked stack: its old slot if empty, else a stack of the same item with room for
+## all of it, else the first empty slot. -1 when there is no room.
+static func _parked_place(where: Array, entry: Dictionary, prefer: int) -> int:
+	if prefer >= 0 and prefer < SLOT_COUNT and where[prefer].is_empty(): return prefer
+	if not entry.has("bites"):
+		for i in SLOT_COUNT:
+			var s: Dictionary = where[i]
+			if not s.is_empty() and not s.has("bites") and CATALOG.canonical(str(s.id)) == entry.id and int(s.count) + int(entry.count) <= CATALOG.stack(entry.id): return i
+	for i in SLOT_COUNT:
+		if where[i].is_empty(): return i
+	return -1
 
 ## Where an item goes: its old slot if it fits there, else a stack of the same thing with room,
 ## else the first empty slot. -1 when the case is full.
@@ -268,8 +364,15 @@ static func valid_document(doc: Variant) -> bool:
 	if balance != int(balance): return false
 	if not doc.get("slots") is Array or doc.slots.size() != SLOT_COUNT: return false
 	if not doc.get("checked_out") is Dictionary: return false
+	if doc.has("parked") and not _valid_parked(doc.parked): return false
+	var unknown_cooking := false
 	for loan in doc.checked_out.values():
 		if not loan is Dictionary or not loan.get("slot") is float and not loan.get("slot") is int: return false
+		# An item the catalogue does not know now (a removed mod's): structure only; parked on restore.
+		if not _known(loan.get("id")):
+			if _index(loan.slot) < 0 or not _parkable_loan(loan): return false
+			if loan.has("cooking"): unknown_cooking = true
+			continue
 		if loan.has("world_transform") and not valid_pose(loan.world_transform): return false
 		if loan.has("bites") and not _valid_bites(loan.bites): return false
 		if not FURNISHING.valid_loan(loan): return false
@@ -282,12 +385,25 @@ static func valid_document(doc: Variant) -> bool:
 		var slot = doc.slots[i]
 		if not slot is Dictionary: return false
 		if slot.is_empty(): continue
-		if not (CATALOG.has(str(slot.get("id"))) or slot.get("id") == "house-key"): return false
+		if not _known(slot.get("id")):
+			if not _parkable_slot(slot): return false
+			continue
 		if not slot.get("count") is float and not slot.get("count") is int: return false
 		var count := int(slot.count)
 		if count != slot.count or count < 0 or count > CATALOG.stack(slot.id): return false
 		if slot.has("bites") and (not _valid_bites(slot.bites) or count != 1): return false
-	if not COOKING_STATE.valid_loans(doc.checked_out): return false
+	var cooking_loans: Dictionary = doc.checked_out
+	if unknown_cooking:
+		# A parked ingredient leaves its pot as if taken out (restore_document does the same).
+		# Every pot mark is checked first: detach reads the marks' station names.
+		for loan: Dictionary in doc.checked_out.values():
+			if loan.has("cooking") and not COOKING_STATE.valid_mark(loan.cooking): return false
+		cooking_loans = doc.checked_out.duplicate(true)
+		for token: Variant in doc.checked_out:
+			if _known(doc.checked_out[token].get("id")): continue
+			COOKING_STATE.detach(cooking_loans, str(token))
+			cooking_loans.erase(token)
+	if not COOKING_STATE.valid_loans(cooking_loans): return false
 	var equipped_counts: Dictionary = {}
 	for loan: Dictionary in doc.checked_out.values():
 		if loan.has("equipped") and not loan.equipped is bool: return false
@@ -297,6 +413,47 @@ static func valid_document(doc: Variant) -> bool:
 		if loan.has("world_transform") or CATALOG.canonical(str(slot.get("id", ""))) != CATALOG.canonical(str(loan.id)): return false
 		equipped_counts[index] = int(equipped_counts.get(index, 0)) + 1
 		if equipped_counts[index] > int(slot.get("count", 0)): return false
+	return true
+
+## A slot index (0..SLOT_COUNT-1) from a saved number, or -1.
+static func _index(value: Variant) -> int:
+	if not (value is int or value is float) or not is_finite(float(value)) or value != int(value): return -1
+	var i := int(value)
+	return i if i >= 0 and i < SLOT_COUNT else -1
+
+static func _parkable_id(id: Variant) -> bool:
+	return id is String and not (id as String).is_empty() and (id as String).length() <= 200
+
+## A stack of an unknown item: well-formed, whatever its catalogue entry may say once it is back.
+static func _parkable_slot(slot: Dictionary) -> bool:
+	if not _parkable_id(slot.get("id")): return false
+	var count: Variant = slot.get("count")
+	if not (count is int or count is float) or not is_finite(float(count)) or count != int(count): return false
+	if int(count) < 0 or int(count) > MAX_PARKED_COUNT: return false
+	return not slot.has("bites") or (_valid_bites(slot.bites) and int(count) == 1)
+
+## A loan of an unknown item (its slot index is checked by the caller).
+static func _parkable_loan(loan: Dictionary) -> bool:
+	if not _parkable_id(loan.get("id")): return false
+	if loan.has("world_transform") and not valid_pose(loan.world_transform): return false
+	if loan.has("bites") and not _valid_bites(loan.bites): return false
+	if loan.has("equipped") and not loan.equipped is bool: return false
+	return not (loan.get("equipped", false) and loan.has("world_transform"))
+
+static func _valid_parked(value: Variant) -> bool:
+	if not value is Array or (value as Array).size() > MAX_PARKED: return false
+	for row: Variant in value:
+		if not row is Dictionary or not (row as Dictionary).get("entry") is Dictionary: return false
+		var entry: Dictionary = row.entry
+		match row.get("kind"):
+			"slot":
+				if _index(row.get("at")) < 0 or entry.is_empty() or not _parkable_slot(entry): return false
+			"loan":
+				var token: Variant = row.get("token")
+				if not token is String or (token as String).is_empty() or (token as String).length() > 128: return false
+				if _index(entry.get("slot")) < 0 or not _parkable_loan(entry) or entry.get("equipped", false): return false
+			_:
+				return false
 	return true
 
 ## Atomic replacement: return the previous hand item and equip the new slot in one save.
@@ -479,6 +636,7 @@ func move_slot(source: int, target: int) -> bool:
 func _commit(next: Array, checked: Dictionary, next_bits: int = bits) -> bool:
 	if not writable: return false
 	var doc := {"version": 1, "slots": next, "checked_out": checked, "bits": next_bits}
+	if not parked.is_empty(): doc.parked = parked.duplicate(true)
 	if not valid_document(doc):
 		last_error = "Invalid inventory transaction."
 		return false

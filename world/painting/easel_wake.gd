@@ -16,6 +16,9 @@ const TOOL_REACH := 0.12
 const PRIORITY_REACH := 0.12
 const CANVAS_REACH := 0.08
 const DESKTOP_REACH := 2.5
+## A blank canvas held this close to an empty easel's canvas face goes up on it (M-ACT-03).
+const MOUNT_REACH := 0.35
+const LEDGER := "res://world/mechanics/ledger.gd"
 const TOOLS := {"brush": "Hook_Brush", "pencil": "Hook_Pencil", "scraper": "Hook_Scraper"}
 var easel: Node3D
 var key := ""
@@ -89,10 +92,16 @@ func begin(_side: String = "") -> Node:
 	runtime.call("setup", easel, self, key, inventory)
 	return runtime
 
-## E or a click on the PaintPanel (player/interactor.gd, briefcase_inventory.gd).
+## E or a click on the PaintPanel (player/interactor.gd, briefcase_inventory.gd). On an emptied
+## easel (bought canvases) E with a blank canvas in hand puts it up instead.
 func desktop_begin() -> bool:
 	if not is_instance_valid(inventory): inventory = _find_inventory()
-	if not is_instance_valid(inventory) or inventory.hand_busy("desktop"): return false
+	if not is_instance_valid(inventory): return false
+	if bare():
+		if held_canvas("desktop") != null: return mount_canvas_from_hand("desktop")
+		_say("Put a blank canvas up on the easel first.")
+		return false
+	if inventory.hand_busy("desktop"): return false
 	if not DESKTOP_OWNER.available(inventory): return false
 	var started := begin("desktop")
 	return started != null and bool(started.call("desktop_begin"))
@@ -111,13 +120,52 @@ func runtime_closed(closed: Node) -> void:
 func _usable() -> bool:
 	return near and is_instance_valid(inventory) and is_instance_valid(easel) and easel.is_inside_tree() and not get_tree().paused
 
+## An owned easel waiting for a bought canvas (painting_registry.is_bare).
+func bare() -> bool:
+	return REGISTRY.is_bare(key)
+
+## The blank canvas ("goods:canvas") in that hand, or null.
+func held_canvas(side: String) -> Node3D:
+	var held: Variant = inventory.get("held") if is_instance_valid(inventory) else null
+	var item: Variant = (held as Dictionary).get(side) if held is Dictionary else null
+	if not is_instance_valid(item) or not item is Node3D: return null
+	return item as Node3D if str((item as Node3D).get_meta("item_id", "")) == REGISTRY.CANVAS_ITEM else null
+
+## Puts the blank canvas in that hand up on this emptied easel: the canvas item is used up (the
+## briefcase loan ends) and the easel shows a fresh canvas again. True when it went up.
+func mount_canvas_from_hand(side: String) -> bool:
+	if not bare() or not is_instance_valid(inventory): return false
+	var item := held_canvas(side)
+	if item == null: return false
+	var store: Variant = inventory.get("inventory")
+	var token := str(item.get_meta("token", ""))
+	if not store is Object or not bool((store as Object).call("consume", token)): return false
+	var held: Dictionary = inventory.get("held")
+	held.erase(side)
+	var loose: Variant = inventory.get("loose")
+	if loose is Dictionary: (loose as Dictionary).erase(token)
+	var track: Variant = inventory.get("_track")
+	if track is Dictionary: (track as Dictionary).erase(side)
+	if inventory.has_method("_claim"): inventory.call("_claim", side, false)
+	item.queue_free()
+	if inventory.has_method("_refresh_holding"): inventory.call("_refresh_holding")
+	REGISTRY.set_bare(key, false)
+	BUILD.refresh_canvas(easel)
+	cache_markers()
+	preload("res://world/audio/interaction_sounds.gd").play_event(easel, "prop_blanket", {"intensity": .4})
+	return true
+
+func _say(text: String) -> void:
+	var ledger: Script = load(LEDGER) as Script
+	if ledger != null and is_instance_valid(inventory): ledger.call("say", inventory, text)
+
 func _blank() -> bool:
 	if is_instance_valid(runtime): return not bool(runtime.call("has_paint"))
 	return REGISTRY.wip(key).is_empty()
 
 ## VR: a free palm near a hanging tool or the canvas. The router picks the nearest offer.
 func grab_offer(side: String, sample: Dictionary) -> Dictionary:
-	if not _usable() or not sample.get("active", false): return {}
+	if not _usable() or not sample.get("active", false) or bare(): return {}
 	var pose: Transform3D = sample.get("pose", Transform3D.IDENTITY)
 	var palm: Vector3 = sample.get("grip_position", pose.origin)
 	if not palm.is_finite(): return {}
@@ -151,9 +199,23 @@ func _tool_target(tool: String) -> Node3D:
 		if live is Node3D: return live
 	return BUILD.marker(easel, "HookedTools")
 
-## Desktop, near and not yet painting: looking at the easel offers E.
+## Desktop, near and not yet painting: looking at the easel offers E. An emptied easel (bought
+## canvases): VR puts a blank canvas up as soon as a hand holds one to the frame; desktop offers
+## E with a canvas in hand. Polled only while the player is within WAKE_RADIUS.
 func interaction_hint() -> Dictionary:
-	if not _usable() or not bool(inventory.get("_desktop")): return {}
+	if not _usable(): return {}
+	if bare() and not bool(inventory.get("_desktop")):
+		for side: String in ["left", "right"]:
+			var canvas := held_canvas(side)
+			if canvas != null and canvas.global_position.distance_to(_face.origin) <= MOUNT_REACH: mount_canvas_from_hand(side)
+		return {}
+	if not bool(inventory.get("_desktop")): return {}
+	if bare():
+		if DESKTOP_OWNER.current(inventory) != null or held_canvas("desktop") == null: return {}
+		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED: return {}
+		var at := panel_hit(inventory)
+		if at.is_empty(): return {}
+		return {"target": easel, "text": "[E] Put up the blank canvas", "point": at.position, "collider": at.collider}
 	if DESKTOP_OWNER.current(inventory) != null or inventory.hand_busy("desktop"): return {}
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED: return {}
 	var focus: Control = get_viewport().gui_get_focus_owner()

@@ -19,6 +19,9 @@ hair_scene = "res://world/characters/mane6/applejack_devkit_hair.glb"
 hair_prefix = "Applejack"
 tail_mount_offset = Vector3(0.0, 0.059, -0.043)
 accessories = Array[String](["ApplejackHat", "ApplejackTie", "ApplejackTailTie"])
+accessory_offsets = {
+"ApplejackHat": Vector3(0, 0.02, 0)
+}
 blush_color = Color(0.941176, 0.501961, 0.376471, 1)
 freckle_color = Color(0.99, 0.87, 0.58, 1)
 notice_distance = 5

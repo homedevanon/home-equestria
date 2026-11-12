@@ -8,6 +8,9 @@ var inventory: Node
 var field: LineEdit
 var _mouse_before := Input.MOUSE_MODE_CAPTURED
 var _lock_owned := false
+## Player meta while the field is open: the movement lock is the chat's, so a carried pony and
+## his posture stay as they are (player/desktop_interactions.gd _keeps_carry).
+const TYPING_META := "chat_typing"
 
 func setup(conversation: Node, body: Node, items: Node = null) -> void:
 	director = conversation; player = body; inventory = items
@@ -52,6 +55,7 @@ func _open() -> bool:
 	if "controls_locked" in player:
 		_lock_owned = not player.controls_locked
 		player.controls_locked = true
+	player.set_meta(TYPING_META, true)
 	field.text = ""
 	field.grab_focus()
 	return true
@@ -64,6 +68,7 @@ func _close() -> void:
 	if not visible: return
 	if is_instance_valid(field) and field.is_inside_tree(): field.release_focus()
 	visible = false
+	if is_instance_valid(player) and player.has_meta(TYPING_META): player.remove_meta(TYPING_META)
 	if _lock_owned and is_instance_valid(player): player.controls_locked = false
 	_lock_owned = false
 	Input.mouse_mode = _mouse_before

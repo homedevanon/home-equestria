@@ -4,6 +4,8 @@ extends RefCounted
 
 const BED := preload("res://world/props/ponyville/pony_bed.scn")
 const BED_SIZE:=Vector3(2.05,1.1,2.1)
+## After a failed extra-bed search: wait this long before each further try, then give up for the load.
+const BED_RETRY_MS: Array[int] = [60000, 300000]
 
 
 static func _place_bed(context: Node3D) -> void:
@@ -101,12 +103,21 @@ static func _create_bed(context: Node3D, index: int) -> Node3D:
 		for other: Node3D in access_updates:
 			other.set_meta("side_local", access_updates[other])
 		return added
-	if not _door_relaxed:
+	if not _door_relaxed and not _wing_relaxed:
+		# An extra bed may stand at one end of a wing that is open to the room along its whole
+		# side (_blocks_opening). Only when no spot passed the usual rules, so every house that
+		# already found its beds keeps them where they were.
+		if index > 0:
+			_wing_relaxed = true
+			var in_wing := _create_bed(context, index)
+			_wing_relaxed = false
+			if in_wing != null: return in_wing
 		# Every spot sits in the door's swing: a bed there beats no bed at all.
 		_door_relaxed = true
 		var anyway := _create_bed(context, index)
 		_door_relaxed = false
 		return anyway
+	if _wing_relaxed: return null
 	print("[house] no clear spot for bed %d in %s" % [index + 1, context.get_parent().name])
 	return null
 
@@ -167,18 +178,65 @@ static func _bed_candidates(context: Node3D) -> Array:
 				# Nor in the opening between the room and its wing (house C's bed blocked it).
 				if (context.floors as Array[Rect2]).size()>=2:
 					var shared:=(context.floors as Array[Rect2])[0].grow(.003).intersection((context.floors as Array[Rect2])[1].grow(.003))
-					if shared.size!=Vector2.ZERO:
-						# Keep 60 cm between the bed and every point along the opening.
-						var along_x:=shared.size.x>shared.size.y
-						var blocks:=false
-						for f in [0.1,0.3,0.5,0.7,0.9]:
-							var q:=Vector2(lerpf(shared.position.x,shared.end.x,f),shared.get_center().y) if along_x else Vector2(shared.get_center().x,lerpf(shared.position.y,shared.end.y,f))
-							var wing:=xf.affine_inverse()*context.to_global(Vector3(q.x,(context.floor_y as float),q.y))
-							if Vector2(maxf(absf(wing.x)-BED_SIZE.x*.5,0.0),maxf(absf(wing.z)-BED_SIZE.z*.5,0.0)).length()<.6:blocks=true;break
-						if blocks:continue
+					if shared.size!=Vector2.ZERO and _blocks_opening(context, xf, shared):continue
 				# Corners (a long side on a wall) are the usual choice; the middle of a wall is rarer.
 				out.append({"xf":xf,"weight":5.0 if slot.begins_with("corner") else .5,"slot":"%d:%d:%s"%[r,wall,slot]})
 	return out
+
+## The bed and the opening between the main room and its wing. Behind a partition (house C) the
+## opening is a doorway: the bed keeps 60 cm from every point along it, as before. A wing open to
+## the room along its whole side (house G, plot_3241: no partition, a 2.4 m wide alcove) is not a
+## doorway: there that rule refused every spot in the wing, and bed 2 of the Apple family's house
+## found no room at all (M-LIF-02, "[house] no clear spot for bed 2", 2026-11-08). In an open wing
+## the bed may stand at one end as long as a stretch of the opening at least OPEN_WING_PASSAGE
+## long stays 60 cm clear of it, so ponies still walk in and out beside it.
+const OPEN_WING_PASSAGE := 1.2
+static func _blocks_opening(context: Node3D, xf: Transform3D, shared: Rect2) -> bool:
+	var along_x := shared.size.x > shared.size.y
+	var open := _wing_relaxed and _opening_open(context, shared)
+	var fractions: Array = [0.1, 0.3, 0.5, 0.7, 0.9]
+	if open:
+		fractions = []
+		for k in 13: fractions.append((k + .5) / 13.0)
+	var run := 0; var best := 0
+	for f: float in fractions:
+		var q := Vector2(lerpf(shared.position.x, shared.end.x, f), shared.get_center().y) if along_x else Vector2(shared.get_center().x, lerpf(shared.position.y, shared.end.y, f))
+		var wing := xf.affine_inverse() * context.to_global(Vector3(q.x, (context.floor_y as float), q.y))
+		var near := Vector2(maxf(absf(wing.x) - BED_SIZE.x * .5, 0.0), maxf(absf(wing.z) - BED_SIZE.z * .5, 0.0)).length() < .6
+		if near and not open: return true
+		run = 0 if near else run + 1
+		best = maxi(best, run)
+	if not open: return false
+	var span := (shared.size.x if along_x else shared.size.y) * context.global_basis.x.length()
+	return float(best) / 13.0 * span < OPEN_WING_PASSAGE
+
+## Whether the wing's whole shared edge is open (no partition): rays across it at pony chest and
+## head height, 45 cm into each room, like house_routing._measure_passage but ignoring beds and
+## measured once per house before any furniture stands (house_routing's own measurement is left
+## alone: it runs later, with the furniture, and steers routes).
+static func _opening_open(context: Node3D, shared: Rect2) -> bool:
+	if context.has_meta("bed_opening_open"): return bool(context.get_meta("bed_opening_open"))
+	var floors := context.floors as Array[Rect2]
+	var along_x := shared.size.x > shared.size.y
+	var ca := floors[0].get_center(); var cb := floors[1].get_center()
+	var space := context.get_world_3d().direct_space_state
+	var skip: Array[RID] = []
+	for bed: Variant in [context.bed] + (context._extra_beds as Array[Node3D]):
+		if is_instance_valid(bed):
+			for body: Node in (bed as Node).find_children("*", "CollisionObject3D", true, false): skip.append((body as CollisionObject3D).get_rid())
+	var open := true
+	for k in 15:
+		var t := (k + .5) / 15.0
+		var p := Vector2(shared.position.x + shared.size.x * t, shared.get_center().y) if along_x else Vector2(shared.get_center().x, shared.position.y + shared.size.y * t)
+		var edge: Vector3 = context.to_global(Vector3(p.x, (context.floor_y as float), p.y))
+		var side_a: Vector3 = edge + ((context.to_global(Vector3(ca.x, (context.floor_y as float), ca.y)) as Vector3) - edge).normalized() * .45
+		var side_b: Vector3 = edge + ((context.to_global(Vector3(cb.x, (context.floor_y as float), cb.y)) as Vector3) - edge).normalized() * .45
+		for h: float in [.3, .75]:
+			if not space.intersect_ray(PhysicsRayQueryParameters3D.create(side_a + Vector3.UP * h, side_b + Vector3.UP * h, 1, skip)).is_empty(): open = false
+		if not open: break
+	# Furniture would read as a partition: only a measurement from the bare room is kept.
+	if not bool(context.get("_furnished")): context.set_meta("bed_opening_open", open)
+	return open
 
 static func _wall_distance(context: Node3D, xf:Transform3D,direction:Vector3,exclude:Array[RID]=[]) -> float:
 	var sideways:=absf(direction.x)>.5
@@ -253,10 +311,17 @@ static func ensure_bed(context: Node3D, id: String = "") -> Node3D:
 	if not is_instance_valid((context.bed as Node3D)): return null
 	var index := (context._bed_index(id) as int)
 	while (context._extra_beds as Array[Node3D]).size() < index:
-		if Time.get_ticks_msec() < (context._bed_retry_at as int): return null
+		# M-LIF-02: a failed search (shape queries over every wall slot) was re-run every 10 s for the
+		# whole session, 36-50 times. Furniture only ever takes room, so it backs off (BED_RETRY_MS)
+		# and then gives up until the sleepers or the furniture change (house_interior resets it).
+		var retry_at := context._bed_retry_at as int
+		if retry_at < 0 or Time.get_ticks_msec() < retry_at: return null
 		var extra := (context._create_bed((context._extra_beds as Array[Node3D]).size() + 1) as Node3D)
 		if extra == null:
-			context._bed_retry_at = Time.get_ticks_msec() + 10000
+			var failures: int = int(context.get_meta("bed_failures", 0)) + 1
+			context.set_meta("bed_failures", failures)
+			context._bed_retry_at = Time.get_ticks_msec() + BED_RETRY_MS[failures - 1] if failures <= BED_RETRY_MS.size() else -1
+			if int(context._bed_retry_at) < 0: print("[house] giving up on bed %d in %s for this load" % [(context._extra_beds as Array[Node3D]).size() + 2, context.get_parent().name])
 			return null
 		(context._extra_beds as Array[Node3D]).append(extra)
 	return (context.bed as Node3D) if index == 0 else (context._extra_beds as Array[Node3D])[index - 1]
@@ -291,6 +356,8 @@ static func on_mattress(context: Node3D, point: Vector3, id: String = "") -> boo
 ## footprint, both in world XZ, with a 4 cm gap.
 ## True during the fallback pass of _create_bed that may block the door swing.
 static var _door_relaxed := false
+## True during the fallback pass of _create_bed for an extra bed in an open wing (_blocks_opening).
+static var _wing_relaxed := false
 static func _blocks_door(context: Node3D, xf: Transform3D) -> bool:
 	var leaf := context.door() as Node3D
 	if leaf == null or leaf.get_parent() == null: return false

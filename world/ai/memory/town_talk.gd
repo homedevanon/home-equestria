@@ -142,3 +142,21 @@ static func reject(text: String, recent: Array, said: Array, now: Dictionary) ->
 			for run: String in phrases(str(line)):
 				if mine.has(run): return "reuses \"%s\" from the conversation" % run
 	return ""
+
+## M-AI-15 notoriety (pony_impressions.gd): ponies talking together pass on what they heard about
+## Anon's cruelty to the mares. Each who knows tells each who knows less; the listener remembers it
+## as gossip (a world event: her own memory, no extra AI request). Returns how many learned of it.
+static func spread_notoriety(context: Node, members: Array) -> int:
+	if not is_instance_valid(context) or bool(context.get("_read_only")): return 0
+	var impressions: Variant = context.get("impressions")
+	if not impressions is Node or not is_instance_valid(impressions) or not (impressions as Node).has_method("retell"): return 0
+	var deed := str(impressions.call("latest_deed"))
+	if deed.is_empty(): return 0
+	var told := 0
+	for teller: Variant in members:
+		for listener: Variant in members:
+			if str(teller) == str(listener) or not bool(impressions.call("retell", str(teller), str(listener))): continue
+			told += 1
+			context.call("record", "gossip", "%s told you: %s." % [str(teller).replace("_", " ").capitalize(), deed],
+				[str(listener)], [str(teller), "player"], "notoriety:%s:%s:%s" % [str(teller), str(listener), deed.md5_text().left(8)])
+	return told

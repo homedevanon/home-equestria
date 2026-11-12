@@ -30,10 +30,22 @@ var _session_state := "unknown"
 var _session_changed_usec := 0
 
 
+## The last few stamps, newest last ([what, usec] each): one stall can hold several (a far mesh
+## gather, then an impostor shot), and only the newest was named before (W1-PERF-HITCH 2026-11-08).
+const RECENT := &"hitch_monitor_recent"
+const RECENT_KEEP := 4
+
 static func mark(what: String) -> void:
 	var tree := Engine.get_main_loop()
 	if tree != null:
-		tree.set_meta(META, [what, Time.get_ticks_usec()])
+		var stamp := [what, Time.get_ticks_usec()]
+		tree.set_meta(META, stamp)
+		var recent: Array = tree.get_meta(RECENT) if tree.has_meta(RECENT) else []
+		if not recent.is_empty() and str(recent[-1][0]) == what: recent[-1] = stamp
+		else:
+			recent.append(stamp)
+			if recent.size() > RECENT_KEEP: recent.pop_front()
+		tree.set_meta(RECENT, recent)
 
 
 func _ready() -> void:
@@ -98,6 +110,13 @@ func _process(_delta: float) -> void:
 	if tree.has_meta(META):
 		var stamp: Array = tree.get_meta(META)
 		event = "%s %.0f ms ago" % [stamp[0], (now - int(stamp[1])) / 1000.0]
+	# Other stamps made inside this interval (older than the last one).
+	if tree.has_meta(RECENT):
+		var also: Array[String] = []
+		for stamp: Array in tree.get_meta(RECENT):
+			var age := (now - int(stamp[1])) / 1000.0
+			if age <= wall_ms and not event.begins_with(str(stamp[0]) + " "): also.append("%s %.0f ms ago" % [stamp[0], age])
+		if not also.is_empty(): event += " (also in this interval: " + ", ".join(also) + ")"
 	_log_line("[hitch] %.0f ms wall interval | sampled process %.1f ms sampled physics %.1f ms | compiles %s | head %s (changed %.0f ms ago) | session %s (%.0f ms ago) | last event: %s" % [
 		wall_ms,
 		_sample_ms(Performance.TIME_PROCESS),

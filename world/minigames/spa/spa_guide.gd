@@ -10,7 +10,8 @@ const GOLD := Color("edd6a2")
 const CHECK_SECONDS := 0.25
 ## The pay note stays this long, then counts as seen.
 const PAID_SECONDS := 7.0
-const TITLES := {"welcome": "Ponyville Day Spa", "pick_file": "Hoof filing", "file": "Hoof filing",
+const TITLES := {"welcome": "Ponyville Day Spa", "pick_file": "Hoof filing", "pick_file_case": "Hoof filing",
+	"pick_file_room": "Hoof filing", "file": "Hoof filing",
 	"rub": "Hoof massage", "wings": "Wing care", "paid": "Paid!"}
 
 var spa: Node
@@ -61,7 +62,7 @@ func _finish(id: String) -> void:
 	file.load(SAVE_PATH)
 	file.set_value("seen", id, true)
 	file.save(SAVE_PATH)
-	if step == id: _show("")
+	if step == id or step.begins_with(id + "_"): _show("")
 
 
 func _xr() -> bool:
@@ -78,14 +79,13 @@ func _current() -> Array:
 	var venue: Node3D = spa.get("_venue") as Node3D
 	if camera == null or not is_instance_valid(venue) or not venue.is_inside(camera.global_position): return ["", Vector3.INF]
 	if _paid_left > 0.0: return ["paid", Vector3.INF]
-	if not _seen.has("welcome") and spa.is_open_now() and spa.clients().is_empty() and hands.bell_node != null:
+	# Walk-ins soaking on their own (day plans) are not Anon's clients: the bell is still the start.
+	if not _seen.has("welcome") and spa.is_open_now() and spa.anon_clients().is_empty() and hands.bell_node != null:
 		return ["welcome", hands._bell_top() + Vector3.UP * 0.12]
 	var filing: Array = spa.filing_targets(Vector3.INF)
 	if not filing.is_empty():
 		var holding: bool = hands.held_file("desktop" if not _xr() else "left") != null or (_xr() and hands.held_file("right") != null)
-		if not holding and not _seen.has("pick_file"):
-			var rest: Transform3D = hands.file_rest
-			return ["pick_file", rest.origin + Vector3.UP * 0.15 if rest.origin.is_finite() else Vector3.INF]
+		if not holding and not _seen.has("pick_file"): return pick_target()
 		if holding and not _seen.has("file"): return ["file", Vector3(filing[0].tip) + Vector3.UP * 0.2]
 	var rubbing: Array = spa.rub_targets(Vector3.INF)
 	if not rubbing.is_empty() and not _seen.has("rub"):
@@ -98,6 +98,22 @@ func _current() -> Array:
 	return ["", Vector3.INF]
 
 
+## The "pick up the file" step for the file the player really has (thread 43694970: the arrow
+## pointed at an empty counter while the file was in the briefcase): the arrow over the file lying
+## in the spa wherever it is; no arrow and "take it out of your briefcase" when it is stashed; no
+## arrow and "make room" when there was no room to lay one. [step, arrow point or INF].
+func pick_target() -> Array:
+	var file: Dictionary = hands.file_status() if hands.has_method("file_status") else {}
+	match str(file.get("where", "")):
+		"loose":
+			return ["pick_file", Vector3(file.point) + Vector3.UP * 0.15]
+		"case":
+			return ["pick_file_case", Vector3.INF]
+		"full":
+			return ["pick_file_room", Vector3.INF]
+	return ["", Vector3.INF]
+
+
 func _text(id: String) -> String:
 	var xr := _xr()
 	match id:
@@ -105,8 +121,13 @@ func _text(id: String) -> String:
 			return "Ring the bell on the counter to open (09:00-19:00). Up to three ponies come in for hoof care." \
 				+ ("" if xr else " Look at the bell and click.")
 		"pick_file":
-			return "Pick up the hoof file from the counter" + (" with GRIP." if xr else " with E.") \
+			return "Pick up the hoof file" + (" with GRIP." if xr else " with E.") \
 				+ " Then go to the pony in the footbath: she lifts a front hoof for you."
+		"pick_file_case":
+			return "The hoof file is in your briefcase: take it out" + (" (turn your hand over, point at it and grip)." if xr else " (its hotbar number, or I for the briefcase).") \
+				+ " Then go to the pony in the footbath: she lifts a front hoof for you."
+		"pick_file_room":
+			return "There is no room for the hoof file: put some of your things back in the briefcase, or free a briefcase slot, and it appears on the counter."
 		"file":
 			if xr: return "Rub the file back and forth across her raised hoof. Front hooves are filed here; back hooves are filed and massaged on the table."
 			return "Aim at her raised hoof, hold the left mouse button and move the mouse left and right. Front hooves are filed here; back hooves are filed and massaged on the table."

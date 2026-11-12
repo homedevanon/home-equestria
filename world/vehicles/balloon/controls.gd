@@ -169,7 +169,9 @@ func _physics_process(_delta:float)->void:
 	if held.is_empty() and is_instance_valid(ship) and is_instance_valid(inventory) and is_instance_valid(inventory.camera) \
 			and ship.lift==0.0 and ship.vent==0.0 and ship.steering==Vector2.ZERO \
 			and inventory.camera.global_position.distance_squared_to(ship.global_position)>FAR_SKIP*FAR_SKIP:
-		pressed={"left":true,"right":true};return
+		# Far and idle: keep the existing all-pressed table instead of a new one every tick.
+		if not (pressed.get("left")==true and pressed.get("right")==true):pressed={"left":true,"right":true}
+		return
 	if not available():release_all();pressed={"left":true,"right":true};return
 	var up:=0.0;var down:=0.0;var aim:=Vector2.ZERO
 	if inventory._desktop:

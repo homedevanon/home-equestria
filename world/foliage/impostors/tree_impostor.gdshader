@@ -20,12 +20,27 @@ uniform float quad_centre_y = 8.0;
 uniform float max_lod = 5.0;
 uniform float ground_hue_strength = 0.35;
 uniform float alpha_cutoff = 0.5;
+// Seasons: leaf texels (normal atlas a) thin in square patches, thin_cells across the quad, by the
+// leaf cards' hash rule (one baked picture already shows every card: coverage = 1 - drop). No
+// second "bare" atlas (D-03): the trunk shows where the bake saw it, the rest of the crown opens.
+uniform float thin_cells = 24.0;
+// Winter twigs: fallen leaf texels show bare-twig pictures, twig_cells across the quad (cards
+// cannot be told apart in the baked picture, so a grid of upright sprays stands in for them; at
+// this distance they read as a soft grey-brown lace in the crown's outline).
+uniform float twig_cells = 10.0;
+// Spring: about this many small sprays of young leaf or blossom across the quad.
+uniform float spring_sprays = 26.0;
 varying flat vec4 cells;
 varying flat float frame_mix;
 varying flat vec3 tree_x;
 varying flat vec3 tree_z;
 varying flat vec4 ground;
 varying flat float fade_t;
+varying flat vec2 season_local;
+varying flat float tree_seed;
+varying flat vec3 autumn_tree;
+// This tree's spring (vegetation_spring_tree).
+varying flat vec4 spring_tree;
 
 vec2 cell_of(float k) {
 	return vec2(mod(k, grid), floor(k / grid));
@@ -49,6 +64,10 @@ void vertex() {
 	VERTEX = root + (right * (UV.x - 0.5) * quad_size + vec3(0.0, quad_centre_y + (0.5 - UV.y) * quad_size, 0.0)) * scale;
 	NORMAL = vec3(toward.x, 0.0, toward.y);
 	ground = vegetation_ground(root.xz);
+	season_local = vegetation_season_local(root.xz);
+	tree_seed = float(vegetation_seed(root) & 65535u);
+	autumn_tree = vegetation_autumn_tree(root);
+	spring_tree = season_local.x > 0.001 ? vegetation_spring_tree(autumn_tree, blossom_tree) : vec4(1.0, 0.0, 0.0, 1.0);
 	fade_t = impostor_fade.y > 0.0 ? impostor_fade_amount(eye, root) : 1.0;
 }
 
@@ -62,11 +81,44 @@ void fragment() {
 	vec2 uv1 = (cells.zw + UV) / grid;
 	vec4 albedo = mix(textureLod(albedo_atlas, uv0, lod), textureLod(albedo_atlas, uv1, lod), frame_mix);
 	vec4 packed = mix(textureLod(normal_atlas, uv0, lod), textureLod(normal_atlas, uv1, lod), frame_mix);
-	ALPHA = albedo.a;
-	ALPHA_SCISSOR_THRESHOLD = alpha_cutoff;
+	float kept = 1.0;
+	float bloom = 0.0;
+	vec2 twig_q = UV * twig_cells;
+	vec2 twig_dx = vec2(0.0);
+	vec2 twig_dy = vec2(0.0);
+	bool growing = vegetation_spring_active(spring_tree);
+	if (season_leaf_drop > 0.001 || growing) { twig_dx = dFdx(twig_q); twig_dy = dFdy(twig_q); }
+	if (packed.a > 0.5 && (season_leaf_drop > 0.001 || season_blossom > 0.001)) {
+		vec2 patch_cell = floor(UV * thin_cells) + vec2(tree_seed, 0.0);
+		float patch_hash = vegetation_cell_hash(vec3(patch_cell, 0.0), 1.0);
+		kept = vegetation_patch_kept(vegetation_leaf_kept(patch_hash, 1.0, season_local.x, evergreen, blossom_tree), patch_hash, season_local.x, evergreen);
+		if (LOOK_SPRING <= 0.0) bloom = vegetation_blossom_on(fract(patch_hash * 16.0));
+	}
+	// Spring: the whole crown buds, flowers and leafs out together (vegetation_spring_far).
+	float bloom_kind = 0.0;
+	if (packed.a > 0.5 && growing) {
+		vec2 far = vegetation_spring_far(spring_tree, UV * spring_sprays, fract(tree_seed / 977.0));
+		kept = far.x;
+		bloom_kind = far.y;
+	}
 	vec3 n = packed.rgb * 2.0 - 1.0;
 	vec3 world_n = normalize(tree_x * n.x + vec3(0.0, n.y, 0.0) + tree_z * n.z);
 	NORMAL = normalize((VIEW_MATRIX * vec4(world_n, 0.0)).xyz);
-	ALBEDO = vegetation_hue(albedo.rgb, ground, ground_hue_strength * packed.a);
+	ALPHA_SCISSOR_THRESHOLD = alpha_cutoff;
+	if (kept < 0.5) {
+		// Bare twigs where the leaves have fallen.
+		vec4 twig = vegetation_twig_lace(twig_q, twig_dx, twig_dy, uint(tree_seed), 0.6);
+		ALPHA = albedo.a * twig.a;
+		ALBEDO = season_snow_albedo(twig.rgb, vegetation_twig_snow(world_n.y, season_local.y, 0.0) * 0.4);
+	} else {
+		ALPHA = albedo.a;
+		ALBEDO = vegetation_ground_hue(albedo.rgb, ground, ground_hue_strength * packed.a);
+		ALBEDO = vegetation_season_tint_tree(ALBEDO, vegetation_green_mask(albedo.rgb), season_local.x, evergreen, 0.0, autumn_tree);
+		ALBEDO = vegetation_spring_young(ALBEDO, vegetation_green_mask(albedo.rgb), season_local.x);
+		ALBEDO = vegetation_blossom(ALBEDO, bloom);
+		ALBEDO = vegetation_blossom_tree(ALBEDO, bloom_kind, spring_tree.z, 0.0);
+		EMISSION = vegetation_spring_light(ALBEDO, bloom_kind, vegetation_green_mask(albedo.rgb), season_local.x);
+		ALBEDO = vegetation_crown_snow(ALBEDO, world_n.y, season_local.y);
+	}
 	ROUGHNESS = 1.0;
 }

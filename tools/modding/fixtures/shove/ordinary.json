@@ -1,0 +1,684 @@
+{
+ "about": "Ordinary exchanges: no pony should shove Anon for any of these (W2-SHOVE-PATCH, M-MOD-12). Fields: pony replies; said = Anon's line (age seconds ago, to `current`, default the pony); listener (default player); mood/thought/friendship/romance = her impression for this reply (impression false = none); note = a stored older impression; blush; proactive; touch.",
+ "cases": [
+  {
+   "pony": "twilight_sparkle",
+   "said": "Fluttershy asked about music",
+   "reply": "Oh, did she? I've been meaning to lend her my songbook.",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "thought": "He keeps up with our friends, that's sweet.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "pinkie_pie",
+   "said": "I'll be there shortly",
+   "reply": "Yay! I'll save you a cupcake!",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "How's your day going?",
+   "reply": "Ugh, Spike knocked over my whole bookshelf again. That's enough chaos for one day.",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "Spike needs to be more careful with my books.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "What's the plot of that novel?",
+   "reply": "A daring explorer searches a lost temple. You'd love it!",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "applejack",
+   "said": "Can you press that button for me?",
+   "reply": "Sure thing, sugarcube.",
+   "mood": "neutral",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "What do you mean by that?",
+   "reply": "I mean the weather team is behind schedule, that's all.",
+   "mood": "confused",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "He seems puzzled about the weather.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "applejack",
+   "said": "I'm plotting out a vegetable garden",
+   "reply": "Well, ain't that nice! Plant some carrots.",
+   "mood": "amused",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "fluttershy",
+   "said": "How are your chickens doing?",
+   "reply": "Oh, they're wonderful! Elizabeak laid three eggs today.",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "pinkie_pie",
+   "said": "Want some butter for the pancakes?",
+   "reply": "Yes please! Extra butter!",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rarity",
+   "said": "Those dresses are stunning",
+   "reply": "W-why, thank you, darling! You flatter me.",
+   "mood": "shy",
+   "friendship": 2,
+   "romance": 1,
+   "blush": 0.4,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "applejack",
+   "said": "I helped Big Mac with the harvest",
+   "reply": "Well, shucks, that's mighty kind of ya.",
+   "mood": "happy",
+   "friendship": 2,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "I forgot to bring your book back, sorry.",
+   "reply": "Oh. That's a little disappointing, but okay.",
+   "mood": "sad",
+   "friendship": -2,
+   "romance": 0,
+   "thought": "I hope he remembers next time.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rainbow_dash",
+   "said": "What happened to the pond?",
+   "reply": "Discord turned it into lemonade! I'm so mad right now!",
+   "mood": "angry",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "Discord went way too far this time.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "fluttershy",
+   "said": "You look really nice today",
+   "reply": "O-oh! Th-thank you...",
+   "mood": "shy",
+   "friendship": 1,
+   "romance": 1,
+   "blush": 0.5,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "",
+   "reply": "Good morning! Lovely weather, isn't it?",
+   "mood": "",
+   "friendship": 0,
+   "romance": 0,
+   "proactive": true,
+   "impression": false,
+   "note": {
+    "mood": "annoyed",
+    "thought": "He was rude to me earlier.",
+    "age": 120
+   },
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rarity",
+   "said": "",
+   "reply": "Quit it, Applejack, you're hogging the mirror!",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "listener": "applejack",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "pinkie_pie",
+   "said": "Do we have enough flour for the cake?",
+   "reply": "Hey! Of course we do, silly!",
+   "mood": "amused",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rainbow_dash",
+   "said": "Come closer, I want to show you something",
+   "reply": "Huh? Okay, what is it?",
+   "mood": "surprised",
+   "friendship": 0,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "This feels so familiar",
+   "reply": "Deja vu? I've read about that!",
+   "mood": "amused",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "fluttershy",
+   "said": "Let's step back and look at the whole meadow",
+   "reply": "Oh my, it's so beautiful from here.",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rainbow_dash",
+   "said": "Did you see the Wonderbolts' shortcut over the lake?",
+   "reply": "Did I?! It was totally awesome!",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "applejack",
+   "said": "Could you pass the buttercups?",
+   "reply": "Here ya go.",
+   "mood": "neutral",
+   "friendship": 0,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "pinkie_pie",
+   "said": "I bought marshmallows for cocoa",
+   "reply": "Ooh! Cocoa party!",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rarity",
+   "said": "I lifted dumbbells at the gym today",
+   "reply": "My, how very athletic of you.",
+   "mood": "amused",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "The ugly duckling story is my favourite",
+   "reply": "Oh, that one has such a lovely ending.",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "fluttershy",
+   "said": "Are the butterflies out today?",
+   "reply": "Yes! Dozens of them in the garden.",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rainbow_dash",
+   "said": "Shorts weather today, huh?",
+   "reply": "Ha! Pegasi don't need shorts.",
+   "mood": "amused",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "I'm meaning to visit the library more",
+   "reply": "You're always welcome there!",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "pinkie_pie",
+   "said": "Excuse me, can I get past?",
+   "reply": "Oopsie, sorry!",
+   "mood": "surprised",
+   "friendship": 0,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rainbow_dash",
+   "said": "What are you up to?",
+   "reply": "Ugh, Scootaloo begged me for flying lessons again. Enough already!",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "That kid never quits, it's getting annoying.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rarity",
+   "said": "Want to go shopping?",
+   "reply": "Excuse me? Of course I do, darling!",
+   "mood": "amused",
+   "friendship": 1,
+   "romance": 0,
+   "thought": "He knows me so well.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "fluttershy",
+   "said": "Angel looks grumpy",
+   "reply": "Oh, Angel, please stop throwing carrots at the window!",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "Meanwhile, the train is late",
+   "reply": "Again? Honestly, the schedule is a mess.",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "The train company is so annoying.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "pinkie_pie",
+   "said": "Is the party still on?",
+   "reply": "Nope, the Cakes cancelled it. Boo.",
+   "mood": "sad",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "I was so excited, too.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rainbow_dash",
+   "said": "I watched the race yesterday",
+   "reply": "Then you saw that cheater Lightning Dust! How dare she!",
+   "mood": "angry",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "Lightning Dust is the worst.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "applejack",
+   "said": "Can I help with the fence?",
+   "reply": "Nah, I got it, but thank ya kindly.",
+   "mood": "neutral",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "Is the button on this machine broken?",
+   "reply": "Hmm, let me take a look.",
+   "mood": "confused",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "Maybe the mechanism is jammed.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "fluttershy",
+   "said": "Is that a mockingbird?",
+   "reply": "Oh yes! Isn't her song lovely?",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "thought": "He noticed the mockingbird!",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rarity",
+   "said": "The new shop window looks bold",
+   "reply": "Bold is exactly what I was going for!",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "thought": "He appreciates bold design.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rainbow_dash",
+   "said": "Are you nervous about the show?",
+   "reply": "N-nervous? Me? Never!",
+   "mood": "shy",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "I'm a little nervous, honestly.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "pinkie_pie",
+   "said": "I'm short on bits this week",
+   "reply": "Aww, I'll lend you some!",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "I think a dragon is closer than we thought",
+   "reply": "A dragon?! We should warn the town.",
+   "mood": "surprised",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "This could be dangerous.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "applejack",
+   "said": "Granny Smith told me a joke",
+   "reply": "Heh, she's a real hoot, ain't she?",
+   "mood": "amused",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rarity",
+   "said": "Did Sweetie Belle finish her song?",
+   "reply": "Not yet, and she keeps singing it at midnight! Honestly, enough is enough.",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "My sister needs to sleep.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "fluttershy",
+   "said": "Discord says hello",
+   "reply": "Oh, Discord, please don't turn my cottage upside down again...",
+   "mood": "sad",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "He crossed the line last time.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "twilight_sparkle",
+   "said": "Let's make tea",
+   "reply": "Wonderful! I'll get the good teaspoons.",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "thought": "I should find the teaspoons.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "pinkie_pie",
+   "said": "Who runs the drama club?",
+   "reply": "Rarity! She's such a drama queen about it, hehe.",
+   "mood": "amused",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "rainbow_dash",
+   "said": "Did Gilda visit?",
+   "reply": "Yeah, and she was a total jerk to Fluttershy. Not cool.",
+   "mood": "annoyed",
+   "friendship": 0,
+   "romance": 0,
+   "thought": "Gilda is so rude.",
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "applejack",
+   "said": "The apples smell great",
+   "reply": "Picked 'em fresh this mornin'.",
+   "mood": "amused",
+   "friendship": -1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  },
+  {
+   "pony": "fluttershy",
+   "said": "I'll be back in a short while",
+   "reply": "Okay, I'll be here with the bunnies.",
+   "mood": "happy",
+   "friendship": 1,
+   "romance": 0,
+   "expect": {
+    "a_lot": false,
+    "normal": false,
+    "sometimes": false
+   }
+  }
+ ]
+}

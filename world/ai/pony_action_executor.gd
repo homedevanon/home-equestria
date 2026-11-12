@@ -13,6 +13,14 @@ const COMPANION_RANGE := 14.0
 const ROUTE_RETRIES := 3
 const NO_RETRY := ["Bakery is busy", "cannot fit", "needs a flight", "not finite"]
 const MEET_TIME := preload("res://world/life/appointments/meet_time.gd")
+## M-AI-17 (thread 43687674, "a mission to stage a show in the badlands", four game days and never
+## back): after a model's trip ended she kept "rest_after_command", which neither her day plan
+## (day_runner.gd _free) nor bedtime (night_rest.gd _busy) may take over, so she stood wherever the
+## trip ended for good. The rest now lasts at most this long (real seconds) while Anon is not with
+## her; then her own routine takes her back. Where she went stays her own business.
+const REST_HOLD_SECONDS := 300.0
+## Anon this close, or a chat with her, keeps the rest going.
+const REST_COMPANY_M := 12.0
 signal outcome(event: Dictionary)
 var actor: Node3D
 var navigator: Node
@@ -42,6 +50,7 @@ var _companion_last := Vector3.INF
 var _companion_velocity := Vector3.ZERO
 var coordinator: Node
 var character_id := ""
+var _rest_serial := 0
 
 func bind(pony: Node3D) -> void:
 	actor = pony
@@ -745,7 +754,12 @@ func _bed_for(action: Dictionary) -> Dictionary:
 	var own := _home_house()
 	if str(action.get("bed", "own")) != "here":
 		if own != null: return {"house": own, "key": str(actor.identity.id), "label": "your own bed"}
-		return {"house": null, "key": "", "label": "a nap on your cloud"} if _sky_home() != null else {"error": "You have no bed of your own"}
+		if _sky_home() != null: return {"house": null, "key": "", "label": "a nap on your cloud"}
+		# A visitor with no house here: NightRest's guest bed for her (W1-LIFE-BEDS hook note 2).
+		var rest: Node = get_tree().get_first_node_in_group("night_rest")
+		var guest: Node3D = rest.guest_house_for(str(actor.identity.id)) if rest != null and rest.has_method("guest_house_for") else null
+		if guest != null: return {"house": guest, "key": "", "label": "the guest bed in " + (str(guest.label()) if guest.has_method("label") else "a house nearby")}
+		return {"error": "You have no bed of your own"}
 	var anon: Node3D = (action.anon as WeakRef).get_ref() as Node3D if action.get("anon") is WeakRef else null
 	if anon == null or not anon.is_inside_tree(): return {"error": "Anon is not here to show you a bed"}
 	for house: Node in get_tree().get_nodes_in_group("house_interiors"):
@@ -783,10 +797,36 @@ func _release(routine: bool) -> void:
 	navigator.command_owner = "" if routine else "rest_after_command"
 	navigator.command_speed_limit = INF
 	if "command_pace_target" in navigator: navigator.command_pace_target = -1.0
+	if not routine: _hold_rest()
 	if routine:
 		navigator.wander_enabled = true
 		var schedule := actor.get_node_or_null("Schedule") if is_instance_valid(actor) else null
 		if schedule != null and schedule.has_method("_apply"): schedule._apply()
+
+## M-AI-17: one timer per rest (no per-frame work). When it runs out and she is still only resting
+## after a model's command, with Anon away and no chat holding her, her routine takes over again.
+func _hold_rest() -> void:
+	_rest_serial += 1
+	var serial := _rest_serial
+	if not is_inside_tree(): return
+	get_tree().create_timer(REST_HOLD_SECONDS, false).timeout.connect(_rest_due.bind(serial))
+
+func _rest_due(serial: int) -> void:
+	if serial != _rest_serial or not is_instance_valid(navigator) or not is_instance_valid(actor) or not actor.is_inside_tree(): return
+	if str(navigator.command_owner) != "rest_after_command" or not movement.is_empty(): return
+	if _keeps_company():
+		_hold_rest(); return
+	print("[ai] %s: rest after a command ran out; back to her own day" % character_id)
+	if actor.has_method("request_posture") and actor.has_method("posture_status") and str(actor.posture_status().get("requested", "")) in ["sit", "lie_down"]:
+		actor.request_posture("stand")
+	_release(true)
+
+## Anon nearby, or a chat with her that is still going.
+func _keeps_company() -> bool:
+	var camera := get_viewport().get_camera_3d() if get_viewport() != null else null
+	if camera != null and actor.global_position.distance_to(camera.global_position) < REST_COMPANY_M: return true
+	var director: Node = coordinator.get_parent() if is_instance_valid(coordinator) else null
+	return director != null and director.has_method("engaged") and bool(director.call("engaged", character_id))
 
 func _report(action: Dictionary, status: String, reason: String) -> void:
 	if action.get("status") == status and action.get("reason") == reason: return

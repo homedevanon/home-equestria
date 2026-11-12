@@ -85,21 +85,11 @@ func _bake(pony: Node3D) -> Dictionary:
 	var body: MeshInstance3D = model.find_child("MareBody", true, false)
 	if body == null or not library.has_animation("stand"): return {}
 	var hitch_label := "impostor bake " + FAR_MESH._id(pony)
-	var viewport := SubViewport.new()
-	viewport.size = Vector2i(CELL, CELL)
-	viewport.own_world_3d = true
-	viewport.transparent_bg = true
-	viewport.msaa_3d = Viewport.MSAA_4X
-	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	var world := Node3D.new(); viewport.add_child(world)
-	var environment := Environment.new()
-	environment.background_mode = Environment.BG_CLEAR_COLOR
-	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	environment.ambient_light_color = Color.WHITE
-	environment.ambient_light_energy = 0.55
-	environment.tonemap_mode = Environment.TONE_MAPPER_LINEAR
-	var we := WorldEnvironment.new(); we.environment = environment; world.add_child(we)
-	var light := DirectionalLight3D.new(); light.light_energy = 0.7; world.add_child(light)
+	var studio := _studio()
+	var viewport: SubViewport = studio.viewport
+	var world: Node3D = studio.world
+	var light: DirectionalLight3D = studio.light
+	var camera: Camera3D = studio.camera
 	var skeleton := Skeleton3D.new()
 	for bone in source.get_bone_count():
 		skeleton.add_bone(source.get_bone_name(bone))
@@ -115,10 +105,6 @@ func _bake(pony: Node3D) -> Dictionary:
 		var eyes := MeshInstance3D.new(); eyes.mesh = eyes_mesh; eyes.skin = body.skin
 		skeleton.add_child(eyes); eyes.skeleton = eyes.get_path_to(skeleton)
 		eyes.set_instance_shader_parameter("brow_amount", 0.0)
-	var camera := Camera3D.new()
-	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	world.add_child(camera)
-	add_child(viewport)
 	# The skeleton's place under her model: its frame relative to her root.
 	skeleton.transform = pony.global_transform.affine_inverse() * source.global_transform
 	var poses := [["stand", 0.0], ["walk" if library.has_animation("walk") else "stand", 0.25]]
@@ -154,7 +140,7 @@ func _bake(pony: Node3D) -> Dictionary:
 			# Read back a frame later: the shot from this frame's update is not always ready.
 			if not await SHUTDOWN.rendered_frame(self) or not await SHUTDOWN.rendered_frame(self) \
 					or not is_instance_valid(viewport):
-				if is_instance_valid(viewport): viewport.queue_free()
+				_clear_set(skeleton)
 				return {}
 			var entry := [Vector2i(k * CELL, row * CELL), null]
 			shots.append(entry)
@@ -165,7 +151,7 @@ func _bake(pony: Node3D) -> Dictionary:
 	var waited := 0
 	while outstanding[0] > 0 and waited < 30:
 		if not await SHUTDOWN.rendered_frame(self):
-			viewport.queue_free()
+			_clear_set(skeleton)
 			return {}
 		waited += 1
 	for entry: Array in shots:
@@ -173,7 +159,7 @@ func _bake(pony: Node3D) -> Dictionary:
 		if shot == null or shot.is_empty(): continue
 		shot.convert(Image.FORMAT_RGBA8)
 		image.blit_rect(shot, Rect2i(Vector2i.ZERO, Vector2i(CELL, CELL)), entry[0])
-	viewport.queue_free()
+	_clear_set(skeleton)
 	image.fix_alpha_edges()
 	image.generate_mipmaps()
 	var material := ShaderMaterial.new()
@@ -185,6 +171,51 @@ func _bake(pony: Node3D) -> Dictionary:
 	material.set_shader_parameter("size", Vector2(side, side))
 	material.set_shader_parameter("foot", foot)
 	return {"material": material, "size": Vector2(side, side), "foot": foot}
+
+## The bake studio: an isolated world with its clear background, flat front light and orthographic
+## camera, built on the first bake and kept (idle: UPDATE_DISABLED renders nothing). Building a
+## SubViewport with its own World3D, environment and 4x MSAA targets for every identity was main-
+## thread work in the 72-245 ms bake frames of the Nov 4-7 player logs (W1-PERF-HITCH 2026-11-08).
+var _rig: Dictionary = {}
+
+func _studio() -> Dictionary:
+	if not _rig.is_empty() and is_instance_valid(_rig.get("viewport")): return _rig
+	var viewport := SubViewport.new()
+	viewport.name = "BakeStudio"
+	viewport.size = Vector2i(CELL, CELL)
+	viewport.own_world_3d = true
+	viewport.transparent_bg = true
+	viewport.msaa_3d = Viewport.MSAA_4X
+	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	# Posed and aimed from a coroutine between rendered frames, never on the physics tick: nothing
+	# here may interpolate (M-INP-06: every boot logged "Interpolated Camera3D triggered from
+	# outside physics process" for this camera). Children inherit the mode.
+	viewport.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
+	var world := Node3D.new(); viewport.add_child(world)
+	var environment := Environment.new()
+	environment.background_mode = Environment.BG_CLEAR_COLOR
+	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	environment.ambient_light_color = Color.WHITE
+	environment.ambient_light_energy = 0.55
+	environment.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	var we := WorldEnvironment.new(); we.environment = environment; world.add_child(we)
+	var light := DirectionalLight3D.new(); light.light_energy = 0.7; world.add_child(light)
+	var camera := Camera3D.new()
+	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+	world.add_child(camera)
+	add_child(viewport)
+	_rig = {"viewport": viewport, "world": world, "light": light, "camera": camera}
+	return _rig
+
+## Takes one identity's posed skeleton (and her meshes) out of the studio.
+func _clear_set(skeleton: Skeleton3D) -> void:
+	if not is_instance_valid(skeleton): return
+	if skeleton.get_parent() != null: skeleton.get_parent().remove_child(skeleton)
+	skeleton.queue_free()
+
+## Identities waiting for or in a bake (game_loading.gd waits for these behind the cover).
+func pending() -> int:
+	return _queue.size() + (1 if _busy else 0)
 
 ## Starts an asynchronous readback of the viewport into entry[1]; false when the renderer cannot
 ## (the caller reads synchronously instead). Callbacks run on the main thread (the game renders

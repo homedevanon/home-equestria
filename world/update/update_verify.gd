@@ -9,7 +9,8 @@ extends RefCounted
 ## downloads and installs. tools/update/test_update_verify.gd checks it with a throwaway key.
 ##
 ##   {"format":1,"version":"0.0.4","channel":"stable",
-##    "files":[{"name":"<release asset>","platform":"linux"|"windows"|"android","sha256":"<hex>","size":<int>}]}
+##    "files":[{"name":"<release asset>","platform":"linux"|"windows"|"android","sha256":"<hex>","size":<int>}],
+##    "mods":{"<mod id>":{"version","url","sha256","size","min_game"}}}   (optional, mod_updates.gd)
 ##
 ## Several files for one platform are parts of one archive, joined in manifest order (a GitHub
 ## release file must stay under 2 GiB). The archive kind comes from its first bytes: a zip
@@ -92,6 +93,48 @@ static func verified_manifest(manifest_bytes: PackedByteArray, sig_text: String,
 		var size: Variant = file.get("size")
 		if not (size is float or size is int) or float(size) != floorf(float(size)) or float(size) <= 0.0: return {"error": "bad size for %s" % name}
 	return manifest
+
+
+## The signed manifest without the game-version rule, or {"error": why}: the signature, the format and
+## the channel exactly as verified_manifest() checks them. The mod update channel (mod_updates.gd)
+## reads its "mods" section from the newest release even when the game itself is up to date.
+static func signed_document(manifest_bytes: PackedByteArray, sig_text: String, key: CryptoKey) -> Dictionary:
+	if not signature_ok(manifest_bytes, sig_text, key): return {"error": "bad signature"}
+	var parsed: Variant = JSON.parse_string(manifest_bytes.get_string_from_utf8())
+	if not (parsed is Dictionary): return {"error": "manifest is not an object"}
+	var manifest: Dictionary = parsed
+	if not (manifest.get("format") is float or manifest.get("format") is int) or int(manifest.get("format")) != 1: return {"error": "unknown manifest format"}
+	if str(manifest.get("channel", "")) != "stable": return {"error": "not the stable channel"}
+	return manifest
+
+
+## Mod ids are folder names under res://mods/ (world/modding/mod_loader.gd ID_PATTERN).
+const MOD_ID := "^[a-z0-9_]+$"
+## No bundled pack is near this (the largest, the pedal copter, is 8 MB).
+const MAX_MOD_BYTES := 128 * 1024 * 1024
+
+
+## One mod update offer, {"id", "version", "url", "sha256", "size", "min_game"} cleaned, or
+## {"error": why}. Used for the signed manifest's "mods" section and for an author's update JSON
+## ({version, url, sha256[, size]}): https only, a plain version, a full sha256, a sane size.
+static func mod_offer(id: String, entry: Variant) -> Dictionary:
+	if RegEx.create_from_string(MOD_ID).search(id) == null: return {"error": "bad mod id %s" % id}
+	if not (entry is Dictionary): return {"error": "bad entry for %s" % id}
+	var data: Dictionary = entry
+	var version := str(data.get("version", ""))
+	if version_parts(version).is_empty(): return {"error": "bad version %s for %s" % [version, id]}
+	var url := str(data.get("url", ""))
+	if not url.begins_with("https://") or url.length() > 2048 or " " in url or "\\" in url: return {"error": "%s: only https downloads" % id}
+	var sha := str(data.get("sha256", "")).to_lower()
+	if RegEx.create_from_string("^[0-9a-f]{64}$").search(sha) == null: return {"error": "bad sha256 for %s" % id}
+	var size := 0
+	if data.has("size"):
+		var raw: Variant = data.get("size")
+		if not (raw is float or raw is int) or float(raw) != floorf(float(raw)) or float(raw) <= 0.0 or float(raw) > MAX_MOD_BYTES: return {"error": "bad size for %s" % id}
+		size = int(raw)
+	var min_game := str(data.get("min_game", ""))
+	if min_game != "" and version_parts(min_game).is_empty(): return {"error": "bad min_game for %s" % id}
+	return {"id": id, "version": version, "url": url, "sha256": sha, "size": size, "min_game": min_game}
 
 
 ## [major, minor, patch, fix] for "0.0.4", "0.0.3-maredev" or "0.0.6.1", [] when it is not a release version.

@@ -1,0 +1,5 @@
+extends Node
+## Test fixture (tools/modding/test_bundled_mods.gd): an old mod's copy of world/buildings/open_doorway.gd.
+const PARENT := true
+func request_passage(_pony: Node) -> bool: return true
+func release_passage(_pony: Node) -> void: pass

@@ -163,8 +163,13 @@ func show_profile(id: String, identity: Resource, info: Dictionary) -> void:
 	if not thought.is_empty(): lines.append("[b]Last impression[/b]  " + _plain(thought))
 	var mood := str(impression.get("mood", "neutral"))
 	if mood != "neutral": lines.append("[b]Mood[/b]  " + _plain(mood.capitalize()))
-	if int(impression.get("enemy", 0)) > 0:
-		lines.append("[b]Hostility[/b]  %d / 100 · %s" % [int(impression.enemy), _plain(standing)])
+	# M-AI-15: Hostility is her forgiving grudge (pony_impressions.gd grudge) or her negative
+	# friendship, whichever is higher (a mare hostile in an older save has no grudge row yet).
+	var hostility := maxi(int(impression.get("hostility", 0)), int(impression.get("enemy", 0)))
+	if hostility > 0:
+		lines.append("[b]Hostility[/b]  %d / 100 · %s" % [hostility, _plain(standing)])
+	if not str(impression.get("heard", "")).is_empty():
+		lines.append("[b]Heard about you[/b]  " + _plain(str(impression.heard)))
 	if bool(info.get("space", false)):
 		lines.append("[b]Boundary[/b]  " + _plain(title) + " has asked for space.")
 	elif not str(info.get("welcome", "")).is_empty():

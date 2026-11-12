@@ -57,15 +57,39 @@ func _exit_tree() -> void:
 
 func _movement_body() -> CharacterBody3D:
 	if not is_instance_valid(_body): return null
-	var driver: Variant = _body.get("form_driver") if "form_driver" in _body else null
-	if is_instance_valid(driver) and "avatar" in driver and is_instance_valid(driver.avatar):
-		return driver.avatar as CharacterBody3D
+	_learn_properties()
+	var driver: Variant = _body.get("form_driver") if _body_has_form else null
+	if is_instance_valid(driver):
+		var driver_id: int = (driver as Object).get_instance_id()
+		if driver_id != _seen_driver: _seen_driver = driver_id; _driver_has_avatar = "avatar" in driver
+		if _driver_has_avatar and is_instance_valid(driver.avatar):
+			return driver.avatar as CharacterBody3D
 	return _body
 
 func _blocked() -> bool:
-	return get_tree().paused or not is_instance_valid(_body) or not is_instance_valid(_host) \
-		or (_body.get("controls_locked") == true if "controls_locked" in _body else false) \
-		or (_host.get("title_active") == true if "title_active" in _host else false)
+	if get_tree().paused or not is_instance_valid(_body) or not is_instance_valid(_host): return true
+	_learn_properties()
+	return (_body.get("controls_locked") == true if _body_has_lock else false) \
+		or (_host.get("title_active") == true if _host_has_title else false)
+
+## Which optional properties the body, host and form driver scripts declare is fixed per object:
+## learned once, not by string lookups twice every tick (2026-11-08 physics-step pass).
+var _seen_body := 0
+var _seen_host := 0
+var _seen_driver := 0
+var _body_has_form := false
+var _body_has_lock := false
+var _host_has_title := false
+var _driver_has_avatar := false
+
+func _learn_properties() -> void:
+	if _body.get_instance_id() != _seen_body:
+		_seen_body = _body.get_instance_id()
+		_body_has_form = "form_driver" in _body
+		_body_has_lock = "controls_locked" in _body
+	if _host.get_instance_id() != _seen_host:
+		_seen_host = _host.get_instance_id()
+		_host_has_title = "title_active" in _host
 
 func _physics_process(delta: float) -> void:
 	if _blocked():
@@ -140,8 +164,11 @@ func _select_nearby(player_body: CharacterBody3D) -> void:
 		for id: Variant in population.live:
 			var entry: Dictionary = population.live[id]
 			var candidate := entry.get("actor") as CharacterBody3D
-			if candidate == player_body or not _flying(candidate): continue
+			if candidate == player_body or not is_instance_valid(candidate): continue
+			# Distance first: a pony no nearer than the current second choice cannot change the
+			# pick, so the flight lookups run only for the few within range (45 ponies, 4 Hz).
 			var distance := candidate.global_position.distance_squared_to(player_body.global_position)
+			if distance >= second_distance or not _flying(candidate): continue
 			if distance < first_distance:
 				second = first; second_distance = first_distance; first = candidate; first_distance = distance
 			elif distance < second_distance: second = candidate; second_distance = distance

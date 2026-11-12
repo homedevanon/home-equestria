@@ -5,7 +5,10 @@ extends SceneTree
 ##   godot --headless --xr-mode off --path <project> --script res://tools/modding/build_mod.gd -- <id> [--out FILE.pck]
 ## Default output is user://mods/<id>.pck, which is the game's own mods folder, so the next launch
 ## runs it. Imported assets (textures, models, sounds) go in as the game exports them: the .import
-## file plus its .godot/imported data, not the source file. Prints MOD_BUILT <path> or MOD_BUILD_FAILED.
+## file plus its .godot/imported data, not the source file. Text scenes and resources (.tscn, .tres)
+## go in without the uid="uid://..." of their [ext_resource] lines: the players' game does not know
+## a mod's UIDs and would log "invalid UID ... using text path instead" for each (M-MOD-04); the path
+## is what loads either way. Prints MOD_BUILT <path> or MOD_BUILD_FAILED.
 const LOADER := preload("res://world/modding/mod_loader.gd")
 
 func _initialize() -> void: run.call_deferred()
@@ -21,6 +24,10 @@ func run() -> void:
 		printerr("MOD_BUILD_FAILED ", result); quit(1); return
 	print("MOD_BUILT ", result)
 	quit(0)
+
+## A text scene or resource with the uid="uid://..." attributes of its [ext_resource] lines removed.
+static func without_uids(text: String) -> String:
+	return RegEx.create_from_string("(?m)^(\\[ext_resource[^\\n]*?) uid=\"uid://[^\"]*\"").sub(text, "$1", true)
 
 ## Writes the pack; returns its absolute path, or "ERROR: why".
 static func build(id: String, out: String) -> String:
@@ -44,6 +51,14 @@ static func build(id: String, out: String) -> String:
 				if not FileAccess.file_exists(str(imported)): return "ERROR: %s is not imported yet; open the project in the Godot editor once (or run it with --headless --editor --quit)" % path.trim_suffix(".import")
 				files[str(imported)] = ProjectSettings.globalize_path(str(imported))
 		elif FileAccess.file_exists(path + ".import"): continue   # the import above carries it
+		elif path.get_extension() in ["tscn", "tres"]:
+			var plain := without_uids(FileAccess.get_file_as_string(path))
+			var copy := ProjectSettings.globalize_path("user://mod_build_%s/%d.%s" % [id, files.size(), path.get_extension()])
+			DirAccess.make_dir_recursive_absolute(copy.get_base_dir())
+			var out_file := FileAccess.open(copy, FileAccess.WRITE)
+			if out_file == null: return "ERROR: cannot write a temporary file in user://"
+			out_file.store_string(plain); out_file.close()
+			files[path] = copy
 		else: files[path] = ProjectSettings.globalize_path(path)
 	var stamp := ProjectSettings.globalize_path("user://mod_build_%s.json" % id)
 	var marker := FileAccess.open(stamp, FileAccess.WRITE)

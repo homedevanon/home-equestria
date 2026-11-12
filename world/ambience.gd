@@ -8,6 +8,11 @@ extends Node3D
 ## Footsteps come from whoever reports a
 ## step (`connect_stepper`), else from listener travel distance, which is
 ## what the desktop rig needs.
+##
+## Seasons (W2-SEAS-J, 2026-11-08), decided twice a second by season_layers(): a steady wind bed
+## and fewer, quieter birds in winter (only where the climate map allows winter, D-06), dry leaves
+## rustling at a nearby crown when autumn is windy, a louder dawn chorus in spring (two extra
+## birds that only sing around sunrise), no crickets on winter nights. Recorded samples only.
 
 const WIND := preload("res://world/audio/designed/environment/breeze.ogg")
 const FOREST_DAY := preload("res://world/audio/ambience/forest_day.ogg")
@@ -17,8 +22,12 @@ const CATALOGUE := preload("res://world/audio/environment_catalogue.gd")
 const CONTACT := preload("res://world/audio/ground_contact_audio.gd")
 const MOVEMENT := preload("res://world/audio/player_movement_audio.gd")
 const HOUSE := preload("res://world/buildings/house_interior.gd")
+const SEASON_QUERY := preload("res://world/seasons/snow_cover_query.gd")
+const CLIMATE := preload("res://world/seasons/climate_map.gd")
 const WATER_MASK := 1 << 15
 const BIRD_COUNT := 10
+## Extra birds for the spring dawn chorus; silent outside it.
+const CHORUS_BIRDS := 2
 
 @export var wind_db := -30.0
 @export var wind_quiet_seconds := Vector2(90.0, 180.0)
@@ -30,6 +39,9 @@ const BIRD_COUNT := 10
 @export var min_footstep_gap := 0.45
 var _last_footstep := -10.0
 @export var hoofstep_db := -16.0
+## Seasonal beds (the gain from season_layers() is added on top).
+@export var winter_wind_db := -32.0
+@export var rustle_db := -27.0
 ## Metres of listener travel per footstep when nobody reports real steps.
 @export var stride := 0.72
 
@@ -68,6 +80,26 @@ var _has_stepper := false
 var _last_listener := Vector3.INF
 var _travel := 0.0
 var _rng := RandomNumberGenerator.new()
+var _seasons: Node
+var _season_timer := 0.0
+## The current season_layers() result, and its values the frame code reads.
+var season_mix: Dictionary = season_layers("", 0.0, 12.0, 0.0, 1.0, 0.0)
+var _season_birds := 1.0
+var _season_bird_db := 0.0
+var _season_forest := 1.0
+var _season_crickets := 1.0
+var _season_chorus := 0.0
+var _season_rustle := 0.0
+var _season_gust_wait := 1.0
+var _winter_wind: AudioStreamPlayer
+var _winter_gain := 0.0
+var _winter_target := 0.0
+var _rustle: AudioStreamPlayer3D
+var _rustle_host: Node3D
+var _rustle_gain := 0.0
+var _rustle_target := 0.0
+var _chorus: Array[AudioStreamPlayer3D] = []
+var _chorus_active := false
 # Resolved at runtime so headless tests without the autoload table still load.
 var _tod: Node
 
@@ -95,21 +127,47 @@ func _ready() -> void:
 	# One distant bird, a call or two every three to four minutes (dev,
 	# 2026-09-06, after a first pass that chirped without pause).
 	for i in 1:
-		var bird := AudioStreamPlayer3D.new()
-		bird.bus = _forest.bus
-		bird.volume_db = bird_db
-		bird.max_distance = 90.0
-		bird.unit_size = 12.0
-		bird.attenuation_filter_cutoff_hz = 9000.0
-		add_child(bird)
-		_birds.append(bird)
-		var timer := Timer.new()
-		timer.name = "CallTimer"; timer.one_shot = true
-		bird.add_child(timer)
-		timer.timeout.connect(_play_bird.bind(bird))
-		bird.finished.connect(_schedule_bird.bind(bird))
-		_schedule_bird(bird)
+		_birds.append(_make_bird())
+		_schedule_bird(_birds[-1])
+	# Spring dawn chorus: two more callers that only sing around sunrise in spring.
+	for i in CHORUS_BIRDS:
+		_chorus.append(_make_bird())
+		_schedule_bird(_chorus[-1])
 	_creak_wait = _rng.randf_range(120.0, 300.0)
+	# Seasonal beds start silent and stopped; season_layers() wakes them.
+	_winter_wind = AudioStreamPlayer.new()
+	_winter_wind.bus = _wind.bus
+	_winter_wind.stream = CATALOGUE.WINTER_WIND.duplicate()
+	(_winter_wind.stream as AudioStreamOggVorbis).loop = true
+	_winter_wind.pitch_scale = .9
+	_winter_wind.volume_db = -80.0; add_child(_winter_wind)
+	_rustle = AudioStreamPlayer3D.new()
+	_rustle.bus = _forest.bus
+	_rustle.stream = CATALOGUE.LEAF_RUSTLE.duplicate()
+	(_rustle.stream as AudioStreamOggVorbis).loop = true
+	_rustle.pitch_scale = 1.1
+	_rustle.max_distance = 60.0; _rustle.unit_size = 14.0
+	_rustle.attenuation_filter_cutoff_hz = 9000.0
+	_rustle.volume_db = -80.0; add_child(_rustle)
+
+	# The sounds of the town itself, each at its source (world/audio/soundscape.gd, dev 2026-11-10).
+	var soundscape: Node3D = preload("res://world/audio/soundscape.gd").new()
+	soundscape.name = "Soundscape"; add_child(soundscape)
+
+func _make_bird() -> AudioStreamPlayer3D:
+	var bird := AudioStreamPlayer3D.new()
+	bird.bus = _forest.bus
+	bird.volume_db = bird_db
+	bird.max_distance = 90.0
+	bird.unit_size = 12.0
+	bird.attenuation_filter_cutoff_hz = 9000.0
+	add_child(bird)
+	var timer := Timer.new()
+	timer.name = "CallTimer"; timer.one_shot = true
+	bird.add_child(timer)
+	timer.timeout.connect(_play_bird.bind(bird))
+	bird.finished.connect(_schedule_bird.bind(bird))
+	return bird
 
 
 ## Composition-root hook: observes the existing motor, never creates another movement owner.
@@ -192,10 +250,14 @@ func _process(delta: float) -> void:
 			var p: Dictionary = field.presets[i]
 			_biome_target += Vector3(float(p.wind_gain), float(p.forest_gain), float(p.cricket_gain)) * w[i]
 	_biome_gains = _biome_gains.lerp(_biome_target, 1.0 - exp(-delta / 2.0))
+	_season_timer -= delta
+	if _season_timer <= 0.0:
+		_season_timer = .5
+		_update_season()
+	if _winter_gain != _winter_target or _rustle_gain != _rustle_target: _fade_season_beds(delta)
 	_update_wind(delta, daylight)
 	_update_forest(delta, daylight)
-	var night_gain := (1.0 - smoothstep(.05, .4, daylight)) * _biome_gains.z * outdoor_gain * (1.0 - underwater)
-	if is_instance_valid(_weather) and str(_weather.get("season")) == "winter": night_gain = 0.0
+	var night_gain := (1.0 - smoothstep(.05, .4, daylight)) * _biome_gains.z * outdoor_gain * (1.0 - underwater) * _season_crickets
 	_set_db(_crickets, crickets_db + linear_to_db(maxf(night_gain, .00001)))
 	if night_gain <= .005 and _crickets.playing: _crickets.stop()
 	elif night_gain > .005 and not _crickets.playing: _crickets.play(_rng.randf() * 5.0)
@@ -205,12 +267,10 @@ func _process(delta: float) -> void:
 	# Do not drag a singing bird along with the listener or leave a call in empty
 	# space when streaming/painting removes its tree. Its next call picks anew.
 	for bird in _birds:
-		if not bird.playing: continue
-		var host: Variant = _bird_hosts.get(bird)
-		if not is_instance_valid(host) or not host.is_visible_in_tree():
-			bird.stop(); _bird_hosts.erase(bird); _schedule_bird(bird)
-		else:
-			_set_db(bird, float(_bird_levels.get(bird, bird_db)) + linear_to_db(maxf(outdoor_gain * (1.0-underwater), .00001)))
+		if bird.playing: _hold_bird(bird)
+	if _chorus_active:
+		for bird in _chorus:
+			if bird.playing: _hold_bird(bird)
 	if not _has_stepper:
 		var flat := Vector3(listener.global_position.x, 0.0, listener.global_position.z)
 		if _last_listener.is_finite():
@@ -222,6 +282,120 @@ func _process(delta: float) -> void:
 				_travel = 0.0
 				play_footstep(_movement.body.global_position)
 		_last_listener = flat
+
+
+func _hold_bird(bird: AudioStreamPlayer3D) -> void:
+	var host: Variant = _bird_hosts.get(bird)
+	if not is_instance_valid(host) or not host.is_visible_in_tree():
+		bird.stop(); _bird_hosts.erase(bird); _schedule_bird(bird)
+	else:
+		_set_db(bird, float(_bird_levels.get(bird, bird_db)) + linear_to_db(maxf(outdoor_gain * (1.0-underwater), .00001)))
+
+
+## Seasonal mix at the listener (pure, so tests can pin it). `season` is "spring".."winter" (""
+## when unknown: no seasonal change), `hours` the clock, `gust` the weather's gust 0..1,
+## `cold` the climate map's snow response there (0 in desert, jungle and coast: no winter, D-06),
+## `leaf_drop` how bare the crowns are. Returns:
+## winter_wind 0..1.1 steady wind bed; birds = call-rate factor (gaps divide by it); bird_db call
+## level offset; forest = forest-bed gain factor; chorus 0..1 spring dawn chorus; rustle 0..1
+## autumn leaf rustle at a nearby crown; crickets = night-bed factor; gust_wait = gap factor
+## between the ordinary wind gusts.
+static func season_layers(season: String, progress: float, hours: float, gust: float, cold: float, leaf_drop: float) -> Dictionary:
+	var mix := {"winter_wind": 0.0, "birds": 1.0, "bird_db": 0.0, "forest": 1.0, "chorus": 0.0, "rustle": 0.0, "crickets": 1.0, "gust_wait": 1.0}
+	gust = clampf(gust, 0.0, 1.0)
+	# The climate map is 8-bit: a texel or two of rounding must not leave a whisper of winter.
+	cold = smoothstep(.02, .98, cold)
+	match season:
+		"winter":
+			mix.winter_wind = cold * (.5 + .6 * gust)
+			mix.birds = lerpf(1.0, .3, cold)
+			mix.bird_db = -3.0 * cold
+			mix.forest = lerpf(1.0, .35, cold)
+			mix.crickets = 1.0 - cold
+			mix.gust_wait = lerpf(1.0, .5, cold)
+		"autumn":
+			# Dry leaves still on the crowns rattle in the wind; a bare crown has little left.
+			mix.rustle = smoothstep(.25, .7, gust) * clampf(1.0 - leaf_drop * .8, .3, 1.0)
+			var late := smoothstep(.6, 1.0, progress)
+			mix.birds = lerpf(1.0, .75, late)
+			mix.forest = lerpf(1.0, .8, late)
+		"spring":
+			# Around sunrise: rises from 4:30, full 5:30-7:30, gone by 9:00.
+			var dawn := smoothstep(4.5, 5.5, hours) * (1.0 - smoothstep(7.5, 9.0, hours))
+			mix.chorus = dawn
+			mix.bird_db = 4.0 * dawn
+			mix.forest = 1.0 + .6 * dawn
+	return mix
+
+
+func _update_season() -> void:
+	if not is_instance_valid(_seasons): _seasons = SEASON_QUERY.seasons(get_tree())
+	var season := ""
+	var progress := 0.0
+	var drop := 0.0
+	if is_instance_valid(_seasons):
+		season = str(_seasons.call("season"))
+		progress = float(_seasons.call("progress"))
+		drop = float(_seasons.call("leaf_drop"))
+	elif is_instance_valid(_weather):
+		season = str(_weather.get("season"))
+	var gust := 0.0
+	if is_instance_valid(_weather):
+		var params: Variant = _weather.get("params")
+		if params is Dictionary: gust = float((params as Dictionary).get("gust", 0.0))
+	var origin: Vector3 = listener.global_position if is_instance_valid(listener) else global_position
+	var cold := CLIMATE.sample(Vector2(origin.x, origin.z), 0) if season == "winter" else 1.0
+	var hours := float(_tod.get("hours")) if _tod != null and _tod.get("hours") != null else 12.0
+	season_mix = season_layers(season, progress, hours, gust, cold, drop)
+	_season_birds = float(season_mix.birds)
+	_season_bird_db = float(season_mix.bird_db)
+	_season_forest = float(season_mix.forest)
+	_season_crickets = float(season_mix.crickets)
+	_season_chorus = float(season_mix.chorus)
+	_season_rustle = float(season_mix.rustle)
+	_season_gust_wait = float(season_mix.gust_wait)
+	var open_air := _biome_gains.x * outdoor_gain * (1.0 - underwater)
+	_winter_target = float(season_mix.winter_wind) * open_air
+	if _winter_target <= .001: _winter_target = 0.0
+	if _winter_target > .001 and not _winter_wind.playing:
+		_winter_gain = 0.0; _winter_wind.volume_db = -80.0
+		_winter_wind.play(_rng.randf() * maxf(0.0, _winter_wind.stream.get_length() - 1.0))
+	_update_rustle(origin)
+	var singing := false
+	for bird in _chorus: singing = singing or bird.playing
+	_chorus_active = _season_chorus > 0.0 or singing
+
+
+## Autumn rustle: one crown 6-30 m away; re-picked when the listener walks off or the tree unloads.
+func _update_rustle(origin: Vector3) -> void:
+	var present := is_instance_valid(_rustle_host) and _rustle_host.is_visible_in_tree()
+	if _rustle.playing and not present:
+		_rustle.stop(); _rustle_host = null; _rustle_gain = 0.0; present = false
+	if not _rustle.playing and _season_rustle > .05 and outdoor_gain > .2:
+		var perch := _tree_perch(origin, 6.0, 30.0)
+		if not perch.is_empty():
+			_rustle_host = perch.owner; _rustle.global_position = perch.position
+			_rustle_gain = 0.0; _rustle.volume_db = -80.0
+			_rustle.play(_rng.randf() * maxf(0.0, _rustle.stream.get_length() - 1.0))
+			present = true
+	var near := present and origin.distance_to(_rustle.global_position) <= 40.0
+	_rustle_target = _season_rustle * outdoor_gain * (1.0 - underwater) if near else 0.0
+	# Already silent with nothing to fade to: stop, so a silent loop never lingers on a far tree.
+	if _rustle.playing and _rustle_target <= 0.0 and _rustle_gain <= 0.0:
+		_rustle.stop(); _rustle_host = null
+
+
+## Frame work only while a seasonal bed is fading (_process checks first); settled beds cost two
+## float comparisons a frame.
+func _fade_season_beds(delta: float) -> void:
+	if _winter_wind.playing and _winter_gain != _winter_target:
+		_winter_gain = move_toward(_winter_gain, _winter_target, delta / 4.0)
+		_set_db(_winter_wind, winter_wind_db + linear_to_db(maxf(_winter_gain, .00001)))
+		if _winter_gain <= 0.0: _winter_wind.stop()
+	if _rustle.playing and _rustle_gain != _rustle_target:
+		_rustle_gain = move_toward(_rustle_gain, _rustle_target, delta / 2.0)
+		_set_db(_rustle, rustle_db + linear_to_db(maxf(_rustle_gain, .00001)))
+		if _rustle_gain <= 0.0: _rustle.stop(); _rustle_host = null
 
 
 func _update_wind(delta: float, daylight: float) -> void:
@@ -236,7 +410,7 @@ func _update_wind(delta: float, daylight: float) -> void:
 	_wind_elapsed += delta
 	if _wind_elapsed >= _wind_duration:
 		_wind.stop()
-		_wind_wait = _rng.randf_range(wind_quiet_seconds.x, wind_quiet_seconds.y)
+		_wind_wait = _rng.randf_range(wind_quiet_seconds.x, wind_quiet_seconds.y) * _season_gust_wait
 		return
 	var fade := minf(2.0, _wind_duration*.25)
 	var envelope := smoothstep(0.0, fade, _wind_elapsed) * smoothstep(0.0, fade, _wind_duration-_wind_elapsed)
@@ -268,7 +442,7 @@ func _update_forest(delta: float, daylight: float) -> void:
 	if is_instance_valid(_weather):
 		var weather_params: Dictionary = _weather.get("params")
 		weather_gain = 1.0 - float(weather_params.get("rain", 0.0)) * .8
-	_set_db(_forest, forest_db + linear_to_db(maxf(daylight * _biome_gains.y * _forest_gain * outdoor_gain * (1.0-underwater) * weather_gain, .00001)))
+	_set_db(_forest, forest_db + linear_to_db(maxf(daylight * _biome_gains.y * _forest_gain * outdoor_gain * (1.0-underwater) * weather_gain * _season_forest, .00001)))
 
 
 ## Perf 0.1.0: the beds' levels settle and then hold; a volume write on a playing player rebuilds
@@ -279,24 +453,33 @@ static func _set_db(player: Node, db: float) -> void:
 
 func _bird_perch() -> Dictionary:
 	var origin: Vector3 = listener.global_position if is_instance_valid(listener) else global_position
+	return _tree_perch(origin, 25.0, 70.0)
+
+
+func _tree_perch(origin: Vector3, near_distance: float, far_distance: float) -> Dictionary:
 	var perches: Array = []
 	for habitat in get_tree().get_nodes_in_group("bird_habitats"):
-		perches.append_array(habitat.bird_perches(origin))
+		perches.append_array(habitat.bird_perches(origin, near_distance, far_distance))
 	return perches[_rng.randi_range(0, perches.size() - 1)] if not perches.is_empty() else {}
 
 
 func _schedule_bird(bird: AudioStreamPlayer3D) -> void:
-	# Quiet gaps between calls; fewer and quieter as the light goes.
+	var timer := bird.get_node("CallTimer") as Timer
+	if bird in _chorus:
+		# Chorus birds call every few seconds at full chorus and otherwise just check back.
+		timer.start(_rng.randf_range(5.0, 16.0) / maxf(_season_chorus, .25) if _season_chorus > .05 else 45.0)
+		return
+	# Quiet gaps between calls; fewer and quieter as the light goes (and in winter).
 	var daylight := _daylight()
-	var gap := _rng.randf_range(100.0, 240.0) + (1.0 - daylight) * 300.0
+	var gap := (_rng.randf_range(100.0, 240.0) + (1.0 - daylight) * 300.0) / maxf(_season_birds, .1)
 	# Owned by the emitter, so unloading the world also cancels its future call.
-	(bird.get_node("CallTimer") as Timer).start(gap)
+	timer.start(gap)
 
 
 func _play_bird(bird: AudioStreamPlayer3D) -> void:
 	if bird.playing: return
 	var now := _daylight()
-	if now < 0.08 or underwater > .5:
+	if now < 0.08 or underwater > .5 or (_season_chorus <= .05 and bird in _chorus):
 		_schedule_bird(bird)
 		return
 	var perch := _bird_perch()
@@ -307,7 +490,7 @@ func _play_bird(bird: AudioStreamPlayer3D) -> void:
 	bird.global_position = perch.position
 	bird.stream = _bird_clips[_rng.randi_range(0, _bird_clips.size() - 1)]
 	bird.pitch_scale = _rng.randf_range(0.92, 1.1)
-	_bird_levels[bird] = bird_db + linear_to_db(clampf(now, .2, 1.0)) + _rng.randf_range(-4.0, 0.0)
+	_bird_levels[bird] = bird_db + _season_bird_db + linear_to_db(clampf(now, .2, 1.0)) + _rng.randf_range(-4.0, 0.0)
 	bird.volume_db = float(_bird_levels[bird]) + linear_to_db(maxf(outdoor_gain * (1.0-underwater), .00001))
 	bird.play()
 
@@ -371,6 +554,7 @@ func _play_contact(source: Node3D, event: String, at: Vector3, intensity := 1.0,
 	var kind := CONTACT.material(source, at, _weather)
 	if kind.is_empty(): return # No support: air, load-in and teleport contacts stay silent.
 	if kind == "water": event = "env_hoof_wade" if event == "env_hoofstep" else "env_wade"
+	elif kind == "puddle": db += CATALOGUE.PUDDLE_HOOF_DB if event.begins_with("env_hoof") else CATALOGUE.PUDDLE_FOOT_DB
 	var occlusion := 0.0
 	if is_instance_valid(room) and HOUSE.at(get_tree(), at + Vector3.UP * .02) != room: occlusion = 1.0 - outdoor_gain
 	SOUNDS.play_event(source, event, {"material": kind, "intensity": intensity, "volume_db": db, "occlusion": occlusion}, at)

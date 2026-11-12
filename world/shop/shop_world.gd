@@ -24,7 +24,7 @@ const PLACEMENTS: Array[Dictionary] = [
 			"BoutiqueInterior/BoutiqueShelves/OutfitShelves/Stock06", "BoutiqueInterior/BoutiqueShelves/OutfitShelves/Stock07", "BoutiqueInterior/BoutiqueShelves/OutfitShelves/Stock08",
 			"BoutiqueInterior/BoutiqueShelves/OutfitShelves/Stock00", "BoutiqueInterior/BoutiqueShelves/OutfitShelves/Stock02", "BoutiqueInterior/BoutiqueShelves/OutfitShelves/Stock09"]},
 	{"id": "ponyville:boutique:accessories", "anchor": "RNLScenery/Central/Boutique/rarityboutique_01/BoutiqueRoomFrame/UsableBoutique", "at": Vector3.ZERO, "columns": 3, "counter": true,
-		"items": ["wear:scarf:0", "wear:scarf:1", "wear:beanie:4", "wear:sunhat:2", "wear:socks:5", "wear:socks:3", "wear:spa-necklace:0", "wear:bowtie:0", "wear:necktie:0", "wear:nurse-cap:0", "wear:cat-eye-glasses:0", "wear:aviators:0", "wear:goggles:0", "wear:headphones:0"], "spacing": Vector2(0.7, 0.62),
+		"items": ["wear:scarf:0", "wear:4cc-scarf:0", "wear:beanie:4", "wear:scarf:1", "wear:socks:5", "wear:plain-socks:3", "wear:spa-necklace:0", "wear:bowtie:0", "wear:necktie:0", "wear:nurse-cap:0", "wear:cat-eye-glasses:0", "wear:aviators:0", "wear:goggles:0", "wear:headphones:0"], "spacing": Vector2(0.7, 0.62),
 		"mounts": ["BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock03", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock04", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock07",
 			"BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock06", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock00", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock01", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock05", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock08", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock02", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock10", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock09", "BoutiqueInterior/BoutiqueShelves/AccessoryShelves/Stock11", "BoutiqueInterior/BoutiqueShelves/OutfitShelves/Stock10", "BoutiqueInterior/BoutiqueShelves/OutfitShelves/Stock11"]},
 	{"id": "ponyville:trixie:stall", "anchor": "TrixieWagon", "at": Vector3(2.4, 0, -3.2), "columns": 2,
@@ -32,7 +32,7 @@ const PLACEMENTS: Array[Dictionary] = [
 	# Trimmed to things with a use (dev 2026-10-14: "do we NEED 100 little things"): the picnic
 	# blanket and a pillow. The rest of the old stock is listed in world/shop/archived_stock.json.
 	{"id": "ponyville:market:goods", "anchor": "RNLScenery/Town/Market/tent_friagram_lightbrown_01", "at": Vector3(-0.8, 0.95, 6.45), "counter": true, "columns": 1,
-		"items": ["goods:folded-blanket", "goods:pillow", "goods:camera"], "spacing": Vector2(0.7, 0.62)},
+		"items": ["goods:folded-blanket", "goods:pillow", "goods:camera", "goods:canvas"], "spacing": Vector2(0.7, 0.62)},
 	# Writing paper and the quill (world/letters/, docs/LETTERS_PLAN_2026_10_29.md): a narrow column on
 	# the same goods counter, between the goods above and the cooking stall's food (x 0.35 and up).
 	# Placed from the layout numbers only; it still wants a look in a render.
@@ -53,7 +53,9 @@ const PLACEMENTS: Array[Dictionary] = [
 	# The apple sapling (P5, world/items/apple_sapling.gd) is appended after the keg, so the saved
 	# stock key "0:goods:cider-keg" stays valid.
 	{"id": "sweet-apple-acres:farm:cider", "anchor": "@orchard", "at": Vector3(1.6, 0, 0.7), "columns": 2,
-		"items": ["goods:cider-keg", "goods:apple-sapling"], "spacing": Vector2(0.62, 0.55)},
+		# The spray bottle (W1-MECHANICS hook 1: it waters the sapling) goes last, so the saved stock
+		# keys 0:goods:cider-keg and 1:goods:apple-sapling stay valid.
+		"items": ["goods:cider-keg", "goods:apple-sapling", "spray-bottle"], "spacing": Vector2(0.62, 0.55)},
 ]
 var game: Node
 var _stock: Dictionary = {}

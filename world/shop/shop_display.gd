@@ -102,7 +102,10 @@ static func spawn_item(parent: Node3D, id: String, surface: Transform3D) -> Rigi
 	item.top_level = true
 	parent.add_child(item)
 	item.global_transform = surface.orthonormalized()
-	var bounds: AABB = visual.bounds
+	# A catalogue tool (shop_items.gd TOOLS) is its own scene with no `bounds`: its known box, lifted
+	# so its base sits on the surface.
+	var bounds: AABB = visual.bounds if "bounds" in visual else ITEMS.tool_bounds(id)
+	if not "bounds" in visual: item.global_transform = item.global_transform.translated_local(Vector3.UP * -bounds.position.y)
 	var shape := CollisionShape3D.new(); var box := BoxShape3D.new()
 	box.size = bounds.size.max(Vector3.ONE * 0.02); shape.shape = box; shape.position = bounds.get_center()
 	item.add_child(shape)

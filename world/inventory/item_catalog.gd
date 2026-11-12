@@ -24,6 +24,11 @@ const ITEMS := {
 	"photo-journal": {"name": "Photo journal", "description": "Every photo you take lands here. Open it to look through them; hold the click or trigger on one to print it for 1 bit.", "stack": 1},
 	"river-fish": {"name": "River fish", "description": "Caught from Ponyville's river.", "stack": 16},
 	"hoof-file": {"name": "Hoof file", "description": "The day spa's hoof file. Rub it across a raised front hoof. It stays at the spa.", "stack": 1},
+	# Snow play and raking (W2-SEAS-F, rows from world/seasons/data/snow_items.json); `scene` names
+	# their own scene outside world/inventory/assets/.
+	"coal": {"name": "Lump of coal", "description": "Hold it to a snowman's face for an eye, or to its middle for a button.", "stack": 16, "scene": "res://world/props/seasons/coal.tscn"},
+	"stick": {"name": "Stick", "description": "A bare twig. Hold it to a snowman's side for an arm.", "stack": 8, "scene": "res://world/props/seasons/stick.tscn"},
+	"rake": {"name": "Leaf rake", "description": "Drag it through scattered leaves to rake them back into a pile. Desktop: hold click and sweep.", "stack": 1, "scene": "res://world/props/seasons/rake.tscn"},
 }
 ## Letters (world/letters/, docs/LETTERS_PLAN_2026_10_29.md) are "letter:<row id>", one per letter,
 ## stack 1; the name comes from the letter's row in the world's post (letter_post.gd). The id
@@ -98,6 +103,7 @@ static func scene(id: String) -> PackedScene:
 	if is_art(id): return load(ART_SCENE) as PackedScene
 	if FOOD.has(id): return FOOD.scene(id)
 	if SHOP.has(id): return SHOP.scene(id)
+	if ITEMS.has(id) and (ITEMS[id] as Dictionary).has("scene"): return load(str(ITEMS[id].scene)) as PackedScene
 	return load("res://world/inventory/assets/%s.tscn" % id) if ITEMS.has(id) else null
 ## Baked renders of the items themselves (tools/inventory/bake_item_icons.gd, dev 2026-10-01),
 ## before the drawn fallbacks below.

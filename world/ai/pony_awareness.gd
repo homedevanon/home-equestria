@@ -12,6 +12,14 @@ const NOTICED_WEATHER := ["mist", "fog", "drizzle", "sunshower", "rain", "storm"
 const PLACES := preload("res://world/navigation/place_directory.gd")
 ## Pegasus-only cloud floors (the Cloudominium).
 const CLOUD_LAYER := 1 << 18
+## Season facts (M-SEA-19, W2-SEAS-H 2026-11-08): one short "Around you" line, only when notable.
+const SEASON_WORLD := preload("res://world/life/day/actions/seasonal/season_world.gd")
+const DEEP_SNOW := 0.6
+const FRESH_SNOW := 0.5
+const SNOWMAN_RANGE := 20.0
+const PILE_RANGE := 12.0
+## "Anon had to duck under the low doorway" (M-ACT-05, W2-AI-FEATURES hook 1).
+const MIND_YOUR_HEAD := preload("res://world/ai/awareness_events/mind_your_head.gd")
 var _observations: Dictionary = {}
 var last_ray_count := 0
 var held_items: Callable
@@ -29,6 +37,10 @@ static func forward(node: Node3D) -> Vector3:
 	if node.has_method("awareness_forward"): return node.awareness_forward()
 	return -node.global_basis.z.normalized()
 
+
+## A new world's directors make new awareness: its ducks and who heard of them start fresh.
+func _init() -> void:
+	MIND_YOUR_HEAD.reset()
 
 func clear_path(observer: Node3D, target: Vector3, target_node: Node = null) -> bool:
 	var origin := point(observer)
@@ -128,6 +140,57 @@ static func in_doorway(observer: Node3D) -> bool:
 		if box.size != Vector3.ZERO and box.grow(0.3).has_point(observer.global_position + Vector3.UP * .2): return true
 	return false
 
+## The player's rig body (desktop, seated VR or room-scale "Body") from his head/camera: the node
+## that owns `seat` (desktop_player.gd, xr_grounded_body.gd), or null.
+static func player_body(head: Node) -> Node:
+	var node := head
+	for i in 5:
+		if node == null: return null
+		if "seat" in node: return node
+		var body := node.get_node_or_null("Body")
+		if body != null and "seat" in body: return body
+		node = node.get_parent()
+	return null
+
+
+## How the player rests, from the game's own seat state: "lying in bed", "sitting on the couch",
+## "lying on the grass", "sitting on the ground"... or "" when he is on his feet. Furniture is
+## named only here, while he is on it (M-AI-03).
+static func player_posture(head: Node) -> String:
+	var body := player_body(head)
+	if body == null: return ""
+	var seat_value: Variant = body.get("seat")
+	if is_instance_valid(seat_value) and seat_value is Node3D:
+		var seat: Node3D = seat_value
+		var lying: bool = body.has_meta("couch_sleeping") and body.get_meta("couch_sleeping") == true
+		var pose := "lying" if lying else "sitting"
+		var furniture: Variant = seat.get_meta("couch") if seat.has_meta("couch") else null
+		var rest := str(furniture.call("rest_word")) if is_instance_valid(furniture) and (furniture as Object).has_method("rest_word") else ""
+		if rest == "bed": return "lying in bed" if lying else "sitting on the bed"
+		if not rest.is_empty(): return pose + " on the " + rest
+		var node: Node = seat
+		for i in 3:
+			if node == null: break
+			if node.has_meta("ai_label"):
+				var label := str(node.get_meta("ai_label")).strip_edges().left(60)
+				if label.is_empty(): break
+				var lower := label.to_lower()
+				var plain := lower.begins_with("a ") or lower.begins_with("an ") or lower.begins_with("the ") or label[0] != lower[0]
+				return pose + (" on " if plain else " on the ") + label
+			node = node.get_parent()
+		if seat.has_meta("floor_sit") and seat.get_meta("floor_sit") == true: return pose + " on the floor"
+		return "lying down" if lying else "sitting on a seat"
+	var surface: Variant = body.get_meta("shared_nap_surface") if body.has_meta("shared_nap_surface") else null
+	if is_instance_valid(surface) and (surface as Object).has_method("rest_word"):
+		return "lying on the " + str(surface.call("rest_word"))
+	var driver: Variant = body.get("form_driver")
+	if is_instance_valid(driver) and (driver as Object).has_method("ground_posture"):
+		match str(driver.call("ground_posture")):
+			"sit": return "sitting on the ground"
+			"lie_down": return "lying on the ground"
+	return ""
+
+
 func sample(id: String, observer: Node3D, characters: Dictionary, player: Node3D, now: float, hearing_range := HEARING_RANGE, include_present := false) -> Dictionary:
 	last_ray_count = 0
 	var position := observer.global_position
@@ -167,6 +230,8 @@ func sample(id: String, observer: Node3D, characters: Dictionary, player: Node3D
 		var to_her := point(observer) - point(player); to_her.y = 0.0
 		var gaze := -player.global_basis.z; gaze.y = 0.0
 		sample.player_looking_at_you = to_her.length() > 0.2 and gaze.length_squared() > 0.0001 and gaze.normalized().dot(to_her.normalized()) > 0.8
+		# Seen sitting or lying (and on what), it replaces his motion words (player bug board #52).
+		sample.player_posture = player_posture(player) if sample.player_visible else ""
 	# Read current hands for each observation. Never carry an earlier held item into
 	# a later prompt, and never infer an unseen item merely from hearing the player.
 	sample.player_items = []
@@ -275,6 +340,8 @@ func sample(id: String, observer: Node3D, characters: Dictionary, player: Node3D
 		sample.ground="on the house floor"
 	else:
 		sample.footing = footing(observer, position)
+		var around := season_note(observer.get_tree(), position)
+		if not around.is_empty(): sample.season_note = around
 	# Luna's dream (world/life/luna_dream.gd, player report 2026-10-25): the moon stands far above
 	# the world, so the town's region, weather, landmarks and "metres above the ground" footing
 	# told her Anon was not on the moon. Only a pony inside the dream's MoonDream scene gets this.
@@ -289,6 +356,7 @@ func sample(id: String, observer: Node3D, characters: Dictionary, player: Node3D
 		sample.ground = "on the moon's grey, cratered dust"
 		sample.sky = "the black sky of space, full of stars; no air, wind or weather here"
 		sample.erase("season")
+		sample.erase("season_note")
 	var events: Array = previous.get("events", []).filter(func(event): return now - event.time < EVENT_LIFETIME)
 	# Recent events are timed in real seconds; a sleep skips game hours in a few of them (player bug
 	# board #36: a pickup before a full day's sleep read as "18 s ago"). A jump forgets them.
@@ -310,6 +378,8 @@ func sample(id: String, observer: Node3D, characters: Dictionary, player: Node3D
 		var after: Array = sample.visible.map(func(peer): return peer.id)
 		for peer: Dictionary in previous.visible:
 			if peer.id not in after: events.append({"time": now, "text": "%s went out of view (location unknown)." % peer.name})
+	var duck: Dictionary = MIND_YOUR_HEAD.event_for(id, observer, player, now, bool(sample.player_visible))
+	if not duck.is_empty(): events.append(duck)
 	sample.events = events.slice(maxi(0, events.size() - 6))
 	_observations[id] = sample
 	return sample
@@ -385,12 +455,15 @@ func describe(sample: Dictionary, player_name: String, now: float) -> PackedStri
 	lines.append("- Your body: %s." % body)
 	if sample.get("cradle", "") == "drowsy": lines.append(CRADLE_REST.DROWSY_LINE)
 	if str(sample.get("sky", "")) != "": lines.append("- Light: %s." % sample.sky)
+	if str(sample.get("season_note", "")) != "": lines.append("- Around you: %s." % sample.season_note)
 	if sample.player_visible or sample.player_audible:
-		var motion := "standing still"
+		var motion := str(sample.get("player_posture", ""))
 		var speed: float = float(sample.get("player_speed", 0.0))
 		var closing: float = float(sample.get("player_closing", 0.0))
-		if speed > 4.5: motion = "running " + ("toward you" if closing > 1.0 else ("away from you" if closing < -1.0 else "past you"))
+		if not motion.is_empty(): pass
+		elif speed > 4.5: motion = "running " + ("toward you" if closing > 1.0 else ("away from you" if closing < -1.0 else "past you"))
 		elif speed > 0.4: motion = "walking " + ("toward you" if closing > 0.3 else ("away from you" if closing < -0.3 else "past you"))
+		else: motion = "standing still"
 		var gaze := "looking at you" if sample.get("player_looking_at_you", false) else ("looking at " + str(sample.player_facing) if str(sample.get("player_facing", "")) != "" else "looking elsewhere")
 		# Both flags true is the usual case and needs no words (2026-10-22 token diet).
 		var reach := "" if sample.player_visible and sample.player_audible else (" Heard, not seen." if sample.player_audible else " Seen, but not within unobstructed speaking range.")
@@ -422,3 +495,23 @@ func describe(sample: Dictionary, player_name: String, now: float) -> PackedStri
 	if sample.get("hoof_held",false): lines.append("- The player is holding one of your hooves; your other legs support you.")
 	for event: Dictionary in sample.events: lines.append("- %.0f s ago: %s" % [maxf(0.0, now - event.time), event.text])
 	return lines
+
+
+## Outdoors only, and only what stands out: fresh or deep snow where she is, a snowman Anon built
+## close by (W2-SEAS-F snowmen: group "snowmen", `by` == "player"), leaf piles round her
+## in autumn (W2-SEAS-E LeafPiles.piles_near(at, radius)). "" most of the time. A few node
+## reads per sample (10 Hz round robin, only while Anon is about); no rays.
+static func season_note(tree: SceneTree, at: Vector3) -> String:
+	var seasons := SEASON_WORLD.state(tree)
+	if seasons == null: return ""
+	var facts := PackedStringArray()
+	var snow := SEASON_WORLD.snow_here(tree, at)
+	if snow >= 0.3 and SEASON_WORLD.amount(tree, "snow_fresh") >= FRESH_SNOW: facts.append("fresh snow on the ground")
+	elif snow >= DEEP_SNOW: facts.append("deep snow on the ground")
+	if SEASON_WORLD.player_snowman(tree, at, SNOWMAN_RANGE).is_finite(): facts.append("a snowman Anon built nearby")
+	if SEASON_WORLD.amount(tree, "leaf_litter") > 0.0:
+		var piles := SEASON_WORLD.feature(tree, "LeafPiles", "leaf_piles")
+		var near: Variant = piles.call("piles_near", at, PILE_RANGE) if piles != null and piles.has_method("piles_near") else []
+		if near is Array and not (near as Array).is_empty():
+			facts.append("piles of fallen leaves")
+	return "; ".join(facts)

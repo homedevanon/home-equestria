@@ -20,6 +20,15 @@
 		"landmark:rarityboutique_01": ["ponyville:boutique:accessories"],
 		"landmark:sugarcube_corner": ["ponyville:sugarcube:bakery", "ponyville:sugarcube:pastries"],
 		"landmark:kiosk_01_01": ["ponyville:fair:regional"],
-		"landmark:kiosk_02_01": ["ponyville:fair:drinks"]
+		"landmark:kiosk_02_01": ["ponyville:fair:drinks"],
+		"landmark:ponyville_market": ["ponyville:market:produce", "ponyville:market:pantry"]
+	},
+	"art_buyers": {
+		"_what": "Shopkeepers who buy Anon's finished paintings (world/painting/art_buyer.gd, M-ACT-03): when she stands within `radius` m of her shop's landmark and Anon is beside her holding a painting, she offers a price (market.gd buy_offer, two minutes); handing it to her completes the sale. price: [min, max] bits, fixed per painting.",
+		"rarity": {"landmark": "landmark:rarityboutique_01", "radius": 14.0, "price": [15, 45]}
+	},
+	"goods": {
+		"_what": "Proposed shop goods not yet in world/shop/shop_items.gd GOODS (W2-LIFE-ACTIVITIES hook note): row = [name, longest edge in m, price, description], its model, briefcase stack and the display that stocks it.",
+		"canvas": {"row": ["Blank canvas", 0.62, 5, "A fresh canvas for your easel. Hold it to an easel's empty frame to put it up."], "model": "res://world/painting/models/canvas_portrait.glb", "stack": 5, "display": "ponyville:market:goods"}
 	}
 }

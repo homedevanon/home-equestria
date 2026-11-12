@@ -54,7 +54,7 @@ func _ready() -> void:
 		for part: Array in kind_parts:
 			var mm := MultiMesh.new()
 			mm.transform_format = MultiMesh.TRANSFORM_3D
-			mm.mesh = part[0]
+			mm.mesh = _season_mesh(part[0], kind in GRASS_ONLY) if LOOK_SEASON_PLANTS and kind in SEASON_PLANTS else part[0]
 			mm.instance_count = rows.size()
 			for i in rows.size():
 				mm.set_instance_transform(i, _placement(rows[i]) * (part[1] as Transform3D))
@@ -68,12 +68,49 @@ func _ready() -> void:
 				for i: int in rows.size(): _remember_garden(str(rows[i].id), mm, i, _placement(rows[i]).origin)
 		for row: Dictionary in rows:
 			if bool(row.get("blocking", false)): _collider(body, row, kind)
+	# The town's own trees answer "where are the trees" (falling leaves, leaf piles, birds).
+	var habitat := preload("res://world/foliage/town_tree_habitat.gd").new()
+	habitat.name = "TownTreeHabitat"
+	add_child(habitat)
+	habitat.setup([get_parent().get_node_or_null("TownTrees") if get_parent() != null else null, self])
 	_activity_state = ACTIVITY_STATE.for_node(self)
 	if _activity_state != null: _activity_state.touched.connect(_touch_garden)
 	var activity_visuals := preload("res://world/props/ponyville_kit/kit_state_visuals.gd").new()
 	activity_visuals.name = "ActivityStateVisuals"
 	add_child(activity_visuals)
 	activity_visuals.setup(self, (parsed as Dictionary).get("entries", []))
+
+## Small plants that follow the seasons (kit_plant.gdshader; dev 2026-11-10: they stood summer
+## green on autumn straw and on snow). false brings their plain materials back.
+const LOOK_SEASON_PLANTS := true
+const SEASON_PLANTS := ["grass_tuft_a", "grass_tuft_b", "daisy_clump", "lupin_clump", "sunflower_clump", "rose_bed"]
+## Of those, the ones that are grass and nothing else: all of the plant turns with the ground.
+const GRASS_ONLY := ["grass_tuft_a", "grass_tuft_b"]
+const PLANT_SHADER := preload("res://world/props/ponyville_kit/kit_plant.gdshader")
+var _season_meshes: Dictionary = {}
+
+## A copy of a kit plant's mesh whose plain materials are replaced by the season-aware one,
+## keeping each surface's colour, picture and cut-out. One copy per mesh.
+func _season_mesh(source: Mesh, grass_only := false) -> Mesh:
+	if _season_meshes.has(source): return _season_meshes[source]
+	var copy := source.duplicate() as Mesh
+	for surface: int in copy.get_surface_count():
+		var plain := copy.surface_get_material(surface) as BaseMaterial3D
+		if plain == null: continue
+		var material := ShaderMaterial.new()
+		material.shader = PLANT_SHADER
+		material.set_shader_parameter("albedo_tint", plain.albedo_color)
+		material.set_shader_parameter("has_texture", plain.albedo_texture != null)
+		if plain.albedo_texture != null: material.set_shader_parameter("albedo_texture", plain.albedo_texture)
+		material.set_shader_parameter("vertex_tint", plain.vertex_color_use_as_albedo)
+		material.set_shader_parameter("all_green", grass_only)
+		material.set_shader_parameter("ground_light", 0.65 if grass_only else 0.25)
+		var cut := plain.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR or plain.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_HASH \
+			or plain.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS or plain.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.set_shader_parameter("scissor", (plain.alpha_scissor_threshold if plain.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR else 0.5) if cut else 0.0)
+		copy.surface_set_material(surface, material)
+	_season_meshes[source] = copy
+	return copy
 
 ## The kit's own broadleaf tree (a lumpy painted crown) is replaced by the Grassy trees used
 ## everywhere else (dev 2026-10-17: "the grassy one is the fancy one", the kit one is not).

@@ -13,6 +13,8 @@ extends Node
 ## Created by relationship_runtime.gd setup; polls like celestia_reply.gd.
 const SWOOP := preload("res://world/letters/courier/courier_swoop.gd")
 const MAILBOX := preload("res://world/letters/courier/player_mailbox.gd")
+## M-AI-16: his letters on her doorstep and her kept copies at home (letter_props.gd).
+const PROPS := preload("res://world/letters/courier/letter_props.gd")
 const HOUSE := preload("res://world/buildings/house_interior.gd")
 const CATALOG := preload("res://world/inventory/item_catalog.gd")
 const STATE_KEY := "letter_courier"
@@ -34,6 +36,7 @@ const GIVE_LINES := ["Mail for you!", "Special delivery! It's for you!", "You've
 signal collected(letter_id: String)
 var game: Node
 var mailbox: Node
+var letter_props: Node
 ## Test hook: Callable() -> Node3D, a fresh courier body (default: an instance of DERPY_SCENE).
 var body_factory: Callable
 var _sorties: Array = []
@@ -47,6 +50,10 @@ func setup(host: Node) -> void:
 	mailbox.name = "PlayerMailbox"
 	add_child(mailbox)
 	mailbox.call("setup", self)
+	letter_props = PROPS.new()
+	letter_props.name = "LetterProps"
+	add_child(letter_props)
+	letter_props.call("setup", self)
 	var context := _context()
 	if context != null and context.has_signal("reopened"):
 		context.connect("reopened", func(_world: String) -> void: _reopened())

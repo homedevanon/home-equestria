@@ -29,6 +29,31 @@ var _cruise_start := Vector3.INF
 var _hover_at := Vector3.INF
 var _trail: Node3D
 var _boomed := false
+## A rider she carries (M-LIF-09, W1-PERF-PONY 2026-11-08): the RIDs of his body, hands and
+## whatever he holds. Every obstacle, landing and ground probe of her flight ignores them as it
+## ignores her own body; her probe ball grows with her size and otherwise takes in her rider
+## (Pegasus Ride 2.2.1 switched Anon's colliders off to get round it). A ride sets them on mount
+## with set_rider() and clears them on dismount with set_rider([]).
+var rider_rids: Array[RID] = []
+
+## `nodes`: CollisionObject3D nodes or nodes above them; every CollisionObject3D at or under each
+## is excluded. A held item that sits elsewhere in the tree is passed in its own right.
+func set_rider(nodes: Array) -> void:
+	rider_rids.clear()
+	for node: Variant in nodes:
+		# Validity first: `is` on a freed instance is a runtime error in debug builds.
+		if not (is_instance_valid(node) and node is Node): continue
+		var found: Array[Node] = (node as Node).find_children("*", "CollisionObject3D", true, false)
+		if node is CollisionObject3D: found.append(node)
+		for body: Node in found:
+			var rid := (body as CollisionObject3D).get_rid()
+			if not rider_rids.has(rid): rider_rids.append(rid)
+
+## Her own body and her rider's (rider_rids): what her flight probes never treat as an obstacle.
+func _own_rids() -> Array[RID]:
+	var rids: Array[RID] = [pony.get_rid()]
+	if not rider_rids.is_empty(): rids.append_array(rider_rids)
+	return rids
 ## Tricks a pony can be asked for (world/ai/pony_action_executor.gd): "loop" (loop-de-loop),
 ## "barrel_roll", "circle" (laps over _circle_centre) and "rainboom" (Rainbow Dash only).
 ## The trick runs once the cruise has open sky; `loops` counts how many are left.
@@ -189,7 +214,7 @@ func catch_throw() -> bool:
 	destination = Vector3.INF
 	for distance in [8.0,4.0,12.0,0.0]:
 		var at: Vector3 = home + forward * distance * pony.body_scale
-		var q := PhysicsRayQueryParameters3D.create(at + Vector3.UP,at - Vector3.UP * 8.0,pony.floor_mask | WATER_MASK,[pony.get_rid()])
+		var q := PhysicsRayQueryParameters3D.create(at + Vector3.UP,at - Vector3.UP * 8.0,pony.floor_mask | WATER_MASK,_own_rids())
 		var hit := pony.get_world_3d().direct_space_state.intersect_ray(q)
 		if hit.is_empty(): continue
 		var floor_at := landing_surface(hit.position)
@@ -210,7 +235,7 @@ func landing_surface(at: Vector3, departing_roof:=false) -> Vector3:
 	var centre := Vector3.INF
 	var radius: float = .35 * pony.body_scale
 	for offset in [Vector3.ZERO,Vector3(radius,0,0),Vector3(-radius,0,0),Vector3(0,0,radius),Vector3(0,0,-radius)]:
-		var query := PhysicsRayQueryParameters3D.create(at + offset + Vector3.UP * 1.0, at + offset - Vector3.UP * 2.0, pony.floor_mask | WATER_MASK, [pony.get_rid()])
+		var query := PhysicsRayQueryParameters3D.create(at + offset + Vector3.UP * 1.0, at + offset - Vector3.UP * 2.0, pony.floor_mask | WATER_MASK, _own_rids())
 		var hit := pony.get_world_3d().direct_space_state.intersect_ray(query)
 		if hit.is_empty() or hit.normal.y < cos(deg_to_rad(25.0)): return Vector3.INF
 		if hit.collider is CollisionObject3D and hit.collider.collision_layer & WATER_MASK: return Vector3.INF
@@ -222,7 +247,7 @@ func landing_surface(at: Vector3, departing_roof:=false) -> Vector3:
 func clear_segment(from: Vector3, to: Vector3) -> bool:
 	var shape := SphereShape3D.new(); shape.radius = .7 * pony.body_scale
 	var query := PhysicsShapeQueryParameters3D.new()
-	query.shape = shape; query.collision_mask = pony.floor_mask; query.exclude = [pony.get_rid()]
+	query.shape = shape; query.collision_mask = pony.floor_mask; query.exclude = _own_rids()
 	query.transform = Transform3D(Basis.IDENTITY, from + Vector3.UP * (.8 * pony.body_scale))
 	query.motion = to - from; query.margin = .02
 	var space := pony.get_world_3d().direct_space_state
@@ -237,7 +262,7 @@ func clear_segment(from: Vector3, to: Vector3) -> bool:
 func _separate_contact(delta: float) -> bool:
 	var shape := SphereShape3D.new(); shape.radius = .7 * pony.body_scale
 	var query := PhysicsShapeQueryParameters3D.new()
-	query.shape = shape; query.collision_mask = pony.floor_mask; query.exclude = [pony.get_rid()]
+	query.shape = shape; query.collision_mask = pony.floor_mask; query.exclude = _own_rids()
 	query.transform.origin = pony.global_position + Vector3.UP * (.8 * pony.body_scale)
 	query.margin = .02
 	var contact := pony.get_world_3d().direct_space_state.get_rest_info(query)
@@ -420,7 +445,7 @@ func request_fun() -> bool:
 	for attempt in 8:
 		var direction := heading.normalized().rotated(Vector3.UP, randf_range(-1.2, 1.2)) if heading.length_squared() > .01 else Vector3.FORWARD.rotated(Vector3.UP, randf() * TAU)
 		var at: Vector3 = from + direction * randf_range(22.0, 40.0) * pony.body_scale
-		var q := PhysicsRayQueryParameters3D.create(at + Vector3.UP * 12.0, at - Vector3.UP * 12.0, pony.floor_mask | WATER_MASK, [pony.get_rid()])
+		var q := PhysicsRayQueryParameters3D.create(at + Vector3.UP * 12.0, at - Vector3.UP * 12.0, pony.floor_mask | WATER_MASK, _own_rids())
 		var hit := pony.get_world_3d().direct_space_state.intersect_ray(q)
 		if hit.is_empty(): continue
 		if request(hit.position, randf_range(0.0, 2.0), false, randf_range(6.0, 9.0), false):
@@ -471,7 +496,7 @@ func request_show(moves: Array, centre := Vector3.INF) -> bool:
 	for attempt in 10:
 		var dir := Vector3.FORWARD.rotated(Vector3.UP, TAU * attempt / 10.0 + randf() * 0.5)
 		var ground: Vector3 = around + dir * randf_range(7.0, 11.0) * pony.body_scale
-		var q := PhysicsRayQueryParameters3D.create(ground + Vector3.UP * 14.0, ground - Vector3.UP * 14.0, pony.floor_mask | WATER_MASK, [pony.get_rid()])
+		var q := PhysicsRayQueryParameters3D.create(ground + Vector3.UP * 14.0, ground - Vector3.UP * 14.0, pony.floor_mask | WATER_MASK, _own_rids())
 		var hit := pony.get_world_3d().direct_space_state.intersect_ray(q)
 		if hit.is_empty(): continue
 		if request(hit.position, 600.0, false, SHOW_ALTITUDE, false):
@@ -685,7 +710,7 @@ func request_trick(kind: String, centre := Vector3.INF) -> bool:
 		for attempt in 8:
 			var around := Vector3.FORWARD.rotated(Vector3.UP, TAU * attempt / 8.0 + randf() * .4)
 			var at: Vector3 = centre + around * randf_range(3.0, 5.0) * pony.body_scale
-			var q := PhysicsRayQueryParameters3D.create(at + Vector3.UP * 12.0, at - Vector3.UP * 12.0, pony.floor_mask | WATER_MASK, [pony.get_rid()])
+			var q := PhysicsRayQueryParameters3D.create(at + Vector3.UP * 12.0, at - Vector3.UP * 12.0, pony.floor_mask | WATER_MASK, _own_rids())
 			var hit := pony.get_world_3d().direct_space_state.intersect_ray(q)
 			if hit.is_empty() or Vector2(hit.position.x - from.x, hit.position.z - from.z).length() < 2.0: continue
 			if request(hit.position, 0.0, false, 6.0, false):
@@ -848,7 +873,7 @@ func land() -> void:
 	for offset: Vector3 in probes:
 		var direction := offset.normalized()
 		var probe := pony.global_position + offset
-		var q := PhysicsRayQueryParameters3D.create(probe + Vector3.UP, probe - Vector3.UP * 160.0, pony.floor_mask | WATER_MASK, [pony.get_rid()])
+		var q := PhysicsRayQueryParameters3D.create(probe + Vector3.UP, probe - Vector3.UP * 160.0, pony.floor_mask | WATER_MASK, _own_rids())
 		var hit := pony.get_world_3d().direct_space_state.intersect_ray(q)
 		if hit.is_empty(): continue
 		var spot := landing_surface(hit.position)
@@ -929,11 +954,11 @@ func update(delta: float) -> void:
 			# A short hop never climbs: the show point is SHOW_ALTITUDE over the ground beneath her
 			# (or above her, if a roof or tree is lower), and she rises there before the first figure.
 			var here: Vector3 = _hover_at if _hover_at.is_finite() else pony.global_position
-			var q := PhysicsRayQueryParameters3D.create(here + Vector3.UP * 2.0, here - Vector3.UP * 60.0, pony.floor_mask | WATER_MASK, [pony.get_rid()])
+			var q := PhysicsRayQueryParameters3D.create(here + Vector3.UP * 2.0, here - Vector3.UP * 60.0, pony.floor_mask | WATER_MASK, _own_rids())
 			var below := pony.get_world_3d().direct_space_state.intersect_ray(q)
 			var ground_y: float = (below.position as Vector3).y if not below.is_empty() else here.y - 2.0
 			var want := Vector3(here.x, ground_y + SHOW_ALTITUDE * pony.body_scale, here.z)
-			var up := PhysicsRayQueryParameters3D.create(here + Vector3.UP * 0.5, want + Vector3.UP * 2.0, pony.floor_mask, [pony.get_rid()])
+			var up := PhysicsRayQueryParameters3D.create(here + Vector3.UP * 0.5, want + Vector3.UP * 2.0, pony.floor_mask, _own_rids())
 			var ceiling := pony.get_world_3d().direct_space_state.intersect_ray(up)
 			if not ceiling.is_empty(): want.y = (ceiling.position as Vector3).y - 2.5 * pony.body_scale
 			_show_point = want; _hover_at = want

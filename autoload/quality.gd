@@ -85,6 +85,7 @@ const CONFIG := {
 	#   zone_resident_budget   detailed zones kept resident [zone_manager]
 	#   crowd_hero_distance/crowd_near_distance/crowd_far_divisor  pony tiers and FAR logic rate [pony_crowd]
 	#     (Low..Ultra FAR decide every 6th step, 10 Hz, since 2026-10-13: their motion still runs every step)
+	#   season keys            see SEASON_CONFIG below (merged into every tier)
 	Preset.VERY_LOW: {
 		# 1.5 km: the valley and the town; Canterlot and the far ranges sit in the fog.
 		"draw_distance": 600.0,
@@ -408,6 +409,37 @@ const CONFIG := {
 	},
 }
 
+## Seasonal feature knobs per tier, Very Low .. Ultra (seasons design 6.9). One table instead of
+## five dictionary rows so the tiers stay side by side; get_config/get_value merge it into the
+## tier. Consumers read these with their own defaults, so a missing key never blocks them:
+##   season_particle_scale  falling leaves/petals amount [world/seasons/season_particles]
+##   snow_trails            trail image size in px, 0 = off [world/seasons/snow_trail]
+##   leaf_piles             most live autumn leaf piles [world/seasons/leaf_piles]
+##   roof_snow              snow on roofs and props, false = terrain only [season shader include users]
+##   wet_surfaces/puddles   wet darkening and rain rings / standing puddles [snow_trail, ice_slabs, ground_contact_audio]
+##   water_ice_look         "flat" plain ice colour or "full" cracks and detail [world/seasons/ice_slabs]
+##   bare_tree_mode         "vertex_collapse" at every tier; the bare impostor atlas for Ultra waits on
+##                          the dev's call (D-03), so distant bare trees stay hash-thinned impostors
+## A standalone headset (Quest) always reads the Very Low column, whatever tier the player picks:
+## seasons are scenery cost on an 8 GB shared-memory device. The raw values here are the tier's;
+## the "Seasonal effects" setting (Full/Reduced/Off) comes on top through season_value().
+const SEASON_CONFIG := {
+	"season_particle_scale": [0.25, 0.5, 0.75, 1.0, 1.0],
+	"snow_trails": [0, 0, 128, 256, 256],
+	"leaf_piles": [4, 8, 16, 24, 32],
+	"roof_snow": [false, true, true, true, true],
+	"wet_surfaces": [false, true, true, true, true],
+	"puddles": [false, false, true, true, true],
+	"water_ice_look": ["flat", "full", "full", "full", "full"],
+	"bare_tree_mode": ["vertex_collapse", "vertex_collapse", "vertex_collapse", "vertex_collapse", "vertex_collapse"],
+}
+## Keys the "Seasonal effects" setting thins: Reduced halves particles and piles, Off zeroes
+## particles, trails and piles. Colours, snow cover, ice and wet looks are kept at every level.
+const SEASON_EFFECT_KEYS := ["season_particle_scale", "snow_trails", "leaf_piles"]
+const SEASON_EFFECT_LEVELS := {"off": 0, "reduced": 1, "full": 2}
+## Quest/Android: season keys come from the Very Low column at every tier (tests flip it).
+var season_force_very_low := OS.has_feature("android")
+
 var preset: int = Preset.HIGH:
 	set(value):
 		var clamped := clampi(value, 0, PRESET_NAMES.size() - 1)
@@ -686,6 +718,8 @@ func _xr_value(key: String, base: Variant) -> Variant:
 
 func get_config() -> Dictionary:
 	var config: Dictionary = CONFIG[preset].duplicate()
+	var tier := season_tier()
+	for key: String in SEASON_CONFIG: config[key] = SEASON_CONFIG[key][tier]
 	if preview_mode:config.merge(PREVIEW_OVERRIDES, true)
 	if preview_mode:config["shadows_enabled"] = preview_shadows_enabled
 	config.merge(user_overrides, true)
@@ -704,7 +738,38 @@ func get_value(key: String, fallback: Variant = null) -> Variant:
 	if user_overrides.has(key):return user_overrides[key]
 	if preview_mode and key == "shadows_enabled":return preview_shadows_enabled
 	if preview_mode and PREVIEW_OVERRIDES.has(key):return PREVIEW_OVERRIDES[key]
+	if SEASON_CONFIG.has(key):return SEASON_CONFIG[key][season_tier()]
 	return CONFIG[preset].get(key, fallback)
+
+
+## The column season keys come from: the preset, or Very Low on a standalone headset.
+func season_tier() -> int:
+	return Preset.VERY_LOW if season_force_very_low else preset
+
+
+## A season key with the "Seasonal effects" setting applied (Settings video/seasonal_effects;
+## `level` 0 off, 1 reduced, 2 full, -1 = read the setting). Plain get_value() returns the
+## tier's own value for consumers that apply season_state.effects_level() themselves.
+func season_value(key: String, fallback: Variant = null, level := -1) -> Variant:
+	if level < 0: level = season_effects_level()
+	return season_effect(key, get_value(key, fallback), level)
+
+
+## The setting as a level: 0 off, 1 reduced, 2 full (also when Settings is absent).
+func season_effects_level() -> int:
+	var settings := get_node_or_null("/root/Settings")
+	if settings == null or not settings.has_method("get_value"): return 2
+	return int(SEASON_EFFECT_LEVELS.get(str(settings.call("get_value", "video/seasonal_effects")), 2))
+
+
+## `value` of season key `key` at effects `level`: Off zeroes particles, trails and piles,
+## Reduced halves particles and piles (piles round up, as world/seasons/leaf_piles.gd does).
+static func season_effect(key: String, value: Variant, level: int) -> Variant:
+	if level >= 2 or key not in SEASON_EFFECT_KEYS: return value
+	if level <= 0: return 0.0 if value is float else 0
+	if key == "season_particle_scale" and (value is float or value is int): return float(value) * 0.5
+	if key == "leaf_piles" and (value is float or value is int): return int(ceil(float(value) * 0.5))
+	return value
 
 
 func preset_name() -> String:
