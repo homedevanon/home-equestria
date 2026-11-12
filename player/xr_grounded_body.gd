@@ -530,7 +530,10 @@ func _seat_by_trigger() -> void:
 	if seating == null or not seating.has_method("player_seat_near"): return
 	var target: Node3D = seating.player_seat_near(hit.position, 0.9, self, hit.collider)
 	if target != null: sit_on(target)
-	elif not is_instance_valid(seat) and hit.position.y < global_position.y + .25 and hand.global_position.y < global_position.y + .4:
+	# A full fist (grip and trigger) is a grab, never a nap: reaching low for a pony's leg lay the
+	# player down in the grass instead (Quest player, 2026-11-12). Trigger alone still lies down.
+	elif not is_instance_valid(seat) and hit.position.y < global_position.y + .25 and hand.global_position.y < global_position.y + .4 \
+			and %XRControllerRight.get_float("grip") < 0.5:
 		preload("res://world/relationships/shared_nap_grass.gd").toggle(self, %XRCamera)
 
 func _set_avatar_seated(value: bool) -> void:

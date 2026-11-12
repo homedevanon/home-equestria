@@ -1,6 +1,6 @@
 # Home: Equestria
 
-A VR (and desktop) life-sim in Ponyville. Current version: **0.3.1.1-maredev** ([what's new](https://github.com/homedevanon/home-equestria/releases/tag/0.3.1.1-maredev)).
+A VR (and desktop) life-sim in Ponyville. Current version: **0.3.1.2-maredev** ([what's new](https://github.com/homedevanon/home-equestria/releases/tag/0.3.1.2-maredev)).
 
 ### New here? Get the Universal Launcher
 
@@ -8,7 +8,7 @@ A VR (and desktop) life-sim in Ponyville. Current version: **0.3.1.1-maredev** (
 |---|---|
 | Windows | [HomeEquestria-Setup-windows.exe](https://github.com/homedevanon/home-equestria/releases/download/setup/HomeEquestria-Setup-windows.exe) |
 | Linux | [HomeEquestria-Setup-linux.x86_64](https://github.com/homedevanon/home-equestria/releases/download/setup/HomeEquestria-Setup-linux.x86_64) (make it executable first: `chmod +x HomeEquestria-Setup-linux.x86_64`) |
-| Quest standalone | The `quest.apk` from the [0.3.1.1-maredev release](https://github.com/homedevanon/home-equestria/releases/tag/0.3.1.1-maredev). Nothing else. |
+| Quest standalone | The `quest.apk` from the [0.3.1.2-maredev release](https://github.com/homedevanon/home-equestria/releases/tag/0.3.1.2-maredev). Nothing else. |
 
 Put the setup where you want the game, then open it. It installs into a `HomeEquestria` folder right next to itself (or press Change), downloads the newest version (about 3 GB), checks every file against the signed release, and can add a desktop shortcut. After that the game updates itself.
 
@@ -24,7 +24,7 @@ On 0.0.4-maredev or newer: press Update on the title screen or in the pause menu
 |---|---|
 | Install by hand on Windows | Windows from MEGA, **or** both `windows.zip` parts from the [0.3.1-maredev release](https://github.com/homedevanon/home-equestria/releases/tag/0.3.1-maredev), then press Update in game |
 | Install by hand on Linux | Linux from MEGA, **or** both `linux.tar.gz` parts from the [0.3.1-maredev release](https://github.com/homedevanon/home-equestria/releases/tag/0.3.1-maredev), then press Update in game |
-| Edit the game from source | `Source code` (or clone the repo) **plus** all three `source-data` zips from the [0.3.1-maredev release](https://github.com/homedevanon/home-equestria/releases/tag/0.3.1-maredev), extracted into the repo root next to `project.godot` (they hold the ground, foliage and other generated data git leaves out) |
+| Edit the game from source | `Source code` (or clone the repo) **plus** all three `source-data` zips from the [0.3.1-maredev release](https://github.com/homedevanon/home-equestria/releases/tag/0.3.1-maredev), extracted into the repo root next to `project.godot` (they hold the ground, foliage and other generated data git leaves out), then `source-data-update.zip` from the [0.3.1.2-maredev release](https://github.com/homedevanon/home-equestria/releases/tag/0.3.1.2-maredev) over them |
 
 MEGA (0.3.1-maredev full game):
 - Windows: https://mega.nz/file/LphQRDCI#NaDL4GSu0c16abynxJ7BKFsOdExiO8dWXlb7Jszz37Q

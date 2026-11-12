@@ -28,10 +28,28 @@ var _wake_armed := false
 var _saved := {}
 var _end := false
 var _space_active := false
+const WAKE_HINT_SECONDS := 12.0
+const WAKE_HINT_AGAIN := 6.0
+## Longest press of the get-up button that counts as a tap (a longer B hold is talking).
+const UP_TAP := 0.6
+var _hint_until := 0.0
+var _up_hold := 0.0
 
 func setup(host: Node) -> void:
 	game = host
 	add_to_group("luna_dream")
+	add_to_group("interaction_hint_sources")
+
+## How to wake up, ahead of the player: for the first moments on the moon, and again after a tap of
+## the get-up button. The dream had no word of it, and a Quest player who held B found no way back
+## and closed the game (2026-11-12).
+func interaction_hint() -> Dictionary:
+	if not active or _time > _hint_until or not is_instance_valid(_surface_mesh) or not is_instance_valid(game): return {}
+	var camera: Camera3D = game._find_camera(game.player)
+	if camera == null: return {}
+	var flat := -camera.global_basis.z; flat.y = 0.0
+	var ahead: Vector3 = camera.global_position + (flat.normalized() if flat.length() > 0.01 else Vector3.FORWARD) * 1.2 - Vector3.UP * 0.15
+	return {"target": _surface_mesh, "text": "Hold A · Wake up" if game.xr_active else "Hold Space · Wake up", "point": ahead, "outline": null, "visible_pick": true}
 
 ## A checkpoint during the dream resumes at the bed, where the real body was left.
 func waking_pose() -> Dictionary:
@@ -64,7 +82,7 @@ func requested(asked: bool) -> bool:
 
 ## The dream itself; returns a fresh cover for the rest of the night.
 func visit(cover: Node) -> Node:
-	active = true; _time = 0.0; _hold = 0.0; _end = false; _wake_armed = false
+	active = true; _time = 0.0; _hold = 0.0; _end = false; _wake_armed = false; _hint_until = 0.0; _up_hold = 0.0
 	var body: Node3D = game.player.get_node("Body") if game.xr_active else game.player
 	var camera: Camera3D = game._find_camera(game.player)
 	_saved = {"feet": Vector3(camera.global_position.x, body.global_position.y, camera.global_position.z), "yaw": camera.global_rotation.y,
@@ -86,6 +104,7 @@ func visit(cover: Node) -> Node:
 	if not is_inside_tree(): return null
 	cover.finish()
 	print("[dream] on the moon with Luna")
+	_hint_until = _time + WAKE_HINT_SECONDS
 	var director: Node = game.get("director")
 	if director != null and is_instance_valid(_luna):
 		if not await SHUTDOWN.seconds(self, 2.0): return null
@@ -138,9 +157,15 @@ func _physics_process(delta: float) -> void:
 	# Hold A (VR) or Space (desktop) to wake up: the sleep button, not push-to-talk. A hold carried
 	# over from falling asleep must be released first.
 	var pressed := Input.is_action_pressed("move_jump")
+	var up := InputMap.has_action("stand_up") and Input.is_action_pressed("stand_up")
 	if game.xr_active:
 		var right: XRController3D = game.player.find_child("XRControllerRight", true, false) as XRController3D
 		pressed = right != null and right.is_button_pressed("ax_button")
+		up = right != null and right.is_button_pressed("by_button")
+	if up: _up_hold += delta
+	else:
+		if _up_hold > 0.0 and _up_hold < UP_TAP: _hint_until = _time + WAKE_HINT_AGAIN
+		_up_hold = 0.0
 	if not pressed: _wake_armed = true
 	_hold = _hold + delta if pressed and _wake_armed else 0.0
 	if _hold > 1.5: _end = true

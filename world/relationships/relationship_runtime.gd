@@ -532,16 +532,26 @@ func _apply_household(id: String) -> void:
 	var previous:Dictionary=_house_signature.get(id,{})
 	var old_house:Node3D=previous.house.get_ref() if previous.get("house")!=null else null
 	if is_instance_valid(old_house) and previous.id!=home_id:
-		old_house.remove_meta("shared_player_home")
-		old_house.remove_meta("player_partner")
-		old_house.set_sleepers(game.population.residents_of(previous.id))
-		var old_bed:=old_house.get_node_or_null("PlayerRest")
-		if old_bed!=null:old_bed.queue_free()
+		# Only the partner who holds the house clears it; a second partner leaving changes nothing.
+		if str(old_house.get_meta("player_partner",""))==id:
+			old_house.remove_meta("shared_player_home")
+			old_house.remove_meta("player_partner")
+			old_house.set_sleepers(game.population.residents_of(previous.id))
+			var old_bed:=old_house.get_node_or_null("PlayerRest")
+			if old_bed!=null:old_bed.queue_free()
 		_house_signature.erase(id)
 	if home_id.is_empty():return
 	for house:Node3D in get_tree().get_nodes_in_group("house_interiors"):
 		if house.place_id()!=home_id:continue
-		if previous.get("instance",0)==house.get_instance_id() and house.get_meta("player_partner","")==id:return
+		var holder:=str(house.get_meta("player_partner",""))
+		if previous.get("instance",0)==house.get_instance_id() and holder==id:return
+		# Two partners can share one house (Vinyl and Octavia, or a Mirror Pool copy of the mare he
+		# lives with). The first keeps the shared bed for as long as she lives here: each used to
+		# take the house back from the other every second, adding one more shared bed node each
+		# time (the Mirror Pool author's report, 2026-11-12).
+		if holder!="" and holder!=id and actors.has(holder) and is_instance_valid(actors[holder]) and str(bonds.record_for(holder).shared_home_id)==home_id:
+			_house_signature[id]={"id":home_id,"house":weakref(house),"instance":house.get_instance_id()}
+			return
 		var residents:Array=game.population.residents_of(home_id)
 		if "player" not in residents:residents.append("player")
 		house.set_meta("shared_player_home",true)
