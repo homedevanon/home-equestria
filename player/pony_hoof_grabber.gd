@@ -2,6 +2,9 @@ extends RefCounted
 ## Shares the existing grip input and visible-hand overrides with torso pickup.
 var owner_node:Node
 var held:Dictionary={}
+## Metres from a pony's origin, per unit of body scale, past which a hand cannot touch her legs
+## (a princess at scale 1 stays well inside; ponies go up to scale 4).
+const FAR:=3.0
 func bind(grabber:Node):owner_node=grabber
 func is_holding(side:String)->bool:return held.has(side) and is_instance_valid(held[side]) and held[side].hoof_hold.active()
 func pressed(side:String)->bool:
@@ -21,6 +24,10 @@ func process(_delta:float)->void:
 		for pony in owner_node.ponies:
 			if not is_instance_valid(pony) or pony.get("hoof_hold")==null:continue
 			if owner_node.is_carrying(pony) or pony.get_meta("cuddle_active",false):continue
+			# No leg is this far from its pony. Without this, candidate() posed the whole skeleton of every pony
+			# in town for each clenched hand each tick (thread report 2026-11-12: about 5,600 a second in town).
+			var far:float=FAR*maxf(1.0,float(pony.get("body_scale")) if pony.get("body_scale")!=null else 1.0)
+			if hand.global_position.distance_squared_to(pony.global_position)>far*far:continue
 			var candidate:Dictionary=pony.hoof_hold.candidate(hand.global_position,distance)
 			if not candidate.is_empty():winner=pony;hit=candidate;distance=hit.distance
 		if winner!=null and winner.hoof_hold.begin(hit,hand.global_position):
