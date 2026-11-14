@@ -157,12 +157,16 @@ func _feet(player: Node3D) -> Vector3:
 
 func _update_riders() -> void:
 	_update_loose()
-	for pony: Node in _riders.duplicate():
+	# A freed entry cannot safely be assigned to a Node or erased by value: the
+	# typed-array validation itself may dereference its old object. Inspect the
+	# Variant first and remove stale slots by index, including after despawns.
+	for i in range(_riders.size() - 1, -1, -1):
+		var pony: Variant = _riders[i]
 		if not is_instance_valid(pony):
-			_riders.erase(pony)
+			_riders.remove_at(i)
 		elif pony.moving_support != frame or not holds(pony.global_position):
+			_riders.remove_at(i)
 			if pony.moving_support == frame: pony.set_moving_support(null)
-			_riders.erase(pony)
 	for navigator: Node in get_tree().get_nodes_in_group("pony_navigators"):
 		var pony: Node3D = navigator.get("pony") as Node3D
 		if pony == null or not pony.has_method("set_moving_support") or pony.moving_support != null: continue
