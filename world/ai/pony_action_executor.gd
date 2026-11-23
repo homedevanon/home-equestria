@@ -42,6 +42,7 @@ var _target_speed := 0.0
 var _target_velocity := Vector3.ZERO
 var _holding_formation := false
 var _formation_side := ""
+var _doorway_follow := preload("res://world/characters/navigation/doorway_follow.gd").new()
 var _follow_lost_seconds := 0.0
 var _follow_best_gap := INF
 var _follow_route := -1
@@ -484,6 +485,7 @@ func _physics_step(delta: float) -> void:
 				_end_move("cancelled", "Companion left walking range", true); return
 		if not target_floor.is_finite():
 			if movement.type == "follow":
+				_doorway_follow.reset()
 				navigator.stay(); _last_goal = Vector3.INF
 				_report(movement, "blocked", "Waiting for target ground support; following retained")
 				return
@@ -526,16 +528,24 @@ func _physics_step(delta: float) -> void:
 			# their motion so she is already where they are heading (dev, 2026-09-15).
 			if movement.type == "follow" and speed > .4:
 				goal += _follow_heading * minf(speed * .35, 1.4)
-		goal.y = target_floor.y
-		var projected: Vector3 = navigator.command_support(goal)
-		if not projected.is_finite() and movement.type == "follow":
-			# A side slot against a wall falls back behind the leader. The planner still
-			# resolves the actual corridor; no direct velocity through the obstacle.
-			goal = formation_point(formation_frame, "behind_far", separation, actor.global_position)
+		if movement.type == "follow" and _doorway_follow.update(get_tree(), target_floor, actor.global_position):
+			goal = _doorway_follow.goal(navigator, target_floor, actor.global_position, separation)
+		else:
 			goal.y = target_floor.y
-			projected = navigator.command_support(goal)
-		if projected.is_finite(): goal = projected
-		if navigator.has_method("command_follow_goal"):goal=navigator.command_follow_goal(goal,target.global_position)
+			var projected: Vector3 = navigator.command_support(goal)
+			if not projected.is_finite() and movement.type == "follow":
+				# A side slot against a wall falls back behind the leader. The planner still
+				# resolves the actual corridor; no direct velocity through the obstacle.
+				goal = formation_point(formation_frame, "behind_far", separation, actor.global_position)
+				goal.y = target_floor.y
+				projected = navigator.command_support(goal)
+			if projected.is_finite(): goal = projected
+			if navigator.has_method("command_follow_goal"):goal=navigator.command_follow_goal(goal,target.global_position)
+		if movement.type == "follow" and not goal.is_finite():
+			navigator.stay()
+			_last_goal = Vector3.INF
+			_report(movement, "blocked", "Waiting for a supported follow position")
+			return
 		var gap := _flat(actor.global_position, goal)
 		var walk_top: float = actor.profile.walk_speed.y if "profile" in actor else .5
 		var ceiling: float = actor.profile.max_travel_speed if "profile" in actor else 4.5
@@ -700,6 +710,7 @@ func _arrived() -> void:
 
 func _route_failed(reason: String) -> void:
 	if movement.get("type") == "follow":
+		_doorway_follow.route_failed()
 		_last_goal = Vector3.INF; _retry_wait = 1.0
 		_report(movement, "blocked", reason + "; will retry following")
 		return
@@ -776,6 +787,7 @@ func _home_house() -> Node3D:
 
 func _end_move(status: String, reason: String, routine := false) -> void:
 	if movement.is_empty(): return
+	_doorway_follow.reset()
 	var owns_navigator: bool = is_instance_valid(navigator) and str(navigator.command_owner) == str(movement.id)
 	if owns_navigator and status=="cancelled" and movement.type in ["sit","lie_down"] and actor.has_method("request_posture"): actor.request_posture("stand")
 	if owns_navigator and status == "cancelled" and actor.get("flight") != null and actor.flight.active(): actor.flight.land()
