@@ -1,6 +1,8 @@
 extends RefCounted
 ## Resolve a house trip into approach, opening and crossing the entrance.
 const HOME=preload("res://world/buildings/house_interior.gd")
+# Same alignment the native follower accepts after a cramped stepping turn.
+const DEPARTURE_ALIGNMENT := deg_to_rad(12.0)
 enum Phase { APPROACH, OPEN, CROSS }
 var home:Node3D
 var entering:=false
@@ -287,7 +289,18 @@ func native_walk(nav:Node,destination:Vector3,house:Node3D=null,final:=Vector3.I
 		# envelope overlaps its corner. Recover through a physically swept short leg,
 		# then resume the existing room route; never teleport or change either shape.
 		var departure:=_departure(nav,house,final)
-		if departure.is_finite(): points.append(departure)
+		if departure.is_finite():
+			# Only the straight step was swept. A walking turn could swing into the
+			# very obstacle that stopped the wider room planner.
+			var direction := (departure - pony.global_position).slide(Vector3.UP)
+			var forward := -pony.global_basis.z.slide(Vector3.UP)
+			if forward.angle_to(direction) > DEPARTURE_ALIGNMENT:
+				nav._halt()
+				pony.face_direction(direction)
+				nav.state = nav.State.MOVING
+				nav.reason = "Turning toward a clear indoor step"
+				return
+			points.append(departure)
 
 	else:
 		_escape_goal=Vector3.INF
@@ -309,16 +322,34 @@ func native_walk(nav:Node,destination:Vector3,house:Node3D=null,final:=Vector3.I
 static func _waypoint(house:Node3D,pony:Node3D,from:Vector3,to:Vector3) -> Vector3:
 	return house.local_waypoint_for(pony,from,to) if house.has_method("local_waypoint_for") else house.local_waypoint(from,to)
 
+## Follow-slot admission must use the same start recovery as native_walk. A body
+## stopped legally beside furniture may overlap the wider planning capsule.
+## Certify its short departure and the remaining authored route before admitting
+## the final slot; normal collision and stair routing still own execution.
+func can_start(nav:Node,house:Node3D,final:Vector3) -> bool:
+	var pony:CharacterBody3D=nav.pony
+	var from:=pony.global_position
+	if from.distance_to(final)<=float(nav.arrival_distance):return true
+	if _waypoint(house,pony,from,final).distance_to(from)>=.05:return true
+	var departure:=_departure(nav,house,final)
+	if not departure.is_finite():return false
+	return _waypoint(house,pony,departure,final).distance_to(departure)>=.05
+
 func _departure(nav:Node,house:Node3D,final:Vector3) -> Vector3:
 	var pony:CharacterBody3D=nav.pony
 	var at:=pony.global_position
-	if _escape_goal.is_finite() and at.distance_to(_escape_goal)>.06: return _escape_goal
+	if _escape_goal.is_finite() and at.distance_to(_escape_goal)>.06:
+		# A door or a peer may have moved into the short leg since it was chosen.
+		if controller_clear(pony,_escape_goal):return _escape_goal
+		_escape_goal=Vector3.INF
 	var now:=Time.get_ticks_msec()
 	if now<_escape_retry_at:return Vector3.INF
 	_escape_retry_at=now+1000
 	_escape_goal=Vector3.INF
 	var holder:CollisionShape3D=pony.get("_collision") as CollisionShape3D
-	if holder==null or holder.disabled or holder.shape==null:return Vector3.INF
+	# Clip tiers disable the body in the physics world. Its shape and transform
+	# still describe the volume that controller_clear sweeps through the room.
+	if holder==null or holder.shape==null:return Vector3.INF
 	var space:=pony.get_world_3d().direct_space_state
 	var angle:=atan2(final.z-at.z,final.x-at.x)
 	for radius:float in [.25,.5,.8]:
@@ -328,7 +359,9 @@ func _departure(nav:Node,house:Node3D,final:Vector3) -> Vector3:
 			if not house.contains(wanted):continue
 			var safe:Vector3=preload("res://world/navigation/roster_placement.gd").support(space,wanted,pony.profile,house,[pony.get_rid()])
 			if not safe.is_finite() or absf(safe.y-at.y)>.15:continue
-			var next:Vector3=house._find_flat_waypoint(safe,final,pony,false) if house.has_method("local_waypoint_for") else house.local_waypoint(safe,final)
+			# The continuation may change storeys. Ask the home's normal stair-aware
+			# route rather than requiring a flat leg all the way to the final target.
+			var next:Vector3=_waypoint(house,pony,safe,final)
 			if next.distance_to(safe)<.05:continue
 			if not controller_clear(pony,safe):continue
 			_escape_goal=safe
