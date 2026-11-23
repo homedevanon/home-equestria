@@ -13,6 +13,7 @@
 #include <godot_cpp/variant/transform3d.hpp>
 #include <godot_cpp/variant/typed_array.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -58,6 +59,9 @@ void PonyColumnSampler::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("sample", "space", "ray", "volume", "chunk", "first_column", "max_columns",
 								 "deadline_usec", "bounds", "blockers", "terrain"),
 			&PonyColumnSampler::sample);
+	// Older exported libraries lack this entry point. Their script uses its matching fallback.
+	ClassDB::bind_method(D_METHOD("sample_terrain_columns", "space", "ray", "volume", "chunk", "first_column",
+								 "max_columns", "deadline_usec", "bounds", "blockers", "terrain"), &PonyColumnSampler::sample);
 }
 
 int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryParameters3D> &p_ray,
@@ -96,6 +100,7 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 	const TypedArray<RID> base_excludes = p_ray->get_exclude();
 	const Vector3 up(0, 1, 0);
 	Time *time = Time::get_singleton();
+	Object *terrain_body = p_terrain ? static_cast<Object *>(p_terrain->get("terrain")) : nullptr;
 	const StringName ceiling_meta("navigation_ceiling");
 	auto blocked = [&blockers](const Vector3 &point) {
 		for (const AABB &box : blockers) {
@@ -138,6 +143,7 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 		p_ray->set_collision_mask(1);
 		double height = top;
 		int64_t found = 0;
+		bool hit_terrain = false;
 		TypedArray<RID> floor_excludes = base_excludes.duplicate();
 		bool excluding = false;
 		for (int attempt = 0; attempt < 6; ++attempt) {
@@ -168,6 +174,9 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 			if (double(normal.y) <= .01) {
 				continue;
 			}
+			if (terrain_body && collider == terrain_body) {
+				hit_terrain = true;
+			}
 			const int64_t slot = column * SPANS + found;
 			a.floor_y.set(slot, position.y);
 			a.slope_deg.set(slot, uint8_t(slope_degrees(double(normal.y))));
@@ -192,31 +201,53 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 				break;
 			}
 		}
-		if (found == 0 && p_terrain != nullptr) {
-			// No physics floor here: the world heightmap is the ground.
-			const double ground = double(p_terrain->call("height_at", Vector3(real_t(x), 0.0f, real_t(z))));
-			if (std::isfinite(ground)) {
-				const Vector3 normal = p_terrain->call("normal_at", Vector3(real_t(x), real_t(ground), real_t(z)));
-				const int64_t slot = column * SPANS;
-				a.floor_y.set(slot, float(ground));
-				a.slope_deg.set(slot, uint8_t(slope_degrees(double(normal.y))));
-				a.water_depth.set(slot, float(max_zero(water_y - ground)));
-				a.flags.set(slot, uint8_t(SOLID | (double(a.water_depth[slot]) > .001 ? WATER : 0)));
-				const double reach = ground + 3.0;
-				p_ray->set_from(Vector3(real_t(x), real_t(ground + .03), real_t(z)));
-				p_ray->set_to(Vector3(real_t(x), real_t(reach < top ? top : reach), real_t(z)));
-				p_ray->set_hit_from_inside(true);
-				const Dictionary ceiling = space->intersect_ray(p_ray);
-				a.headroom.set(slot, ceiling.is_empty() ? std::numeric_limits<float>::infinity()
-														 : float(double(Vector3(ceiling["position"]).y) - ground));
-				p_volume->set_transform(Transform3D(Basis(), Vector3(real_t(x), real_t(ground + .237), real_t(z))));
-				if (!space->intersect_shape(p_volume, 1).is_empty()) {
-					a.headroom.set(slot, 0.0f);
-				}
-				if (blocked(Vector3(real_t(x), real_t(ground + .3), real_t(z)))) {
-					a.headroom.set(slot, 0.0f);
-				}
+		if (!p_terrain || hit_terrain) {
+			continue;
+		}
+		const double ground = double(p_terrain->call("height_at", Vector3(real_t(x), 0, real_t(z))));
+		if (!std::isfinite(ground)) {
+			continue;
+		}
+		// Insert terrain among the two highest physical spans when its collider is absent.
+		const int64_t first = column * SPANS;
+		int64_t index = 0;
+		while (index < found && a.floor_y[first + index] > ground + .025) {
+			++index;
+		}
+		if (index == SPANS) {
+			continue;
+		}
+		const int64_t slot = first + index;
+		if (index < found) {
+			if (a.floor_y[slot] >= ground - .025) {
+				continue;
 			}
+			if (index + 1 < SPANS) {
+				a.floor_y.set(slot + 1, a.floor_y[slot]);
+				a.slope_deg.set(slot + 1, a.slope_deg[slot]);
+				a.water_depth.set(slot + 1, a.water_depth[slot]);
+				a.flags.set(slot + 1, a.flags[slot]);
+				a.headroom.set(slot + 1, std::min(a.headroom[slot], float(ground - a.floor_y[slot])));
+			}
+		}
+		const Vector3 normal = p_terrain->call("normal_at", Vector3(real_t(x), real_t(ground), real_t(z)));
+		a.floor_y.set(slot, float(ground));
+		a.slope_deg.set(slot, uint8_t(slope_degrees(double(normal.y))));
+		a.water_depth.set(slot, float(max_zero(water_y - ground)));
+		a.flags.set(slot, uint8_t(SOLID | (double(a.water_depth[slot]) > .001 ? WATER : 0)));
+		const double reach = ground + 3.0;
+		p_ray->set_from(Vector3(real_t(x), real_t(ground + .03), real_t(z)));
+		p_ray->set_to(Vector3(real_t(x), real_t(reach < top ? top : reach), real_t(z)));
+		p_ray->set_hit_from_inside(true);
+		const Dictionary ceiling = space->intersect_ray(p_ray);
+		a.headroom.set(slot, ceiling.is_empty() ? std::numeric_limits<float>::infinity()
+												 : float(double(Vector3(ceiling["position"]).y) - ground));
+		p_volume->set_transform(Transform3D(Basis(), Vector3(real_t(x), real_t(ground + .237), real_t(z))));
+		if (!space->intersect_shape(p_volume, 1).is_empty()) {
+			a.headroom.set(slot, 0.0f);
+		}
+		if (blocked(Vector3(real_t(x), real_t(ground + .3), real_t(z)))) {
+			a.headroom.set(slot, 0.0f);
 		}
 	}
 	p_chunk->set("floor_y", a.floor_y);

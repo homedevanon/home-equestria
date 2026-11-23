@@ -59,7 +59,9 @@ var _ray := PhysicsRayQueryParameters3D.new()
 ## thread: Godot 4.5 gives only the main thread a space's direct state, and Jolt queries do not lock
 ## bodies. One-line rollback: NATIVE_COLUMNS = false.
 const NATIVE_COLUMNS := true
-var _column_sampler: RefCounted = ClassDB.instantiate("PonyColumnSampler") if NATIVE_COLUMNS and ClassDB.class_exists("PonyColumnSampler") else null
+# A release with an older platform library can still use the corrected script sampler.
+var _column_sampler: RefCounted = ClassDB.instantiate("PonyColumnSampler") if NATIVE_COLUMNS \
+		and ClassDB.class_exists("PonyColumnSampler") and ClassDB.class_has_method("PonyColumnSampler", "sample_terrain_columns") else null
 var _volume := PhysicsShapeQueryParameters3D.new()
 var _room_cache := {}
 var _cancelled := {}
@@ -186,8 +188,8 @@ func _setup_geometry() -> void:
 		hashes.append([mi.global_transform,hash(mi.mesh.get_faces())])
 	# Some columns fall back to Terrain3D when detailed physics is unloaded. Tie those
 	# persisted samples to the terrain import, while leaving collision-only fixtures alone.
-	if is_instance_valid(WorldTerrain.instance) and WorldTerrain.instance.navigation_revision != "":
-		hashes.append(["world_terrain", WorldTerrain.instance.navigation_revision])
+	if is_instance_valid(WorldTerrain.instance):
+		hashes.append(["world_terrain", WorldTerrain.instance.navigation_revision, "merged_ground_v2"])
 	_cache_dir = "user://navigation/walkgrid/%s_%s" % [zone_id,var_to_bytes([CACHE_VERSION,hashes]).hex_encode().sha256_text()]
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_cache_dir))
 	if _prune_worker < 0:
@@ -290,7 +292,7 @@ func _physics_process(delta: float) -> void:
 		if _column_sampler != null:
 			# dev 2026-10-20 multithreading: one native call samples this chunk's columns until the
 			# budget or the per-tick column cap runs out (same rays, parameters and order).
-			sampled = _column_sampler.sample(get_world_3d().direct_space_state, _ray, _volume, chunk, _column,
+			sampled = _column_sampler.sample_terrain_columns(get_world_3d().direct_space_state, _ray, _volume, chunk, _column,
 				mini(WalkGrid.CHUNK_CELLS*WalkGrid.CHUNK_CELLS-_column, 128*6-count), start+budget, bounds, _blockers.values(),
 				WorldTerrain.instance if is_instance_valid(WorldTerrain.instance) else null)
 		if sampled <= 0:
@@ -672,6 +674,8 @@ func _sample_column(chunk: WalkChunk, column: int) -> void:
 	_ray.collision_mask = 1
 	var height := bounds.end.y+5.0
 	var found := 0
+	var terrain := WorldTerrain.instance
+	var hit_terrain := false
 	var base_excludes: Array[RID] = _ray.exclude.duplicate()
 	var floor_excludes: Array[RID] = base_excludes.duplicate()
 	for attempt in 6:
@@ -689,6 +693,7 @@ func _sample_column(chunk: WalkChunk, column: int) -> void:
 			floor_excludes.append(hit.rid)
 			continue
 		if hit.normal.y <= .01: continue
+		if terrain != null and hit.collider == terrain.terrain: hit_terrain = true
 		var slot := column*WalkGrid.SPANS+found
 		chunk.floor_y[slot] = hit.position.y
 		chunk.slope_deg[slot] = ceili(rad_to_deg(acos(clampf(hit.normal.y,-1,1)))-.001)
@@ -707,28 +712,39 @@ func _sample_column(chunk: WalkChunk, column: int) -> void:
 			if box.grow(.18).has_point(hit.position+Vector3.UP*.3): chunk.headroom[slot] = 0.0
 		found += 1
 		if found >= WalkGrid.SPANS: break
-	if found == 0 and is_instance_valid(WorldTerrain.instance):
-		# No physics floor here (unloaded zone, or outside Terrain3D's dynamic collision
-		# radius): the world heightmap is the ground.
-		var ground: float = WorldTerrain.instance.height_at(Vector3(x,0.0,z))
-		if is_finite(ground):
-			var normal: Vector3 = WorldTerrain.instance.normal_at(Vector3(x,ground,z))
-			var slot := column*WalkGrid.SPANS
-			chunk.floor_y[slot] = ground
-			chunk.slope_deg[slot] = ceili(rad_to_deg(acos(clampf(normal.y,-1,1)))-.001)
-			chunk.water_depth[slot] = maxf(0.0,water_y-ground)
-			chunk.flags[slot] = WalkGrid.SOLID | (WalkGrid.WATER if chunk.water_depth[slot] > .001 else 0)
-			# A Terrain3D fallback is still surrounded by real rocks/plants. The lack
-			# of a downward floor hit must not grant clearance through those colliders.
-			_ray.from = Vector3(x, ground + .03, z)
-			_ray.to = Vector3(x, maxf(ground + 3.0, bounds.end.y + 5.0), z)
-			_ray.hit_from_inside = true
-			var ceiling := space.intersect_ray(_ray)
-			chunk.headroom[slot] = ceiling.position.y-ground if not ceiling.is_empty() else INF
-			_volume.transform = Transform3D(Basis.IDENTITY, Vector3(x, ground + .237, z))
-			if not space.intersect_shape(_volume, 1).is_empty(): chunk.headroom[slot] = 0.0
-			for box in _blockers.values():
-				if box.grow(.18).has_point(Vector3(x,ground+.3,z)): chunk.headroom[slot] = 0.0
+	if terrain == null or hit_terrain: return
+	# Outside Terrain3D's collision window a real floor may lie beneath the terrain,
+	# or a bridge may leave a free span below its deck. Merge in descending order.
+	var ground := terrain.height_at(Vector3(x,0,z))
+	if not is_finite(ground): return # Terrain hole or missing region.
+	var first := column*WalkGrid.SPANS
+	var index := 0
+	while index < found and chunk.floor_y[first+index] > ground+.025: index += 1
+	if index == WalkGrid.SPANS: return
+	var slot := first+index
+	if index < found:
+		if chunk.floor_y[slot] >= ground-.025: return # Same floor within the ray's restart offset.
+		if index+1 < WalkGrid.SPANS:
+			chunk.floor_y[slot+1] = chunk.floor_y[slot]
+			chunk.slope_deg[slot+1] = chunk.slope_deg[slot]
+			chunk.water_depth[slot+1] = chunk.water_depth[slot]
+			chunk.flags[slot+1] = chunk.flags[slot]
+			chunk.headroom[slot+1] = minf(chunk.headroom[slot], ground-chunk.floor_y[slot])
+	var normal := terrain.normal_at(Vector3(x,ground,z))
+	chunk.floor_y[slot] = ground
+	chunk.slope_deg[slot] = ceili(rad_to_deg(acos(clampf(normal.y,-1,1)))-.001)
+	chunk.water_depth[slot] = maxf(0.0,water_y-ground)
+	chunk.flags[slot] = WalkGrid.SOLID | (WalkGrid.WATER if chunk.water_depth[slot] > .001 else 0)
+	# Measure clearance at the inserted floor against the same scenery and blockers.
+	_ray.from = Vector3(x, ground + .03, z)
+	_ray.to = Vector3(x, maxf(ground + 3.0, bounds.end.y + 5.0), z)
+	_ray.hit_from_inside = true
+	var ceiling := space.intersect_ray(_ray)
+	chunk.headroom[slot] = ceiling.position.y-ground if not ceiling.is_empty() else INF
+	_volume.transform = Transform3D(Basis.IDENTITY, Vector3(x, ground + .237, z))
+	if not space.intersect_shape(_volume, 1).is_empty(): chunk.headroom[slot] = 0.0
+	for box in _blockers.values():
+		if box.grow(.18).has_point(Vector3(x,ground+.3,z)): chunk.headroom[slot] = 0.0
 
 ## Trail weights of the chunk being painted (terrain_paths.chunk_weights).
 var _trail_chunk: WalkChunk
