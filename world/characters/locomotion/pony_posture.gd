@@ -9,7 +9,8 @@ var progress := 0.0
 var rate := 0.0
 var refusal := ""
 var _wait := 0.0
-var _rise_clear := true
+var _rise_retry := 0.0
+var _rising_on_capsule := false
 var ready := false
 var _last_progress := -1.0
 var _last_slope := Basis.IDENTITY
@@ -96,9 +97,8 @@ func rescale(relative: float) -> void:
 		_standing_shape.radius *= relative
 	_standing_transform.origin *= relative
 	_standing_position *= relative
-	if not active():
-		pony._collision.shape = _standing_shape
-		pony._collision.transform = _standing_transform
+	if not active() or _rising_on_capsule:
+		_restore_standing_collider()
 	_last_source_time = -1.0
 
 ## Land in the native prone pose, then use the ordinary rise animation. This
@@ -137,6 +137,8 @@ func request(value: String) -> bool:
 	pony.stop()
 	return true
 func reset(retain_limits := false) -> void:
+	_rising_on_capsule = false
+	_rise_retry = 0.0
 	intentional_rest=false
 	seated_seconds=0.0
 	_handoff=retain_limits
@@ -144,7 +146,12 @@ func reset(retain_limits := false) -> void:
 	requested="stand"; phase="stand"; progress=0.0; rate=0.0; _last_progress=-1.0;_last_source_time=-1.0
 	soft_sink=0.0;_soft_goal=0.0;_soft_at=Vector3.INF;_soft_top=NAN
 	if pony!=null and is_instance_valid(pony._collision):
-		pony._collision.shape=_standing_shape; pony._collision.transform=_standing_transform
+		_restore_standing_collider()
+
+func _restore_standing_collider() -> void:
+	pony._collision.shape = _standing_shape
+	pony._collision.transform = _standing_transform
+
 func support() -> bool:
 	var center: Dictionary=pony._probe(pony.global_position)
 	var bed:Node3D=MATTRESS.bed_of(center.get("collider")) if not center.is_empty() else null
@@ -177,6 +184,16 @@ func support() -> bool:
 	if not normal.is_finite() or normal.angle_to(Vector3.UP)>deg_to_rad(25.0): normal=Vector3.UP
 	_slope=Basis(Quaternion(Vector3.UP,normal))
 	return true
+func _clearance_query() -> PhysicsShapeQueryParameters3D:
+	var query := PhysicsShapeQueryParameters3D.new()
+	var floor_layers: Variant = pony.get("floor_mask")
+	query.collision_mask = 2 | (int(floor_layers) if floor_layers != null else 1)
+	var excluded: Array[RID] = [pony.get_rid()]
+	for other: PhysicsBody3D in pony.get_collision_exceptions():
+		excluded.append(other.get_rid())
+	query.exclude = excluded
+	return query
+
 func clearance(value: String) -> bool:
 	# A pony on a bench seat was placed there with its room already measured.
 	if pony.has_meta("seated"): return true
@@ -184,15 +201,33 @@ func clearance(value: String) -> bool:
 	# Reserve the whole rise/lower sweep; omit its thin contact band at the floor.
 	var bottom:=maxf(.055,bounds.position.y)
 	var shape:=BoxShape3D.new(); shape.size=Vector3(bounds.size.x+.04,maxf(.1,bounds.end.y-bottom+.03),bounds.size.z+.04)
-	var query:=PhysicsShapeQueryParameters3D.new(); query.shape=shape; query.collision_mask=2|int(pony.get("floor_mask") if pony.get("floor_mask")!=null else 1); query.exclude=[pony.get_rid()]
-	# Bodies she is allowed to overlap (a bench back, a picnic table top) do not block sitting.
-	for other: PhysicsBody3D in pony.get_collision_exceptions(): query.exclude.append(other.get_rid())
+	var query := _clearance_query()
+	query.shape = shape
 	query.transform=pony.global_transform*Transform3D(_slope, _slope*(Vector3(bounds.get_center().x,bottom+shape.size.y*.5,bounds.get_center().z) * pony.body_scale))
 	# Pressed into a mattress, she rises out of the foam first: measure from the bedding's top.
 	query.transform.origin+=Vector3.UP*soft_sink
 	shape.size *= pony.body_scale
 	if not pony.get_world_3d().direct_space_state.intersect_shape(query,1).is_empty(): refusal="Not enough room to lower and stand up"; return false
 	return true
+
+func _can_begin_rise() -> bool:
+	if clip_output: return true
+	if _rise_retry > 0.0: return false
+	if clearance("stand"):
+		refusal = ""
+		return true
+	if requested == "stand" and pony.grounded():
+		var query := _clearance_query()
+		query.shape = _standing_shape
+		query.transform = pony.global_transform * _standing_transform
+		if pony.get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty():
+			_rising_on_capsule = true
+			_restore_standing_collider()
+			refusal = ""
+			return true
+	_rise_retry = .2
+	return false
+
 func _start_clip(name: String, state: String) -> void:
 	clip=name;phase=state;source_time=0.0;_join_time=0.0
 	_initial=pony.corrected_pose.duplicate() if not pony.corrected_pose.is_empty() else pony.profile.rest.duplicate()
@@ -201,16 +236,11 @@ func _start_clip(name: String, state: String) -> void:
 	progress=maxf(progress,.000001)
 
 func update(delta: float) -> void:
+	_rise_retry = maxf(0.0, _rise_retry - delta)
 	_wait-=delta
 	if _wait<=0.0:
 		_wait=.2
-		if clip_output:
-			# No collision body on the clip tiers: nothing to get stuck on while rising, and
-			# the slope measured when she lowered holds while she stays put.
-			_rise_clear=true
-		else:
-			if not support():requested="stand"
-			_rise_clear=clearance("stand")
+		if not clip_output and not support(): requested="stand"
 		_soft_goal=_measure_soft() if kind=="lie_down" and requested=="lie_down" else 0.0
 	_ease_soft(delta)
 	if pony.get("sleeping") == true and kind == "lie_down":
@@ -241,13 +271,12 @@ func update(delta: float) -> void:
 			if next!="stand":
 				kind=next;requested=next;activate_limits(kind);_start_clip(kind,"enter")
 		return
-	if phase=="hold" and requested!=kind:
-		if not _rise_clear:return
-		_start_clip(kind+"_stand","exit")
-	if phase=="enter" and requested!=kind:
-		if not _rise_clear:return
-		phase="reverse"
-	elif phase=="reverse" and requested==kind:phase="enter"
+	if phase in ["hold", "enter"] and requested != kind:
+		if not _can_begin_rise(): return
+		if phase == "hold": _start_clip(kind + "_stand", "exit")
+		else: phase = "reverse"
+	elif phase == "reverse" and requested == kind and not _rising_on_capsule:
+		phase = "enter"
 	var duration:float=LIBRARY.get_animation(clip).length
 	var step:=minf(delta,.25)
 	_join_time+=step
@@ -293,6 +322,9 @@ func apply() -> void:
 		var leg:Dictionary=pony.profile.legs[i];var foot:Dictionary=pony.feet[i]
 		foot.dynamic_sole=leg.sole;foot.target=globals[leg.leaf]*Vector3(leg.sole)
 		foot.valid=false;foot.planted=false;foot.weight=0.;foot.correction_angle=0.
+	# Once a tight rise starts, keep its fitted collider through recovery. A new
+	# sit can begin from stand after recovery, when reset restores normal posture rules.
+	if _rising_on_capsule: return
 	# Keep the complete native transition sweep reserved for safe interruption.
 	var box:AABB=_sweep_bounds[kind]
 	_box.size=Vector3(maxf(.38,box.size.x),maxf(.3,box.end.y),maxf(.38,box.size.z)) * pony.body_scale

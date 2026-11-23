@@ -140,15 +140,19 @@ static func command_follow_goal(nav: Node, goal: Vector3, leader: Vector3) -> Ve
 			candidates.append(Vector3(leader.x + cos(turn) * radius, floor.y, leader.z + sin(turn) * radius))
 		for slot: Vector3 in home.slots():
 			if absf(slot.y - floor.y) < .25 and _flat(slot, leader) <= radius + .5: candidates.append(slot)
-		var from: Vector3 = pony.global_position if home.contains(pony.global_position) else home.inside()
+		var inside: bool = home.contains(pony.global_position)
+		var from: Vector3 = pony.global_position if inside else home.inside()
 		var arrival: float = nav.arrival_distance
 		for candidate: Vector3 in candidates:
 			if not home.contains(candidate) or Vector2(candidate.x - leader.x, candidate.z - leader.z).length() < 1.0: continue
 			var supported: Vector3 = nav._indoor_follow_support(home, candidate, floor.y)
 			if not supported.is_finite(): continue
 			# A free island behind furniture is not a usable follow destination.
-			var next: Vector3 = nav.house_travel._waypoint(home, pony, from, supported)
-			if from.distance_to(supported) > arrival and next.distance_to(from) < .05: continue
+			if inside:
+				if not nav.house_travel.can_start(nav, home, supported): continue
+			else:
+				var next: Vector3 = nav.house_travel._waypoint(home, pony, from, supported)
+				if from.distance_to(supported) > arrival and next.distance_to(from) < .05: continue
 			selected = supported
 			break
 	nav._indoor_follow_cache = {"time": now, "goal": goal, "leader": leader, "result": selected}
