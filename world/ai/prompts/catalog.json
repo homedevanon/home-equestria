@@ -124,10 +124,10 @@
 		{
 			"id": "director_contacts.4bfb989f",
 			"group": "Dialogue rules",
-			"label": "The player has been quiet since your last reply. Sometimes just relish",
+			"label": "An optional contribution during a conversation pause",
 			"file": "world/ai/director_contacts.gd",
 			"placeholders": 0,
-			"text": "The player has been quiet since your last reply. Sometimes just relish the moment with them: comfortable silence is a complete answer, so reply with only [silence], above all if you already asked a question. Speak only with a reason: a few natural words, then wait; never continue a monologue, restart your last topic or invent a project from the scenery. You may bring up something new instead. "
+			"text": "Let your last question stand. Reply with [silence] unless you have something new and specific to share. If you speak, keep it brief and leave the pause itself unremarked. "
 		},
 		{
 			"id": "director_contacts.80d43c76",

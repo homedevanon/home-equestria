@@ -104,7 +104,7 @@ func _on_physical_reaction(kind:String,id:String,deferred:bool=false,summary:=""
 	if kind.begins_with("anon_resting"): event = "Anon is lying down on the %s a few steps from you, resting. If you would like to cuddle with him, say so and use [cuddle]. It is just as fine to leave him be, or only say something." % kind.get_slice(":", 1)
 	if kind == "sprayed": event = "Anon just sprayed you with plain water from a small spray bottle. Your coat is damp where it hit. React briefly in character to the water."
 	if kind == "snowball_hit": event = "Anon just hit you with a snowball; snow is on your coat. React briefly in character: laugh, protest, or promise payback. You may throw one back if your actions allow it."
-	if kind=="quiet":event="The player has been quiet since your last reply. Sometimes just relish the moment with them: comfortable silence is a complete answer, so reply with only [silence], above all if you already asked a question. Speak only with a reason: a few natural words, then wait; never continue a monologue, restart your last topic or invent a project from the scenery. You may bring up something new instead. " + preload("res://world/ai/chatter_topics.gd").seed_line()
+	if kind=="quiet":event="Let your last question stand. Reply with [silence] unless you have something new and specific to share. If you speak, keep it brief and leave the pause itself unremarked. " + preload("res://world/ai/chatter_topics.gd").seed_line()
 	if kind=="farewell":
 		event="The conversation has run its course: "+host._farewell_reason+" Decide for yourself what you do next. Usually you say a short goodbye in your own words and voice, then go about your day (go_to, go_home or resume_routine). You need not say where you are going or why. This is your choice, bedtime included: if you would rather stay with the player (a friend, a good talk, a moment worth staying up for), say so and use [stay] (or [follow: player] if he is walking somewhere). Speak; do not reply with only [silence]."
 		# Another mare's goodbye moments ago: hers must not sound the same (dev 2026-10-26).
@@ -114,7 +114,7 @@ func _on_physical_reaction(kind:String,id:String,deferred:bool=false,summary:=""
 	var runtime: Node = host.get_tree().get_first_node_in_group("encounters")
 	if runtime != null and kind != "farewell" and kind != "quiet": runtime.event(id, kind, event.left(160) if not event.is_empty() else kind.replace("_", " "))
 	var messages:Array=host.characters[id].history.duplicate(true)
-	host._physical_context=host.time_gap_note(id)+("[Your situation, not spoken dialogue] " if kind=="farewell" else "[Observed physical event, not spoken dialogue] ")+event
+	host._physical_context=host.time_gap_note(id)+("[Your situation, not spoken dialogue] " if kind in ["quiet", "farewell"] else "[Observed physical event, not spoken dialogue] ")+event
 	var instruction:=" LESS IS MORE: one or two words, or only [silence], are often enough; longer chatter only when the moment invites it, not after every touch. Do not repeat this instruction."
 	messages.append({"role":"user","content":host._physical_context+instruction})
 	# Contact and handling are the player's doing too: they take the connection.

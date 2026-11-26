@@ -256,6 +256,11 @@ func _ptt_pressed() -> bool:
 	return false
 
 
+## PTT takes the floor before the microphone delivers its first audio block.
+func taking_turn() -> bool:
+	return state == "hearing" or (mode != "off" and _available and _interrupt_held)
+
+
 func _poll_interrupt() -> void:
 	var held := _ptt_pressed()
 	if held and not _interrupt_held and mode != "off" and _available: interrupt_requested.emit()
