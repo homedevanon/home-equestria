@@ -10,9 +10,11 @@ var _patience: Dictionary = {}      # id -> chat length (s) after which she want
 ## Not when they are together at home (dev 2026-09-28: "we are together in our house. she
 ## shouldn't always literally leave"): there a lull just ends the chat and she stays.
 var _farewell_wait := 0.0
-## Mid-conversation lull: after 15–30 s after the last reply, a chance the pony
+## Mid-conversation lull: after 15–30 s with the floor open, a chance the pony
 ## speaks first (once per lull, only while the chat is live and she can hear the player).
 var _lull_wait:=0.0
+## Time the player has actually had to answer, shared by everyone using the voice channel.
+var _floor_quiet_seconds := 0.0
 ## A lull prompt costs a whole dialogue request (~12k tokens). One per pony per chat, and at most
 ## one per LULL_GAP_SECONDS across all ponies: in a group each pony used to get her own lull
 ## 14-19 s after another's (tester capture 2026-10-22).
@@ -137,13 +139,14 @@ func _check_farewells(delta: float) -> void:
 	_farewell_wait = 1.0
 	for id in host._farewell.keys():
 		if host._now() > float(host._farewell[id]): _release(id)
-	if host.state != "idle" or host.group.active() or host._now() < _farewell_next_at: return
+	if _floor_quiet_seconds <= 0.0 or host.state != "idle" or host._now() < _farewell_next_at: return
 	var hours: float = host.get_node("/root/TimeOfDay").hours if host.has_node("/root/TimeOfDay") else 12.0
 	for id in host.characters:
 		if not engaged(id) or host._farewell.has(id) or host.quiet_moment(id) or host._encounter_claimed(id): continue
 		if _leading_player(id): continue
 		var entry: Dictionary = host.characters[id]
-		var quiet: float = host._now() - maxf(float(entry.chat_last), float(entry.get("last_spoken_at", -1e9)))
+		var since_exchange: float = host._now() - maxf(float(entry.chat_last), float(entry.get("last_spoken_at", -1e9)))
+		var quiet := minf(since_exchange, _floor_quiet_seconds)
 		var length: float = host._now() - float(entry.get("chat_since", entry.chat_last))
 		if not _patience.has(id): _patience[id] = host._reaction_rng.randf_range(240.0, 540.0)
 		var reason := ""
@@ -165,10 +168,17 @@ func _check_farewells(delta: float) -> void:
 
 
 func _maybe_contribute(delta:float)->void:
+	# The game and the Board Games director both call this before checking farewells.
+	# Sample every physics tick, even when the next lull check isn't due yet.
+	if host.state != "idle" or host.group.active() or host.speech.taking_turn() \
+			or not host._held_utterance.is_empty() or not host._held_text.is_empty():
+		_floor_quiet_seconds = 0.0
+	else:
+		_floor_quiet_seconds += delta
 	_lull_wait-=delta
 	if _lull_wait>0.0:return
 	_lull_wait=0.5
-	if host.state!="idle" or host.speech.state=="hearing" or host.group.active():return
+	if _floor_quiet_seconds <= 0.0: return
 	if host._now() < _lull_next_at: return
 	# Filling a silence is the game's idea, not the player's: only with AI usage "full".
 	if not preload("res://world/ai/ai_config.gd").background_allowed(host.get("config")): return
@@ -176,10 +186,10 @@ func _maybe_contribute(delta:float)->void:
 		if host._authored_holds(str(id)) or host.quiet_moment(str(id)): continue
 		var entry:Dictionary=host.characters[id]
 		if not entry.has("chat_last"):continue
-		var quiet:float=host._now()-maxf(float(entry.chat_last), float(entry.get("last_spoken_at", -1e9)))
-		if quiet>45.0 or float(entry.get("lull_used",-1.0))==float(entry.chat_last):continue
+		var since_exchange: float = host._now() - maxf(float(entry.chat_last), float(entry.get("last_spoken_at", -1e9)))
+		if since_exchange > 45.0 or float(entry.get("lull_used", -1.0)) == float(entry.chat_last): continue
 		if not entry.has("lull_after"):entry["lull_after"]=host._reaction_rng.randf_range(15.0,30.0)
-		if quiet<float(entry.lull_after):continue
+		if minf(since_exchange, _floor_quiet_seconds) < float(entry.lull_after): continue
 		entry["lull_used"]=entry.chat_last;entry.erase("lull_after")
 		_lull_next_at = host._now() + LULL_GAP_SECONDS
 		host._on_physical_reaction("quiet",id)
