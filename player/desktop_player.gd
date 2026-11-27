@@ -649,8 +649,16 @@ func _update_crouch(delta: float) -> void:
 	var col := $Collision as CollisionShape3D
 	var capsule := col.shape as CapsuleShape3D
 	var target_h := _stand_capsule_height * (CROUCH_RATIO if crouching else 1.0)
-	capsule.height = lerpf(capsule.height, target_h, minf(1.0, CROUCH_LERP * delta))
+	var height := lerpf(capsule.height, target_h, minf(1.0, CROUCH_LERP * delta))
+	# Performance overhaul 2026-11-21: a settled capsule is not rewritten. Every height write
+	# rebuilds the physics shape and every position write re-sends the shape's transform, 60 times
+	# a second while standing still. Under 0.01 mm from the eased value nothing is written.
+	# Rollback: CAPSULE_SETTLED_SKIP = false.
+	if CAPSULE_SETTLED_SKIP and absf(height - capsule.height) < 0.00001 and absf(col.position.y - capsule.height * 0.5) < 0.00001: return
+	capsule.height = height
 	col.position.y = capsule.height * 0.5
+
+const CAPSULE_SETTLED_SKIP := true
 
 
 ## Vertical-only head bob, driven by distance travelled rather than by time, so

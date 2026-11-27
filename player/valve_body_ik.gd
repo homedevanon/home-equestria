@@ -10,6 +10,14 @@ extends SkeletonModifier3D
 ## Targets are plain Node3D markers, driven every frame by anon_body.gd.
 
 const CPU_PROFILE := preload("res://tools/crowd_cpu_profile.gd") # Timed only while an F9 trace records.
+## Rollback (2026-11-18): false records every bone write of a solve for the replay, as before.
+## Measured before: 11 µs a frame for _process_modification -> _modification_step (script profiler,
+## town street, ~470 FPS), mostly the replay's set_bone_pose calls on frames between physics ticks.
+## A bone written twice in one solve (the pelvis: placed, then shifted under the head) is recorded
+## once with its last pose. set_bone_pose only stores the bone's local pose, so the replay leaves
+## every bone exactly as the full list of writes did, with one engine call fewer per frame.
+## Off 2026-11-18: script profiler, street, 8 s: 38.4 ms before, 40.1 ms with the trim (no measurable gain).
+const FRAME_TRIM := false
 @export var pelvis_bone: StringName = &"Hips"
 @export var head_bone: StringName = &"Head"
 @export var head_target: Node3D
@@ -442,5 +450,9 @@ func _write_global(skel: Skeleton3D, bone: int, pose: Transform3D) -> void:
 		return  # keep the bone where it was rather than poison the chain
 	skel.set_bone_pose(bone, local)
 	if input_serial >= 0:
+		var at := _solved_bones.find(bone) if FRAME_TRIM else -1
+		if at >= 0:
+			_solved_poses[at] = local
+			return
 		_solved_bones.append(bone)
 		_solved_poses.append(local)

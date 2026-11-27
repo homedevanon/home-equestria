@@ -159,6 +159,10 @@ func _ready() -> void:
 	_dress_door()
 	_open_wing(house)
 	preload("res://world/interiors/house_finishes.gd").apply(house)
+	# Repainted shell atlas where dev retextured this design (same mesh and UVs, new picture).
+	if house is Node3D: preload("res://world/buildings/repaint/house_repaint.gd").apply(house)
+	# Remodelled exterior trial (off unless --clean-houses=on; dev turned the look down 2026-11-13).
+	if house is Node3D: preload("res://world/buildings/clean/house_clean.gd").apply(house)
 	var terrain_ramp:=house.get_parent().get_node_or_null("TerrainStairApproaches/"+str(house.name))
 	if terrain_ramp!=null:
 		# Instanced prefab children survive a PackedScene bake. Disable the
@@ -170,6 +174,9 @@ func _ready() -> void:
 		var spec:Dictionary=terrain_ramp.get_meta("stair_spec")
 		approach=Vector3(spec.center_x,spec.toe_y,spec.toe_z+.09)
 	_clear_ramp(house, terrain_ramp)
+	# Roof, attic and porch roof stop hiding the room floor from the walk grid (house_nav_ceiling.gd).
+	# Deferred: the house root is still adding its children here (before the bed and furniture).
+	if house is Node3D: Callable(preload("res://world/buildings/house_nav_ceiling.gd"), "apply").call_deferred(self)
 	_place_bed.call_deferred()
 	INTERIOR_RANGE.start_door_detail(self)
 	# The authored roof already has inward-facing surfaces. An extra flat sheet sampled

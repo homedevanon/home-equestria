@@ -41,6 +41,7 @@ static func enter(pony: Node) -> void:
 	var collision: CollisionShape3D = pony._collision
 	if collision != null:
 		collision.disabled = true
+	reseat_on_entry(pony)
 	# A hand-off back to the solver still under way ends here.
 	pony._hero_blend = 1.0
 	pony._overlap_age = -1.0
@@ -76,6 +77,39 @@ static func enter(pony: Node) -> void:
 	var handoff: String = pony.HANDOFF
 	animation.play(handoff if animation.has_animation(handoff) else pony._baked_name(BAKED_GAITS.STAND))
 	animation.advance(0.0)
+
+
+## Thread fix "sunk" (2026-11-19, docs/THREAD_FIX_SUNK_2026_11_19.md): the terrain has collision
+## only in a window around the camera, which a teleport, a fast flight or a ride moves in one step.
+## The solver's body under a pony left outside it falls until the crowd demotes her, up to a quarter
+## second later (0.29 m and 0.34 m measured, a lying and a sitting pony), and the clip tiers then kept
+## her there: they follow no floor while she rests and only floors within 1.5 hip heights while she
+## walks. On the way into the clip tiers a pony under the terrain heightmap with no floor of any kind
+## under her (a cellar, tunnel or deck keeps its floor) and outside every house is put back on it.
+## One heightmap read per demotion; rays only when she is under it. Rollback: ENTER_RESEAT = false.
+const ENTER_RESEAT := true
+## Interpolation and a lying body on a slope keep a resting root a few centimetres either side.
+const ENTER_RESEAT_GAP := 0.12
+
+static func reseat_on_entry(pony: Node) -> void:
+	if not ENTER_RESEAT or not pony.is_inside_tree() or pony._held or pony.motion_paused: return
+	if not is_instance_valid(WorldTerrain.instance): return
+	var body3d := pony as CharacterBody3D
+	var at := body3d.global_position
+	var ground: float = WorldTerrain.instance.height_at(at)
+	if not is_finite(ground) or at.y > ground - ENTER_RESEAT_GAP: return
+	for home: Node in body3d.get_tree().get_nodes_in_group("house_interiors"):
+		if home.has_method("contains") and bool(home.call("contains", at, true)): return
+	var space := body3d.get_world_3d().direct_space_state
+	var exclude: Array[RID] = [body3d.get_rid()]
+	var above := minf(0.3, ground - at.y - 0.02)
+	if not space.intersect_ray(PhysicsRayQueryParameters3D.create(at + Vector3.UP * above, at - Vector3.UP * 0.6, pony.floor_mask, exclude)).is_empty(): return
+	var surface := ground
+	var top := space.intersect_ray(PhysicsRayQueryParameters3D.create(Vector3(at.x, ground + 0.6, at.z), Vector3(at.x, ground - 0.6, at.z), pony.floor_mask, exclude))
+	if not top.is_empty() and not preload("res://world/navigation/roster_placement.gd").building(top.collider): surface = float(top.position.y)
+	body3d.global_position.y = surface
+	body3d.velocity = Vector3.ZERO
+	print("[pony] %s was %.2f m under the ground going onto the clip tier; back on it" % [body3d.name, ground - at.y])
 
 
 ## The solver's last prepared pose as a one-key looping clip in this pony's own library, so

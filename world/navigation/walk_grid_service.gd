@@ -5,7 +5,9 @@ extends Node3D
 signal navigation_ready
 signal navigation_failed(message: String)
 signal rebuild_started
-const CACHE_VERSION := 7
+## 8 (2026-11-19): town house roofs and attics became navigation ceilings (house_nav_ceiling.gd);
+## the town's houses are not in a zone's collider hashes, so cached chunks would keep them as floor.
+const CACHE_VERSION := 8
 const WATER_MASK := 1 << 15
 ## Resident chunks, ~250 KB each (arrays + published view): 384 is ~95 MB and holds a
 ## ~300 m town; 128 thrashed Ponyville's working set. One route still asks for at most
@@ -15,6 +17,17 @@ const WATER_MASK := 1 << 15
 const MAX_CHUNKS := 384
 var max_chunks := MAX_CHUNKS if OS.has_feature("android") else MAX_CHUNKS * 2
 const ROUTE_CHUNKS := 128
+## Route choice from modChad's Pathfinding Fix 1.1.0 (ported 2026-11-20). The coarse chunk corridor
+## scores every 16 m chunk alike, and the exact search then stays inside that band, so a road just
+## outside it is never used. With OPEN_ROUTES a route up to corridor_off_m searches every resident
+## chunk with a larger budget; one that runs out of budget is asked once more inside the corridor.
+## A failed route also grows its chunk set by expand_step per retry up to route_chunks (was 12 and
+## ROUTE_CHUNKS), so a way round a river needs fewer searches. A quality tier that lowered the
+## search limit keeps the corridor. false = routing as before.
+const OPEN_ROUTES := false
+const OPEN_ROUTES_DESKTOP := {"corridor_off_m": 200.0, "open_limit": 400000, "expand_step": 32, "route_chunks": ROUTE_CHUNKS * 2}
+const OPEN_ROUTES_QUEST := {"corridor_off_m": 80.0, "open_limit": 150000, "expand_step": 24, "route_chunks": ROUTE_CHUNKS}
+const BUDGET_REASON := "Search budget reached"
 const SAMPLE_BUDGET_US := 1000
 ## Share of the slice for speculative sampling while no route or spawn waits (2026-10-23 CPU pass:
 ## a cold cache burnt the full 1 ms on every physics step for minutes after load).
@@ -60,6 +73,8 @@ var _ray := PhysicsRayQueryParameters3D.new()
 ## bodies. One-line rollback: NATIVE_COLUMNS = false.
 const NATIVE_COLUMNS := true
 var _column_sampler: RefCounted = ClassDB.instantiate("PonyColumnSampler") if NATIVE_COLUMNS and ClassDB.class_exists("PonyColumnSampler") else null
+## Perf trial grid_parallel (2026-11-24): the sampler on all cores (pony_column_parallel.cpp), --try=grid_parallel.
+const TRY := preload("res://world/perf/try_switch.gd")
 var _volume := PhysicsShapeQueryParameters3D.new()
 var _room_cache := {}
 var _cancelled := {}
@@ -80,6 +95,60 @@ var _derive_base := ""
 var _derive_regions := {}
 ## Chunks sampled while a house door was open; never cached, resampled once it shuts.
 var _door_tainted := {}
+## Perf overhaul 2026-11-21 (lane walk_grid): each chunk's cache file carries its own key
+## (walk_grid_keys.gd: the static shapes under it, the ray range, the terrain texels under it), so
+## a release, a mod or a placed house resamples only the chunks whose ground changed. One file per
+## coordinate in user://navigation/walkgrid/<zone>_chunks/. The key is taken when a chunk is
+## admitted and again when its sampling ends; a chunk is saved only under the key its samples were
+## taken with. Keys come from a registry of static bodies kept up to date through SceneTree
+## node_added / node_removed (version 2: a memoised digest, tens of microseconds; version 1's
+## physics query per key cost 6 to 24 ms in house chunks and regressed the A/B round).
+## Rollback: CHUNK_KEYS = false (the old folder hash); `-- --walk-grid-keys=on|off` overrides it
+## for one launch (A/B and the proofs).
+const CHUNK_KEYS := true
+static var chunk_keys: bool = _chunk_keys_wanted()
+static func _chunk_keys_wanted() -> bool:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--walk-grid-keys="): return arg.ends_with("=on")
+	return CHUNK_KEYS
+const KEYS := preload("res://world/navigation/walk_grid_keys.gd")
+var _keys: RefCounted = KEYS.new() if chunk_keys else null
+## Admitted chunks waiting for their key (state QUEUED until keyed and looked up).
+var _key_queue: Array[Vector2i] = []
+## Key of each resident chunk's current samples ("" = not keyable, never cached).
+var _chunk_keys: Dictionary = {}
+## Keys of chunks evicted this session, reused when they come back (no physics query); dropped
+## for any area a late collider, notify_geometry_changed or a blocker touches.
+var _session_keys: Dictionary = {}
+## Chunks resampled once because their key changed while they were sampled.
+var _key_retried: Dictionary = {}
+## Baked town chunks (walk_grid_bake.gd), {coord: [key, offset, size]}; empty when none ship.
+## Rollback: BAKED_GRID = false.
+const BAKED_GRID := true
+const RESIDENT_BAKED := true
+## _evict(): chunks of every queued route are kept while an unrouted chunk can go.
+const PROTECT_ROUTES := true
+const BAKE := preload("res://world/navigation/walk_grid_bake.gd")
+var _baked: Dictionary = {}
+var _baked_path := ""
+## Counters for the log line ("[walk-grid] <zone> sampling ..." / "quiet ...").
+var _counts := {"sampled": 0, "loaded": 0, "derived_loaded": 0, "baked": 0, "keyed": 0}
+var _was_sampling := false
+var _sampling_since := 0
+## Admission time (msec) of chunks not yet READY, and the first READY_LOG admission-to-ready
+## times with their source, for the "how soon is the ground there" question (statistics.ready).
+var _admitted_at: Dictionary = {}
+var _ready_log: Array = []
+const READY_LOG := 400
+## Late colliders: a static body entering or leaving the tree (an interior streamed in, a house
+## placed or given, a mod's building) is (re)registered with the key registry; resident chunks its
+## bounds touch get a fresh key, and a chunk whose key changed is resampled. Bodies moved in place
+## are not seen here; their owners call notify_geometry_changed() as before.
+## Rollback: LATE_COLLIDERS = false (the registry then only knows the bodies present at start).
+const LATE_COLLIDERS := true
+var _rekey: Dictionary = {}
+## Main-thread floor for registering bodies while the registry is behind (keys wait on it).
+const REGISTER_MIN_US := 400
 ## Native route search (`-- --native-navigation search`, native_navigation_backend.gd). One
 ## search still runs at a time per service; while it runs natively, _native_busy stands in for
 ## _worker. The legacy WalkPlanner stays the default and answers wander searches either way.
@@ -121,7 +190,16 @@ func _ready() -> void:
 	shape.radius = WalkGrid.CELL*.72
 	shape.height = .20
 	_volume.shape = shape
+	if _column_sampler != null and TRY.on("grid_parallel") and _column_sampler.has_method(&"set_parallel"): _column_sampler.set_parallel(true)
 	_setup_geometry()
+	_draw_window_setup()
+	if chunk_keys:
+		_keys.mask = 1 | WATER_MASK
+		_keys.limits = bounds
+		_keys.scan(get_tree().root)
+		if LATE_COLLIDERS:
+			get_tree().node_added.connect(_collider_added)
+			get_tree().node_removed.connect(_collider_removed)
 	ready_for_paths = true
 	navigation_ready.emit()
 
@@ -189,8 +267,27 @@ func _setup_geometry() -> void:
 	if is_instance_valid(WorldTerrain.instance) and WorldTerrain.instance.navigation_revision != "":
 		hashes.append(["world_terrain", WorldTerrain.instance.navigation_revision])
 	_cache_dir = "user://navigation/walkgrid/%s_%s" % [zone_id,var_to_bytes([CACHE_VERSION,hashes]).hex_encode().sha256_text()]
+	# Per-chunk keys: one folder per zone. The old whole-zone hash folders are no longer written,
+	# so the stale-folder prune below removes them once untouched for STALE_CACHE_DAYS, as it did
+	# before. `-- --keep-walkgrid-folders` skips the prune for one launch (A/B rounds against an
+	# older build that still reads those folders).
+	if chunk_keys: _cache_dir = "user://navigation/walkgrid/%s_chunks" % zone_id
+	if chunk_keys and BAKED_GRID and not ("--no-baked-walk-grid" in OS.get_cmdline_user_args()):
+		_baked_path = BAKE.path_for(zone_id)
+		_baked = BAKE.read_index(_baked_path, KEYS.KEY_VERSION)
+	# A town shipped baked stays resident on desktop: the cap covers its whole footprint, so a chunk
+	# loaded once is never evicted and reloaded while routes cross the town (the crowd spot of the
+	# 2026-11-21 whole-game rounds evicted and reloaded about one chunk a step at the 768 cap, and
+	# each change re-snapshot and re-synced the native grid). Costs about 125 KB a chunk held
+	# (walk_grid.md has the measured figure). The Quest keeps its cap. Rollback:
+	# RESIDENT_BAKED = false, or `-- --walk-grid-resident=off` for one launch.
+	if RESIDENT_BAKED and not _baked.is_empty() and not OS.has_feature("android") \
+			and not ("--walk-grid-resident=off" in OS.get_cmdline_user_args()):
+		var a := WalkGrid.chunk_of(WalkGrid.column(bounds.position))
+		var b := WalkGrid.chunk_of(WalkGrid.column(bounds.end))
+		max_chunks = maxi(max_chunks, (b.x - a.x + 1) * (b.y - a.y + 1) + 64)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_cache_dir))
-	if _prune_worker < 0:
+	if _prune_worker < 0 and not ("--keep-walkgrid-folders" in OS.get_cmdline_user_args()):
 		_prune_worker = WorkerThreadPool.add_task(_prune_stale.bind(ProjectSettings.globalize_path("user://navigation/walkgrid"),
 			zone_id + "_", _cache_dir.get_file(), Time.get_unix_time_from_system() - STALE_CACHE_DAYS * 86400.0, _prune_cancel), false, "Walk grid cache prune")
 	_paint_stamp = _paint_signature()
@@ -224,13 +321,19 @@ func _physics_process(delta: float) -> void:
 	if not _jobs.is_empty() or not urgent.is_empty():
 		var wanted: Array[Vector2i] = []
 		var deriving: Array[Vector2i] = []
+		var keying: Array[Vector2i] = []
 		for c in (urgent if _jobs.is_empty() else _jobs[0].chunks):
 			if not grid.chunks.has(c): continue
 			if grid.chunks[c].state == WalkChunk.State.SAMPLING and c in _queue: wanted.append(c)
 			elif grid.chunks[c].state == WalkChunk.State.DERIVING and c in _paint_queue: deriving.append(c)
+			elif grid.chunks[c].state == WalkChunk.State.QUEUED and c in _key_queue: keying.append(c)
 		# Player follows/commands/approaches, spawns: request_path queues them first.
 		var urgent_job := _jobs.is_empty() or bool(_jobs[0].get("priority", false))
-		route_work = not wanted.is_empty() or not deriving.is_empty()
+		route_work = not wanted.is_empty() or not deriving.is_empty() or not keying.is_empty()
+		if not keying.is_empty():
+			if urgent_job: budget = base_budget * 6
+			for c in keying: _key_queue.erase(c)
+			_key_queue = keying + _key_queue
 		if not deriving.is_empty():
 			if urgent_job: budget = base_budget * 6
 			# Keep partial progress, then finish chunks needed by the oldest route
@@ -258,9 +361,33 @@ func _physics_process(delta: float) -> void:
 	# the idle share, as with no route at all (W1/W2-PERF-STEP-OTHER: 466-694 us a step here, about
 	# 55% of all non-pony script time, spent on wander ground while a route waited elsewhere).
 	if not route_work: budget = mini(budget, int(base_budget * IDLE_BUDGET_SHARE))
+	# Register static bodies that came or went; resident chunks they touch get a fresh key, and a
+	# changed key resamples them.
+	if chunk_keys and _keys.busy():
+		_keys.advance(maxi(start + budget, Time.get_ticks_usec() + REGISTER_MIN_US))
+	if chunk_keys:
+		for c: Vector2i in _keys.take_changed():
+			_session_keys.erase(c)
+			if _chunk_keys.has(c): _rekey[c] = true
+	while chunk_keys and not _keys.busy() and not _rekey.is_empty() and Time.get_ticks_usec()-start < budget:
+		var coord: Vector2i = _rekey.keys()[0]
+		_rekey.erase(coord)
+		if grid.chunks.has(coord) and _chunk_keys.has(coord): _check_key(coord)
+	# Key admitted chunks (a memoised digest each), then look them up on disk. Keys wait while the
+	# registry has bodies to read.
+	while not _key_queue.is_empty() and Time.get_ticks_usec()-start < budget and (not _keys.busy() or _session_keys.has(_key_queue[0])):
+		var coord: Vector2i = _key_queue.pop_front()
+		if not grid.chunks.has(coord) or grid.chunks[coord].state != WalkChunk.State.QUEUED: continue
+		if _session_keys.has(coord):
+			_chunk_keys[coord] = _session_keys[coord]
+		else:
+			_chunk_keys[coord] = _chunk_key(coord)
+			_counts.keyed += 1
+		_admit_keyed(coord, grid.chunks[coord], STAGE_DERIVED)
 	# Publish sampled ground before sampling more. A busy town keeps _queue
 	# nonempty for minutes; spending the whole slice there starves DERIVING
 	# chunks, so every resident waits despite the ground already being sampled.
+	var paint_from := Time.get_ticks_usec()
 	while not _paint_queue.is_empty() and Time.get_ticks_usec()-start < budget:
 		var coord := _paint_queue[0]
 		var chunk: WalkChunk = grid.chunks[coord]
@@ -272,14 +399,25 @@ func _physics_process(delta: float) -> void:
 		if (layers.rasters.is_empty() and not chunk.painted and not is_instance_valid(_terrain_paths.data)) or _paint_column == WalkGrid.CHUNK_CELLS*WalkGrid.CHUNK_CELLS:
 			chunk.painted = not layers.rasters.is_empty()
 			chunk.state = WalkChunk.State.READY
+			_note_ready(coord, "baked" if chunk.has_meta("baked") else ("loaded" if chunk.from_cache else "sampled"))
+			_counts["painted"] = int(_counts.get("painted", 0)) + 1
 			chunk.last_used_frame = Engine.get_physics_frames()
-			if _derive_cache and _blockers.is_empty() and not _dynamic_chunks.has(coord) and not _door_tainted.has(coord):
-				_io_queue.append({"kind":"save","chunk":chunk.cache_copy(),"coord":coord,"path":_derived_path(coord)})
+			if _derive_cache and _blockers.is_empty() and not _dynamic_blocks(coord) and not _door_tainted.has(coord):
+				if not chunk_keys:
+					_io_queue.append({"kind":"save","chunk":chunk.cache_copy(),"coord":coord,"path":_derived_path(coord)})
+				elif str(_chunk_keys.get(coord, "")) != "":
+					var derived_copy := chunk.cache_copy()
+					var derive_key := _derive_key(coord, str(_chunk_keys[coord]))
+					derived_copy.set_meta("cache_key", derive_key)
+					_io_queue.append({"kind":"save","chunk":derived_copy,"coord":coord,"path":_keyed_path(coord, true, derive_key)})
 			_paint_queue.pop_front(); _paint_column = 0
 			grid._snapshot_frame = -1; _room_cache.clear(); generation += 1
 			navigation_ready.emit()
+	_counts["paint_us"] = int(_counts.get("paint_us", 0)) + Time.get_ticks_usec() - paint_from
 	var door_checked := Vector2i(2147483647, 2147483647)
-	while not _queue.is_empty() and Time.get_ticks_usec()-start < budget and count < 128 * 6:
+	# With the draw window in use, columns are sampled on a worker while the frame renders.
+	var on_main := not _draw_window_active()
+	while on_main and not _queue.is_empty() and Time.get_ticks_usec()-start < budget and count < 128 * 6:
 		var coord := _queue[0]
 		if not grid.chunks.has(coord): _queue.pop_front(); _column = 0; continue
 		var chunk: WalkChunk = grid.chunks[coord]
@@ -296,16 +434,14 @@ func _physics_process(delta: float) -> void:
 		if sampled <= 0:
 			_sample_column(chunk,_column)
 			sampled = 1
-		_column += sampled; count += sampled
-		if _column == WalkGrid.CHUNK_CELLS*WalkGrid.CHUNK_CELLS:
-			chunk.state = WalkChunk.State.DERIVING
-			chunk.sample_ms = (Time.get_ticks_usec()-start)/1000.0
-			if _blockers.is_empty() and not _dynamic_chunks.has(coord) and not _door_tainted.has(coord): _io_queue.append({"kind":"save","chunk":chunk.cache_copy(),"coord":coord})
-			_paint_queue.append(coord)
-			_queue.pop_front(); _column = 0
-	baking = not _queue.is_empty() or not _paint_queue.is_empty() or not _io_queue.is_empty() or _io_worker >= 0
+		count += sampled
+		_advance_sampling(coord, chunk, sampled, start)
+	baking = not _queue.is_empty() or not _key_queue.is_empty() or not _paint_queue.is_empty() or not _io_queue.is_empty() or _io_worker >= 0
 	_dirty = baking
 	statistics = {"chunks":grid.chunks.size(),"queued":_queue.size(),"sample_us":Time.get_ticks_usec()-start,"columns":count,"revision":revision,"searches":search_counts}
+	if chunk_keys:
+		statistics["keying"] = _key_queue.size(); statistics["keys"] = _keys.stats; statistics["counts"] = _counts
+	_report_sampling()
 	if _worker >= 0 and WorkerThreadPool.is_task_completed(_worker):
 		WorkerThreadPool.wait_for_task_completion(_worker)
 		_worker = -1
@@ -345,6 +481,121 @@ func _physics_process(delta: float) -> void:
 				break
 			_worker = WorkerThreadPool.add_task(_search.bind(snapshot,job),false,"Pony terrain route")
 			break
+
+## `sampled` more columns of the queue head are done; a finished chunk goes on to painting.
+func _advance_sampling(coord: Vector2i, chunk: WalkChunk, sampled: int, start: int, end_key: Variant = null) -> void:
+	_column += sampled
+	if _column != WalkGrid.CHUNK_CELLS*WalkGrid.CHUNK_CELLS: return
+	if chunk_keys and not _finish_keyed_sample(coord, chunk, end_key): return
+	chunk.state = WalkChunk.State.DERIVING
+	chunk.sample_ms = (Time.get_ticks_usec()-start)/1000.0
+	_counts.sampled += 1
+	if not chunk_keys and _blockers.is_empty() and not _dynamic_chunks.has(coord) and not _door_tainted.has(coord): _io_queue.append({"kind":"save","chunk":chunk.cache_copy(),"coord":coord})
+	_paint_queue.append(coord)
+	_queue.pop_front(); _column = 0
+
+## Perf overhaul 2026-11-21 (lane walk_grid): column sampling while the frame renders. Between
+## RenderingServer.frame_pre_draw and frame_post_draw the main thread only renders (rendering on
+## the main thread): no script, deferred call, tween or physics step runs and no body moves, so
+## the Jolt space is stable for read-only queries from a worker. At pre-draw one high-priority
+## task samples the queue head with the native sampler until a deadline of DRAW_SHARE of the last
+## draw's length (capped); at post-draw the main thread waits for it (at most one column late) and
+## does the bookkeeping. Without a drawn frame in the last DRAW_STALE frames (headless, minimised),
+## with a separate render thread (render_thread.gd separate()) or without the native sampler, the
+## main-thread budget samples as before. Rollback: DRAW_WINDOW_SAMPLING = false.
+const DRAW_WINDOW_SAMPLING := false
+const DRAW_SHARE := 0.8
+const DRAW_CAP_US := 4000
+const DRAW_MIN_US := 150
+const DRAW_STALE := 2
+## Waiting chunks keyed per drawn frame at most (each a physics box query).
+const DRAW_KEYS := 16
+var _draw_task := -1
+var _draw_plan := {}
+var _draw_done := 0
+var _draw_started := 0
+var _draw_length_us := 0
+var _draw_frame := -1000
+var _draw_usable := false
+var _draw_door_checked := Vector2i(2147483647, 2147483647)
+
+func _draw_window_setup() -> void:
+	# `-- --walk-grid-draw-window=on|off` overrides the default for one launch (A/B and the proof).
+	var wanted := DRAW_WINDOW_SAMPLING
+	for arg: String in OS.get_cmdline_user_args():
+		if arg.begins_with("--walk-grid-draw-window="): wanted = arg.ends_with("=on")
+	if not wanted or _column_sampler == null: return
+	# 2026-11-25: asked through the render-thread helper. The engine consumes `--render-thread`, so the
+	# old command-line test never saw it: with `=on` and a separate thread the worker would sample the
+	# Jolt space while the main thread runs the next physics steps (pre-draw does not hold the main
+	# thread then, and post-draw arrives as a deferred call).
+	if preload("res://world/perf/render_thread.gd").separate(): return
+	_draw_usable = true
+	RenderingServer.frame_pre_draw.connect(_on_pre_draw)
+	RenderingServer.frame_post_draw.connect(_on_post_draw)
+
+func _draw_window_active() -> bool:
+	return _draw_usable and Engine.get_process_frames() - _draw_frame <= DRAW_STALE
+
+func _on_pre_draw() -> void:
+	_draw_started = Time.get_ticks_usec()
+	_draw_frame = Engine.get_process_frames()
+	if _draw_task >= 0 or not ready_for_paths or not is_inside_tree(): return
+	if _queue.is_empty(): return
+	var space := get_world_3d().direct_space_state
+	var terrain: Object = WorldTerrain.instance if is_instance_valid(WorldTerrain.instance) else null
+	var length := clampi(int(_draw_length_us * DRAW_SHARE), DRAW_MIN_US, DRAW_CAP_US)
+	# Chunks waiting for a key go first (cheap, and on the load path); taken off the queue here,
+	# put back at post-draw if the deadline came first.
+	# Keys are taken on the main thread (the registry is not shared with workers).
+	var keying: Array[Vector2i] = []
+	_draw_plan = {"start": _draw_started, "keying": keying, "keys": {}, "end_key": null}
+	var chunk: WalkChunk = grid.chunks.get(_queue[0]) if not _queue.is_empty() else null
+	if chunk != null and chunk.is_allocated():
+		var coord := _queue[0]
+		if coord != _draw_door_checked:
+			_draw_door_checked = coord
+			if _door_open_over(coord): _door_tainted[coord] = true
+		_draw_plan.coord = coord; _draw_plan.chunk = chunk; _draw_plan.first = _column
+	_draw_done = 0
+	_draw_task = WorkerThreadPool.add_task(_draw_work.bind(space, _draw_plan, _draw_started + length, _blockers.values(), terrain),
+		true, "Walk grid sampling (draw window)")
+
+## Worker: keys of waiting chunks, then the same native column call the main-thread loop makes,
+## then the end-of-sampling key when the chunk is done. Writes only `plan` and _draw_done.
+func _draw_work(space: PhysicsDirectSpaceState3D, plan: Dictionary, deadline: int, blockers: Array, terrain: Object) -> void:
+	if not plan.has("chunk") or Time.get_ticks_usec() >= deadline: return
+	var chunk: WalkChunk = plan.chunk
+	var first: int = plan.first
+	var total := WalkGrid.CHUNK_CELLS*WalkGrid.CHUNK_CELLS
+	_draw_done = _column_sampler.sample(space, _ray, _volume, chunk, first, total - first, deadline, bounds, blockers, terrain)
+
+func _on_post_draw() -> void:
+	_draw_length_us = Time.get_ticks_usec() - _draw_started
+	_join_draw_task()
+
+func _join_draw_task() -> void:
+	if _draw_task < 0: return
+	WorkerThreadPool.wait_for_task_completion(_draw_task)
+	_draw_task = -1
+	var plan := _draw_plan
+	_draw_plan = {}
+	var keys: Dictionary = plan.get("keys", {})
+	var keying: Array = plan.get("keying", [])
+	for i in range(keying.size() - 1, -1, -1):
+		var c: Vector2i = keying[i]
+		if not grid.chunks.has(c) or grid.chunks[c].state != WalkChunk.State.QUEUED: continue
+		if not keys.has(c):
+			_key_queue.push_front(c)
+			continue
+		_chunk_keys[c] = keys[c]
+		_counts.keyed += 1
+		_admit_keyed(c, grid.chunks[c], STAGE_DERIVED)
+	if not plan.has("chunk"): return
+	# Nothing can have changed the queue since pre-draw; checked anyway.
+	if _draw_done <= 0 or _queue.is_empty() or _queue[0] != plan.coord or grid.chunks.get(plan.coord) != plan.chunk or _column != int(plan.first): return
+	_counts["draw_columns"] = int(_counts.get("draw_columns", 0)) + _draw_done
+	_advance_sampling(plan.coord, plan.chunk, _draw_done, int(plan.start), plan.end_key)
 
 ## A finished search (worker or native): cancelled, expanded to more chunks, delivered, or
 ## reported stale when the geometry it read changed meanwhile.
@@ -389,6 +640,9 @@ func _submit_native(job: Dictionary, snapshot: Dictionary) -> PackedInt64Array:
 	var intent := {"owner": key, "generation": _native_generation, "from": job.from, "goal": job.to,
 		"any_floor": bool(job.get("any_floor", false)), "relaxed": bool(job.get("relaxed", false)),
 		"expansion_limit": _search_limit, "priority": 1 if bool(job.get("priority", false)) else 0}
+	if _open_route(job):
+		intent["use_corridor"] = false
+		intent["expansion_limit"] = maxi(_search_limit, int(_open_rules().open_limit))
 	# Phase 2 follower options (only with -- --native-navigation follow): a cramped start may leave
 	# its nook along capsule-sized floor, and obstruction evidence keeps the search out of discs.
 	var extra: Dictionary = job.get("extra", {})
@@ -436,6 +690,7 @@ func native_follow_sync() -> void:
 func _sync_native(snapshot: Dictionary) -> void:
 	if is_same(snapshot, _native_synced): return
 	_native_synced = snapshot
+	_counts["native_syncs"] = int(_counts.get("native_syncs", 0)) + 1
 	for coord: Vector2i in _native_views.keys():
 		if not snapshot.has(coord):
 			NATIVE_BACKEND.remove_chunk(_native_world, coord)
@@ -655,7 +910,19 @@ func _search(snapshot: Dictionary, job: Dictionary) -> void:
 	if job.kind == "wander":
 		_pending_result = {"destination":planner.wander(snapshot,job.from,job.profile,job.radius,job.interest,job.get("home",Vector3.INF),job.get("leash",INF),job.get("context",{})), "intent":job.get("intent", "Exploring")}
 	else:
+		planner.use_corridor = not _open_route(job)
 		_pending_result = planner.plan(snapshot,job.from,job.to,job.profile,job.get("any_floor",false),job.get("relaxed",false))
+
+func _open_rules() -> Dictionary:
+	return OPEN_ROUTES_QUEST if OS.has_feature("android") else OPEN_ROUTES_DESKTOP
+
+## True when this route search skips the coarse corridor (OPEN_ROUTES).
+func _open_route(job: Dictionary) -> bool:
+	if not OPEN_ROUTES or str(job.get("kind", "path")) != "path" or bool(job.get("corridor_only", false)): return false
+	if _search_limit < WalkPlanner.LIMIT: return false
+	var from: Vector3 = job.get("from", Vector3.ZERO)
+	var to: Vector3 = job.get("to", Vector3.ZERO)
+	return Vector2(from.x - to.x, from.z - to.z).length() <= float(_open_rules().corridor_off_m)
 
 func _sample_column(chunk: WalkChunk, column: int) -> void:
 	chunk.clear_column(column)
@@ -826,6 +1093,7 @@ func ensure_chunk(c: Vector2i) -> void:
 	if grid.chunks.has(c): grid.chunks[c].last_used_frame = Engine.get_physics_frames(); return
 	if grid.chunks.size() >= max_chunks and not _evict(): return
 	var chunk := WalkChunk.new(); chunk.coord = c
+	_admitted_at[c] = Time.get_ticks_msec()
 	_admit(c, chunk, _derive_cache)
 	grid.chunks[c] = chunk
 	# No snapshot reset: a new chunk is QUEUED or SAMPLING, never in the snapshot (and
@@ -834,6 +1102,11 @@ func ensure_chunk(c: Vector2i) -> void:
 
 ## Disk first: a derived copy skips DERIVING, a sampled copy skips physics; else sample.
 func _admit(c: Vector2i, chunk: WalkChunk, derived: bool) -> void:
+	if chunk_keys:
+		# Keyed in _physics_process inside the step budget, then _admit_keyed().
+		chunk.state = WalkChunk.State.QUEUED
+		if c not in _key_queue: _key_queue.append(c)
+		return
 	if _blockers.is_empty() and not _dynamic_chunks.has(c):
 		var path := _derived_path(c) if derived else ""
 		var is_derived := path != "" and FileAccess.file_exists(path)
@@ -845,6 +1118,187 @@ func _admit(c: Vector2i, chunk: WalkChunk, derived: bool) -> void:
 	chunk.allocate()
 	chunk.state = WalkChunk.State.SAMPLING
 	_queue.append(c)
+
+## A keyed chunk: its derived copy, else its sampled copy, when the stored key matches; else
+## sampling. The loaded file's key is checked again when the IO worker returns it (_poll_io).
+## Stages, each tried once in order: STAGE_DERIVED (the user's painted copy), STAGE_SAMPLED (the
+## baked chunk when its key matches, else the user's sampled copy), then sampling.
+const STAGE_DERIVED := 0
+const STAGE_SAMPLED := 1
+const STAGE_SAMPLE := 2
+func _admit_keyed(c: Vector2i, chunk: WalkChunk, stage: int) -> void:
+	var key := str(_chunk_keys.get(c, ""))
+	if key != "" and _blockers.is_empty() and not _dynamic_blocks(c):
+		var baked: Array = _baked.get(c, [])
+		var baked_match := not baked.is_empty() and str(baked[0]) == key
+		if stage <= STAGE_DERIVED and _derive_cache and baked_match and str(baked[3]) != "" and str(baked[3]) == _derive_key(c, key):
+			# The baked chunk painted exactly as this world would paint it: ready without painting.
+			chunk.state = WalkChunk.State.QUEUED
+			_io_queue.append({"kind":"load","coord":c,"revision":revision,"derived":true,"path":_baked_path,"key":str(baked[3]),"baked":baked})
+			return
+		var derive_key := _derive_key(c, key) if stage <= STAGE_DERIVED and _derive_cache else ""
+		if derive_key != "" and FileAccess.file_exists(_keyed_path(c, true, derive_key)):
+			chunk.state = WalkChunk.State.QUEUED
+			_io_queue.append({"kind":"load","coord":c,"revision":revision,"derived":true,"path":_keyed_path(c, true, derive_key),"key":derive_key})
+			return
+		if stage <= STAGE_SAMPLED:
+			if baked_match:
+				chunk.state = WalkChunk.State.QUEUED
+				_io_queue.append({"kind":"load","coord":c,"revision":revision,"derived":false,"path":_baked_path,"key":key,"baked":baked})
+				return
+			if FileAccess.file_exists(_keyed_path(c, false, key)):
+				chunk.state = WalkChunk.State.QUEUED
+				_io_queue.append({"kind":"load","coord":c,"revision":revision,"derived":false,"path":_keyed_path(c, false, key),"key":key})
+				return
+	chunk.allocate()
+	chunk.state = WalkChunk.State.SAMPLING
+	_queue.append(c)
+
+## Key of chunk `c`, "" while the registry still has bodies to read.
+func _chunk_key(c: Vector2i) -> String:
+	return _keys.chunk_key(c, bounds, WorldTerrain.instance if is_instance_valid(WorldTerrain.instance) else null)
+
+## Sampling of `coord` just finished. Takes its key again: unchanged (or never taken) -> saved
+## under it; changed while sampling -> sampled once more from the first column (false).
+func _finish_keyed_sample(coord: Vector2i, chunk: WalkChunk, taken: Variant = null) -> bool:
+	var key := str(taken) if taken != null else _chunk_key(coord)
+	var before: Variant = _chunk_keys.get(coord)
+	# Registry behind (a body came or went this moment): publish, cache nothing; the chunk is
+	# re-keyed when the registry catches up if the body touched it.
+	if key == "": before = null
+	if before != null and str(before) != key and not _key_retried.has(coord):
+		if _reload_for_key(coord, key): return false
+		_key_retried[coord] = true
+		_chunk_keys[coord] = key
+		_column = 0
+		return false
+	_key_retried.erase(coord)
+	# A second change while resampling: publish, never cache.
+	_chunk_keys[coord] = key if before == null or str(before) == key else ""
+	if str(_chunk_keys[coord]) != "" and _blockers.is_empty() and not _dynamic_blocks(coord) and not _door_tainted.has(coord):
+		var copy := chunk.cache_copy()
+		copy.set_meta("cache_key", key)
+		_io_queue.append({"kind":"save","chunk":copy,"coord":coord,"path":_keyed_path(coord, false, key)})
+	return true
+
+## Takes a resident chunk's key again. A chunk waiting on its file only records the new key (the
+## file is then refused); a published or painting chunk with a changed key loads the cache file of
+## its new key when there is one, else is resampled, and routes replan as after any other ground
+## change. A chunk being sampled loads that file at once when there is one, else is checked when
+## its sampling ends.
+func _check_key(coord: Vector2i) -> void:
+	var fresh := _chunk_key(coord)
+	if fresh == "" or fresh == str(_chunk_keys[coord]): return
+	var chunk: WalkChunk = grid.chunks[coord]
+	match chunk.state:
+		WalkChunk.State.QUEUED:
+			_chunk_keys[coord] = fresh
+		WalkChunk.State.SAMPLING:
+			_reload_for_key(coord, fresh)
+		WalkChunk.State.READY, WalkChunk.State.DERIVING:
+			var published := chunk.state == WalkChunk.State.READY
+			if not _reload_for_key(coord, fresh):
+				_reset_chunk(coord)
+				_counts["late_resampled"] = int(_counts.get("late_resampled", 0)) + 1
+			if published:
+				revision += 1
+				grid._snapshot_frame = -1
+				_room_cache.clear()
+				rebuild_started.emit()
+
+## The key of resident chunk `coord` changed to `fresh` (a static body came, went or moved) and a
+## cache file under `fresh` is on disk: the chunk is loaded from it instead of being sampled again
+## (true). Ultracode 2026-11-25: in the town overhaul the houses furnish for seconds after the first
+## chunks around the player are keyed (652 furniture bodies after the first key, 22 chunks), so every
+## launch sampled those chunks twice although the file of their final key was already on disk.
+func _reload_for_key(coord: Vector2i, fresh: String) -> bool:
+	if fresh == "" or not _blockers.is_empty() or _dynamic_blocks(coord): return false
+	var baked: Array = _baked.get(coord, [])
+	if not (baked.size() > 0 and str(baked[0]) == fresh) and not FileAccess.file_exists(_keyed_path(coord, false, fresh)) \
+			and not (_derive_cache and FileAccess.file_exists(_keyed_path(coord, true, _derive_key(coord, fresh)))):
+		return false
+	_door_tainted.erase(coord)
+	if not _queue.is_empty() and _queue[0] == coord: _column = 0
+	_queue.erase(coord)
+	if not _paint_queue.is_empty() and _paint_queue[0] == coord: _paint_column = 0
+	_paint_queue.erase(coord)
+	_key_queue.erase(coord); _key_retried.erase(coord)
+	var chunk := WalkChunk.new(); chunk.coord = coord
+	chunk.state = WalkChunk.State.QUEUED
+	grid.chunks[coord] = chunk
+	_chunk_keys[coord] = fresh
+	_counts["key_reloaded"] = int(_counts.get("key_reloaded", 0)) + 1
+	_admit_keyed(coord, chunk, STAGE_DERIVED)
+	return true
+
+## SceneTree node_added: a static body, or a shape added under one, is (re)registered with the
+## key registry. Every other node costs two type checks.
+func _collider_added(node: Node) -> void:
+	if node is CollisionObject3D:
+		if _keys.relevant(node): _keys.queue_body(node)
+	elif node is CollisionShape3D or node is CollisionPolygon3D:
+		var body := node.get_parent() as CollisionObject3D
+		if body != null: _keys.touch_body(body)
+
+## SceneTree node_removed: the body leaves the registry; a removed shape re-reads its body.
+func _collider_removed(node: Node) -> void:
+	if node is CollisionObject3D:
+		_keys.remove_body(node)
+	elif node is CollisionShape3D or node is CollisionPolygon3D:
+		var body := node.get_parent() as CollisionObject3D
+		if body != null: _keys.touch_body(body)
+
+## Ground changed after the zone signature (notify_geometry_changed) kept a chunk out of the old
+## folder cache for the session. A chunk key sees those changes itself (terrain texels, every
+## static shape, taken again after the change), so keyed chunks are cached and loaded as usual.
+## Rollback: KEYED_DYNAMIC = false (such chunks sample every session, as before).
+const KEYED_DYNAMIC := true
+func _dynamic_blocks(c: Vector2i) -> bool:
+	return _dynamic_chunks.has(c) and not (chunk_keys and KEYED_DYNAMIC)
+
+func _note_ready(c: Vector2i, source: String) -> void:
+	var at: Variant = _admitted_at.get(c)
+	if at == null: return
+	_admitted_at.erase(c)
+	if _ready_log.size() < READY_LOG: _ready_log.append([c, source, Time.get_ticks_msec() - int(at), int(at)])
+
+## Admission-to-ready times so far: {source: [count, median ms, max ms]} and the raw log.
+func ready_report() -> Dictionary:
+	var by := {}
+	for row: Array in _ready_log:
+		if not by.has(row[1]): by[row[1]] = []
+		(by[row[1]] as Array).append(int(row[2]))
+	var out := {}
+	for source: String in by:
+		var times: Array = by[source]
+		times.sort()
+		out[source] = [times.size(), times[times.size() / 2], times[-1]]
+	return out
+
+## One file per coordinate; the key inside the file decides whether it is still valid.
+## One file per coordinate and key: ground that flips between two states (an interior streamed
+## in and out) keeps both copies instead of resampling at every flip.
+func _keyed_path(c: Vector2i, derived: bool, key: String) -> String:
+	return _cache_dir.path_join(("derived/%d_%d_%s.res" if derived else "%d_%d_%s.res") % [c.x, c.y, key.substr(0, 16)])
+
+## Key of a derived copy: the chunk's samples plus everything painting reads (_derived_path).
+func _derive_key(c: Vector2i, key: String) -> String:
+	return (_derive_stamp(c) + "|" + key).sha256_text()
+
+## Logs when sampling starts and when it goes quiet, so a run's log tells whether the walk grid
+## was sampling (and costing up to its budget each physics step) during a measurement.
+func _report_sampling() -> void:
+	var sampling := not _queue.is_empty()
+	if sampling == _was_sampling: return
+	_was_sampling = sampling
+	var now := Time.get_ticks_msec()
+	if sampling:
+		_sampling_since = now
+		print("[walk-grid] %s sampling: %d chunks queued (sampled %d, loaded %d so far)" % [zone_id, _queue.size(), _counts.sampled, _counts.loaded])
+	else:
+		print("[walk-grid] %s quiet after %.1f s: sampled %d, loaded %d (derived %d, baked %d), keyed %d, key time %.1f ms" % [
+			zone_id, (now - _sampling_since) / 1000.0, _counts.sampled, _counts.loaded, _counts.derived_loaded, _counts.baked,
+			_counts.keyed, float(_keys.stats.usec) / 1000.0 if _keys != null else 0.0])
 
 func ensure_near(pos: Vector3, radius := 18.0) -> Array[Vector2i]:
 	var a := WalkGrid.chunk_of(WalkGrid.column(pos-Vector3(radius,0,radius)))
@@ -1188,6 +1642,19 @@ func spawn_world(id: String, index: int) -> Vector3:
 		chosen = hot.pos+Vector2(cos(angle),sin(angle))*minf(hot.radius*.6,2.6)
 	return _content.to_global(Vector3(chosen.x,0,chosen.y)) if chosen.is_finite() else Vector3.INF
 
+## True while path request `request_id` is still queued only because chunks of its corridor are
+## not READY yet (not admitted, being keyed, loading, sampled or painted). False when it is running,
+## finished, cancelled, unknown, or waits only for a free search slot (2026-11-21, for the
+## navigator's "Waiting for the ground to be sampled" reason).
+func route_waits_on_sampling(request_id: int) -> bool:
+	for job: Dictionary in _jobs:
+		if int(job.id) != request_id: continue
+		if str(job.kind) != "path": return false
+		for c: Vector2i in job.chunks:
+			if not grid.chunks.has(c) or grid.chunks[c].state != WalkChunk.State.READY: return true
+		return false
+	return false
+
 func cancel_request(id: int) -> void:
 	if id < 0: return
 	for i in range(_jobs.size()-1,-1,-1):
@@ -1223,13 +1690,17 @@ func notify_geometry_changed(box: AABB) -> void:
 		for x in range(a.x, b.x + 1):
 			var coord := Vector2i(x, z)
 			_dynamic_chunks[coord] = true
+			_session_keys.erase(coord)
+			if chunk_keys and _chunk_keys.has(coord): _rekey[coord] = true
 			if affected: continue
 			affected = grid.chunks.has(coord) or coord in _active.get("chunks", [])
 			for entry: Dictionary in _running:
 				if coord in entry.job.chunks: affected = true
 			for job: Dictionary in _jobs:
 				if coord in job.chunks: affected = true; break
-	_io_queue = _io_queue.filter(func(job): return job.kind != "save" or not _dynamic_chunks.has(job.coord))
+	_io_queue = _io_queue.filter(func(job): return job.kind != "save" or not _dynamic_blocks(job.coord))
+	# The bodies there may have moved in place: read them again (their keys follow).
+	if chunk_keys: _keys.notify(box, true)
 	# Streaming distant trees must still forbid stale disk data, but cannot change a
 	# route whose cached/requested coverage never included them. Keep pending chunks
 	# and queued/active coverage here as well as READY chunks: those may hold old work.
@@ -1282,6 +1753,7 @@ func _invalidate(box: AABB) -> void:
 	for z in range(a.y,b.y+1):
 		for x in range(a.x,b.x+1):
 			var c := Vector2i(x,z)
+			_session_keys.erase(c)
 			if grid.chunks.has(c): _reset_chunk(c)
 
 func _reset_chunk(c: Vector2i) -> void:
@@ -1290,6 +1762,8 @@ func _reset_chunk(c: Vector2i) -> void:
 	_queue.erase(c)
 	if not _paint_queue.is_empty() and _paint_queue[0] == c: _paint_column = 0
 	_paint_queue.erase(c)
+	# Its ground changed: the samples get the key taken when this resampling ends.
+	_key_queue.erase(c); _chunk_keys.erase(c); _key_retried.erase(c)
 	var chunk := WalkChunk.new(); chunk.coord = c; chunk.allocate()
 	chunk.state = WalkChunk.State.SAMPLING
 	grid.chunks[c] = chunk; _queue.append(c)
@@ -1325,20 +1799,38 @@ func _evict() -> bool:
 	# Finish the column work in progress; queued speculative chunks can yield.
 	if not _queue.is_empty(): protected[_queue[0]] = true
 	if not _paint_queue.is_empty(): protected[_paint_queue[0]] = true
+	# Chunks of every queued route too, while anything else can go (2026-11-21: with only the
+	# oldest waiter protected, 100 cross-town routes at the Quest's cap evicted and reloaded 3743
+	# chunks in 600 steps). When everything left is routed, today's rule: the oldest waiter still
+	# admits its chunks. Order: least recently used (ensure_chunk refreshes it on every route
+	# admission). Rollback: PROTECT_ROUTES = false.
+	var routed := {}
+	if PROTECT_ROUTES:
+		for job: Dictionary in _jobs:
+			for c in job.chunks: routed[c] = true
 	var oldest := Vector2i.ZERO
 	var frame := 9223372036854775807
+	var free_oldest := Vector2i.ZERO
+	var free_frame := 9223372036854775807
 	for c in grid.chunks:
 		if protected.has(c): continue
-		if grid.chunks[c].last_used_frame < frame: frame = grid.chunks[c].last_used_frame; oldest = c
+		var used: int = grid.chunks[c].last_used_frame
+		if used < frame: frame = used; oldest = c
+		if used < free_frame and not routed.has(c): free_frame = used; free_oldest = c
 	if frame == 9223372036854775807: return false
+	if free_frame != 9223372036854775807: oldest = free_oldest
 	# READY-only eviction kept a full cache of unfinished samples and discarded
 	# each freshly usable chunk. Evict the least recently needed work instead.
 	_queue.erase(oldest)
 	_paint_queue.erase(oldest)
 	_io_queue = _io_queue.filter(func(job): return job.kind != "load" or job.coord != oldest)
 	_door_tainted.erase(oldest)
+	if _chunk_keys.has(oldest) and grid.chunks[oldest].state == WalkChunk.State.READY: _session_keys[oldest] = _chunk_keys[oldest]
+	_admitted_at.erase(oldest)
+	_key_queue.erase(oldest); _chunk_keys.erase(oldest); _key_retried.erase(oldest)
 	grid.chunks.erase(oldest)
 	grid._snapshot_frame = -1
+	_counts["evicted"] = int(_counts.get("evicted", 0)) + 1
 	return true
 
 func debug_mesh(center: Vector3, radius := 12.0, water := false) -> ImmediateMesh:
@@ -1374,9 +1866,10 @@ func debug_mesh(center: Vector3, radius := 12.0, water := false) -> ImmediateMes
 ## free the zone without _exit_tree blocking the main thread on a route search or cache IO.
 func release() -> bool:
 	ready_for_paths = false
+	_join_draw_task()
 	_release_native()
 	if not _active.is_empty() and _active.has("cancel_signal"): _active.cancel_signal.post()
-	_jobs.clear(); _queue.clear(); _paint_queue.clear(); _io_queue.clear()
+	_jobs.clear(); _queue.clear(); _key_queue.clear(); _paint_queue.clear(); _io_queue.clear()
 	if _worker >= 0 and WorkerThreadPool.is_task_completed(_worker):
 		WorkerThreadPool.wait_for_task_completion(_worker); _worker = -1
 	if _io_worker >= 0 and WorkerThreadPool.is_task_completed(_io_worker):
@@ -1386,6 +1879,7 @@ func release() -> bool:
 
 func _exit_tree() -> void:
 	ready_for_paths = false
+	_join_draw_task()
 	_release_native()
 	if not _active.is_empty() and _active.has("cancel_signal"): _active.cancel_signal.post()
 	if _worker >= 0: WorkerThreadPool.wait_for_task_completion(_worker)
@@ -1415,38 +1909,111 @@ static func _remove_tree(path: String, cancel: Array) -> bool:
 	DirAccess.remove_absolute(path)
 	return true
 
+## Perf overhaul 2026-11-21 (lane walk_grid): one IO task carries up to IO_BATCH jobs, loads
+## before saves (keyed caches only: a stale file is refused by its key). One job per physics step
+## made a town of cached or baked chunks take 13 s and more to come back after load.
+## Rollback: IO_BATCH = 1.
+const IO_BATCH := 16
+var _io_batch: Array[Dictionary] = []
+var _io_results: Array = []
+
 func _poll_io() -> void:
 	if _io_worker >= 0 and WorkerThreadPool.is_task_completed(_io_worker):
 		WorkerThreadPool.wait_for_task_completion(_io_worker); _io_worker = -1
-		var c: Vector2i = _io_job.coord
-		if _io_job.kind == "load" and grid.chunks.has(c) and grid.chunks[c].state == WalkChunk.State.QUEUED:
-			if _io_job.derived:
-				# The key is taken again now: a paint reload or control edit since the request
-				# falls back to the sampled copy (or sampling) instead of stale derived data.
-				if _io_loaded != null and _io_loaded.is_allocated() and _io_loaded.trail_weight.size() == _io_loaded.flags.size() \
-						and _derive_cache and _blockers.is_empty() and not _dynamic_chunks.has(c) and _io_job.path == _derived_path(c):
-					_io_loaded.state = WalkChunk.State.READY; _io_loaded.from_cache = true
-					_io_loaded.painted = not layers.rasters.is_empty()
+		var batch := _io_batch
+		var results := _io_results
+		_io_batch = []; _io_results = []
+		for i in batch.size():
+			_io_job = batch[i]
+			_io_loaded = results[i] as WalkChunk
+			var c: Vector2i = _io_job.coord
+			if _io_job.kind == "load" and grid.chunks.has(c) and grid.chunks[c].state == WalkChunk.State.QUEUED and _io_job.has("key"):
+				_finish_keyed_load(c)
+			elif _io_job.kind == "load" and grid.chunks.has(c) and grid.chunks[c].state == WalkChunk.State.QUEUED:
+				if _io_job.derived:
+					# The key is taken again now: a paint reload or control edit since the request
+					# falls back to the sampled copy (or sampling) instead of stale derived data.
+					if _io_loaded != null and _io_loaded.is_allocated() and _io_loaded.trail_weight.size() == _io_loaded.flags.size() \
+							and _derive_cache and _blockers.is_empty() and not _dynamic_chunks.has(c) and _io_job.path == _derived_path(c):
+						_io_loaded.state = WalkChunk.State.READY; _io_loaded.from_cache = true
+						_io_loaded.painted = not layers.rasters.is_empty()
+						_io_loaded.last_used_frame = Engine.get_physics_frames()
+						grid.chunks[c] = _io_loaded
+						grid._snapshot_frame = -1; _room_cache.clear(); generation += 1
+						navigation_ready.emit()
+					else:
+						_admit(c, grid.chunks[c], false)
+				elif _io_loaded != null and _io_loaded.is_allocated() and _io_job.revision == revision:
+					_io_loaded.state = WalkChunk.State.DERIVING; _io_loaded.from_cache = true
 					_io_loaded.last_used_frame = Engine.get_physics_frames()
-					grid.chunks[c] = _io_loaded
-					grid._snapshot_frame = -1; _room_cache.clear(); generation += 1
-					navigation_ready.emit()
+					grid.chunks[c] = _io_loaded; _paint_queue.append(c)
 				else:
-					_admit(c, grid.chunks[c], false)
-			elif _io_loaded != null and _io_loaded.is_allocated() and _io_job.revision == revision:
-				_io_loaded.state = WalkChunk.State.DERIVING; _io_loaded.from_cache = true
-				_io_loaded.last_used_frame = Engine.get_physics_frames()
-				grid.chunks[c] = _io_loaded; _paint_queue.append(c)
-			else:
-				grid.chunks[c].allocate(); grid.chunks[c].state = WalkChunk.State.SAMPLING; _queue.append(c)
-		_io_loaded = null; _io_job = {}
+					grid.chunks[c].allocate(); grid.chunks[c].state = WalkChunk.State.SAMPLING; _queue.append(c)
+			_io_loaded = null; _io_job = {}
 	if _io_worker < 0 and not _io_queue.is_empty():
-		_io_job = _io_queue.pop_front()
-		_io_worker = WorkerThreadPool.add_task(_cache_io.bind(_io_job),false,"Terrain cache IO")
+		if chunk_keys and IO_BATCH > 1:
+			for job: Dictionary in _io_queue:
+				if job.kind == "load" and _io_batch.size() < IO_BATCH: _io_batch.append(job)
+			for job: Dictionary in _io_queue:
+				if job.kind != "load" and _io_batch.size() < IO_BATCH: _io_batch.append(job)
+			for job: Dictionary in _io_batch: _io_queue.erase(job)
+		else:
+			_io_batch.append(_io_queue.pop_front())
+		_io_results.resize(_io_batch.size())
+		_io_worker = WorkerThreadPool.add_task(_cache_io_batch.bind(_io_batch, _io_results),false,"Terrain cache IO")
+
+## Worker: every job of one batch; results[i] is the chunk a load read (or null).
+func _cache_io_batch(batch: Array[Dictionary], results: Array) -> void:
+	for i in batch.size():
+		_cache_io(batch[i])
+		results[i] = _io_loaded
+		_io_loaded = null
+
+## A keyed load came back: used only when the file's key is the one asked for and nothing
+## invalidated the chunk meanwhile; a stale derived copy falls back to the sampled one, a stale
+## sampled copy to sampling.
+func _finish_keyed_load(c: Vector2i) -> void:
+	var wanted := str(_chunk_keys.get(c, ""))
+	var usable := _io_loaded != null and _io_loaded.is_allocated() and wanted != "" and _blockers.is_empty() \
+		and not _dynamic_blocks(c)
+	if _io_job.derived:
+		if usable and _derive_cache and _io_loaded.trail_weight.size() == _io_loaded.flags.size() \
+				and str(_io_loaded.get_meta("cache_key", "")) == _derive_key(c, wanted):
+			_io_loaded.state = WalkChunk.State.READY; _io_loaded.from_cache = true
+			_io_loaded.painted = not layers.rasters.is_empty()
+			_io_loaded.last_used_frame = Engine.get_physics_frames()
+			grid.chunks[c] = _io_loaded
+			grid._snapshot_frame = -1; _room_cache.clear(); generation += 1
+			_counts.loaded += 1; _counts.derived_loaded += 1
+			if _io_job.has("baked"): _counts.baked += 1
+			_note_ready(c, "baked_painted" if _io_job.has("baked") else "derived")
+			navigation_ready.emit()
+		else:
+			_admit_keyed(c, grid.chunks[c], STAGE_SAMPLED)
+	elif usable and str(_io_loaded.get_meta("cache_key", "")) == wanted:
+		_io_loaded.state = WalkChunk.State.DERIVING; _io_loaded.from_cache = true
+		_io_loaded.last_used_frame = Engine.get_physics_frames()
+		grid.chunks[c] = _io_loaded; _paint_queue.append(c)
+		_counts.loaded += 1
+		if _io_job.has("baked"):
+			_counts.baked += 1
+			_io_loaded.set_meta("baked", true)
+	elif _io_job.has("baked") and FileAccess.file_exists(_keyed_path(c, false, wanted)):
+		# A baked chunk that failed to read: the user's own sampled copy, else sampling.
+		_io_job.erase("baked")
+		_io_queue.push_front({"kind":"load","coord":c,"revision":revision,"derived":false,"path":_keyed_path(c, false, wanted),"key":wanted})
+	else:
+		_admit_keyed(c, grid.chunks[c], STAGE_SAMPLE)
 
 func _cache_io(job: Dictionary) -> void:
 	var path: String = job.get("path", _cache_dir.path_join("%d_%d.res"%[job.coord.x,job.coord.y]))
-	if job.kind == "load": _io_loaded = ResourceLoader.load(path,"",ResourceLoader.CACHE_MODE_IGNORE) as WalkChunk
+	if job.kind == "load" and job.has("baked"):
+		_io_loaded = BAKE.load_chunk(path, job.coord, job.baked)
+		if _io_loaded != null:
+			# Asked for its samples only: undo the bake's paint (this world paints differently).
+			if not bool(job.derived): BAKE.strip_paint(_io_loaded)
+			_io_loaded.set_meta("cache_key", str(job.key))
+	elif job.kind == "load": _io_loaded = ResourceLoader.load(path,"",ResourceLoader.CACHE_MODE_IGNORE) as WalkChunk
 	else: ResourceSaver.save(job.chunk,path)
 
 ## Keep the same queue class when a route discovers that it needs a detour.
@@ -1460,6 +2027,11 @@ func _enqueue_path(job: Dictionary) -> void:
 
 func _expand_route(job: Dictionary, result: Dictionary) -> bool:
 	if job.kind != "path" or not result.get("path",PackedVector3Array()).is_empty(): return false
+	# An open search that ran out of budget: once more inside the corridor.
+	if str(result.get("reason", "")) == BUDGET_REASON and _open_route(job):
+		job["corridor_only"] = true
+		_enqueue_path(job)
+		return true
 	var candidates: Array = result.get("frontier",[])
 	var end_chunk := WalkGrid.chunk_of(WalkGrid.column(job.to))
 	candidates.sort_custom(func(a,b): return Vector2(a-end_chunk).length_squared()<Vector2(b-end_chunk).length_squared())
@@ -1468,17 +2040,18 @@ func _expand_route(job: Dictionary, result: Dictionary) -> bool:
 		var center := Vector3((c.x+.5)*16.0,0,(c.y+.5)*16.0)
 		if center.x+8 < bounds.position.x or center.x-8 > bounds.end.x or center.z+8 < bounds.position.z or center.z-8 > bounds.end.z: continue
 		if c in job.chunks: continue
-		if job.chunks.size() >= ROUTE_CHUNKS:
+		if job.chunks.size() >= (int(_open_rules().route_chunks) if OPEN_ROUTES else ROUTE_CHUNKS):
 			result.reason = "Route needs more than the resident chunk budget; no unsafe shortcut returned"
 			break
 		job.chunks.append(c); added += 1
-		if added >= 12: break
+		if added >= (int(_open_rules().expand_step) if OPEN_ROUTES else 12): break
 	if added == 0: return false
 	_enqueue_path(job)
 	return true
 
 
 func _terrain_controls_changed(locations: Array) -> void:
+	if chunk_keys: _keys.drop_memo()
 	var changed := false
 	for coord: Vector2i in grid.chunks:
 		var region := Vector2i(floori(float(coord.x*16)/WorldTerrain.REGION), floori(float(coord.y*16)/WorldTerrain.REGION))
@@ -1510,6 +2083,9 @@ func _derive_signature() -> String:
 ## Also keyed on the live control and height maps of every Terrain3D region the chunk's
 ## trail weights read (bilinear, so one metre past its far edge).
 func _derived_path(c: Vector2i) -> String:
+	return _cache_dir.path_join("derived/%d_%d_%s.res" % [c.x, c.y, _derive_stamp(c).sha256_text().substr(0, 24)])
+
+func _derive_stamp(c: Vector2i) -> String:
 	var stamp := _derive_base
 	var size := WalkGrid.CHUNK_CELLS*WalkGrid.CELL
 	for rz in range(floori(c.y*size/WorldTerrain.REGION), floori((c.y*size+size+1.0)/WorldTerrain.REGION)+1):
@@ -1519,4 +2095,4 @@ func _derived_path(c: Vector2i) -> String:
 				var region: Object = _terrain_paths.data.get_region(loc) if is_instance_valid(_terrain_paths.data) else null
 				_derive_regions[loc] = "-" if region == null else "%d.%d" % [hash(region.get_control_map().get_data()), hash(region.get_height_map().get_data())]
 			stamp += ":" + _derive_regions[loc]
-	return _cache_dir.path_join("derived/%d_%d_%s.res" % [c.x, c.y, stamp.sha256_text().substr(0, 24)])
+	return stamp

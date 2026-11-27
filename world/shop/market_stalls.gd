@@ -24,6 +24,10 @@ func _ready() -> void:
 		var tent: Node3D = get_node_or_null(path)
 		if tent != null:
 			tent.rotation.y = 0.0
+	# The fixed rubbish bins in the market and at Anon's door (player board card 69).
+	var bins := preload("res://world/props/rubbish_bins.gd").new()
+	bins.name = "RubbishBins"
+	add_child(bins)
 
 func _install(path: String, mesh: Mesh, shape: Shape3D) -> void:
 	var stall: Node3D = get_node_or_null(path)

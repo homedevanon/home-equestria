@@ -167,6 +167,18 @@ const EVENTS := {
 	"prop_sizzle_loop": {"streams": SIZZLE, "volume_db": -19.0, "distance": 7.0, "cooldown": .1, "priority": 1, "concurrency": 2, "loop": true, "pitch_min": 1.0, "pitch_max": 1.0},
 	"prop_simmer_loop": {"streams": SIMMER, "volume_db": -20.0, "distance": 7.0, "cooldown": .1, "priority": 1, "concurrency": 2, "loop": true, "pitch_min": 1.0, "pitch_max": 1.0},
 	"prop_burner_loop": {"streams": FIRE, "volume_db": -21.0, "distance": 16.0, "cooldown": .1, "priority": 1, "concurrency": 2, "loop": true, "pitch_min": 1.0, "pitch_max": 1.0},
+	# The player's mailbox (world/letters/courier/player_mailbox.gd): a small tin door and flag, so
+	# the metal recordings pitched up; a letter going in or coming out is the paper ones.
+	"prop_mailbox_open": {"streams": METAL, "volume_db": -25.0, "distance": 8.0, "cooldown": 0.5, "priority": 2, "concurrency": 1, "pitch_min": 1.2, "pitch_max": 1.35},
+	"prop_mailbox_close": {"streams": METAL, "volume_db": -23.0, "distance": 8.0, "cooldown": 0.5, "priority": 2, "concurrency": 1, "pitch_min": 0.95, "pitch_max": 1.08},
+	"prop_mailbox_flag": {"streams": METAL, "volume_db": -28.0, "distance": 6.0, "cooldown": 0.5, "priority": 2, "concurrency": 1, "pitch_min": 1.5, "pitch_max": 1.7},
+	"prop_mailbox_letter": {"streams": PAPER, "volume_db": -22.0, "distance": 5.0, "cooldown": 0.2, "priority": 2, "concurrency": 2},
+	# Applejack's apple wagon (world/mechanics/wagon_wheel/): the wheel giving way (the tree-wood
+	# crack), the body dropping onto its axle (furniture, pitched down), and the spare going on.
+	"prop_wagon_crack": {"streams": TREE, "volume_db": -12.0, "distance": 35.0, "cooldown": 1.0, "priority": 1, "concurrency": 1, "pitch_min": 0.85, "pitch_max": 0.95},
+	"prop_wagon_drop": {"streams": FURNITURE, "volume_db": -12.0, "distance": 35.0, "cooldown": 0.3, "priority": 1, "concurrency": 2, "pitch_min": 0.6, "pitch_max": 0.72},
+	"prop_wagon_fit": {"streams": WOOD, "volume_db": -15.0, "distance": 16.0, "cooldown": 0.15, "priority": 1, "concurrency": 2, "pitch_min": 0.75, "pitch_max": 0.9},
+	"prop_wagon_apple": {"streams": SOFT, "volume_db": -24.0, "distance": 10.0, "cooldown": 0.08, "priority": 3, "concurrency": 3, "pitch_min": 1.1, "pitch_max": 1.4},
 }
 
 static func material_for_item(item_id: String) -> String:

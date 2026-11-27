@@ -2,6 +2,7 @@ extends RefCounted
 ## Bounded semantic perception from game state, never from guessed mesh names.
 const LAYOUT := preload("res://world/world_layout.gd")
 const CRADLE_REST := preload("res://world/characters/locomotion/cradle_rest.gd")
+const BED_FIT := preload("res://world/life/bed_fit.gd")
 const VIEW_RANGE := 24.0
 const HEARING_RANGE := 12.0
 const MAX_PEERS := 12
@@ -161,34 +162,57 @@ static func player_posture(head: Node) -> String:
 	if body == null: return ""
 	var seat_value: Variant = body.get("seat")
 	if is_instance_valid(seat_value) and seat_value is Node3D:
-		var seat: Node3D = seat_value
 		var lying: bool = body.has_meta("couch_sleeping") and body.get_meta("couch_sleeping") == true
-		var pose := "lying" if lying else "sitting"
-		var furniture: Variant = seat.get_meta("couch") if seat.has_meta("couch") else null
-		var rest := str(furniture.call("rest_word")) if is_instance_valid(furniture) and (furniture as Object).has_method("rest_word") else ""
-		if rest == "bed": return "lying in bed" if lying else "sitting on the bed"
-		if not rest.is_empty(): return pose + " on the " + rest
-		var node: Node = seat
-		for i in 3:
-			if node == null: break
-			if node.has_meta("ai_label"):
-				var label := str(node.get_meta("ai_label")).strip_edges().left(60)
-				if label.is_empty(): break
-				var lower := label.to_lower()
-				var plain := lower.begins_with("a ") or lower.begins_with("an ") or lower.begins_with("the ") or label[0] != lower[0]
-				return pose + (" on " if plain else " on the ") + label
-			node = node.get_parent()
-		if seat.has_meta("floor_sit") and seat.get_meta("floor_sit") == true: return pose + " on the floor"
-		return "lying down" if lying else "sitting on a seat"
+		return seat_words(seat_value as Node3D, lying)
 	var surface: Variant = body.get_meta("shared_nap_surface") if body.has_meta("shared_nap_surface") else null
 	if is_instance_valid(surface) and (surface as Object).has_method("rest_word"):
 		return "lying on the " + str(surface.call("rest_word"))
 	var driver: Variant = body.get("form_driver")
 	if is_instance_valid(driver) and (driver as Object).has_method("ground_posture"):
+		# On a mattress without its seat (thread fix "beds": in bed together she said they lay on the floor).
 		match str(driver.call("ground_posture")):
-			"sit": return "sitting on the ground"
-			"lie_down": return "lying on the ground"
+			"sit": return "sitting on a bed" if BED_FIT.player_on_bed(body) else "sitting on the ground"
+			"lie_down": return "lying in bed" if BED_FIT.player_on_bed(body) else "lying on the ground"
 	return ""
+
+## Sitting or lying on one seat, named from its furniture: "lying in bed", "sitting on the couch",
+## "sitting on a wooden bench", "sitting on the floor", or "sitting on a seat".
+static func seat_words(seat: Node3D, lying: bool) -> String:
+	var pose := "lying" if lying else "sitting"
+	var furniture: Variant = seat.get_meta("couch") if seat.has_meta("couch") else null
+	var rest := str(furniture.call("rest_word")) if is_instance_valid(furniture) and (furniture as Object).has_method("rest_word") else ""
+	if rest == "bed": return "lying in bed" if lying else "sitting on the bed"
+	if not rest.is_empty(): return pose + " on the " + rest
+	var node: Node = seat
+	for i in 3:
+		if node == null: break
+		if node.has_meta("ai_label"):
+			var label := str(node.get_meta("ai_label")).strip_edges().left(60)
+			if label.is_empty(): break
+			var lower := label.to_lower()
+			var plain := lower.begins_with("a ") or lower.begins_with("an ") or lower.begins_with("the ") or label[0] != lower[0]
+			return pose + (" on " if plain else " on the ") + label
+		node = node.get_parent()
+	if seat.has_meta("floor_sit") and seat.get_meta("floor_sit") == true: return pose + " on the floor"
+	return "lying down" if lying else "sitting on a seat"
+
+## How she herself rests when she is not on her feet (player bug board #52: her prompt only said
+## "at rest"): "sitting", "lying down", or on the seat she holds, "sitting on the couch". "" standing.
+static func own_posture(observer: Node3D) -> String:
+	if not observer.has_method("posture_status"): return ""
+	var status: Dictionary = observer.posture_status()
+	var kind := str(status.get("kind", "stand"))
+	if kind not in ["sit", "lie_down"]: return ""
+	var lying := kind == "lie_down"
+	# seating.gd marks a pony it seats and the seat she holds (meta "occupant").
+	if observer.has_meta("seating") and observer.is_inside_tree():
+		var seating: Node = observer.get_tree().get_first_node_in_group("pony_seating")
+		var seats: Variant = seating.get("seats") if seating != null else null
+		if seats is Array:
+			for seat: Variant in seats:
+				if not is_instance_valid(seat) or not seat is Node3D or not (seat as Node3D).has_meta("occupant"): continue
+				if is_same((seat as Node3D).get_meta("occupant"), observer): return seat_words(seat as Node3D, lying)
+	return "lying down" if lying else "sitting"
 
 
 func sample(id: String, observer: Node3D, characters: Dictionary, player: Node3D, now: float, hearing_range := HEARING_RANGE, include_present := false) -> Dictionary:
@@ -231,7 +255,10 @@ func sample(id: String, observer: Node3D, characters: Dictionary, player: Node3D
 		var gaze := -player.global_basis.z; gaze.y = 0.0
 		sample.player_looking_at_you = to_her.length() > 0.2 and gaze.length_squared() > 0.0001 and gaze.normalized().dot(to_her.normalized()) > 0.8
 		# Seen sitting or lying (and on what), it replaces his motion words (player bug board #52).
-		sample.player_posture = player_posture(player) if sample.player_visible else ""
+		# Heard close by and unobstructed, his voice tells her too: facing away from the bed he lay in,
+		# she was told he was "standing still" and answered "you are still standing".
+		sample.player_posture = player_posture(player) if sample.player_visible or sample.player_audible else ""
+	sample.own_posture = own_posture(observer)
 	# Read current hands for each observation. Never carry an earlier held item into
 	# a later prompt, and never infer an unseen item merely from hearing the player.
 	sample.player_items = []
@@ -342,6 +369,17 @@ func sample(id: String, observer: Node3D, characters: Dictionary, player: Node3D
 		sample.footing = footing(observer, position)
 		var around := season_note(observer.get_tree(), position)
 		if not around.is_empty(): sample.season_note = around
+	# Lying in a bed she is told so, and whose, and whether Anon lies there with her; just up out of
+	# one, that too (thread fix "beds", post 43717764 and board #304: in bed together, or up beside
+	# it after waking, she believed she was on the floor). Any bed: house, cloud home or wagon.
+	var in_bed := BED_FIT.lying_words(observer)
+	if in_bed.is_empty() and not sample.held: in_bed = BED_FIT.left_bed_words(observer)
+	if not in_bed.is_empty(): sample.ground = in_bed
+	# In one bed with him she feels him there even facing away: he is present, and how he lies.
+	if (in_bed.ends_with("beside Anon") or in_bed.ends_with("on Anon")) and is_instance_valid(player) and player.is_inside_tree():
+		sample.player_visible = true
+		sample.player_audible = true
+		sample.player_posture = player_posture(player)
 	# Luna's dream (world/life/luna_dream.gd, player report 2026-10-25): the moon stands far above
 	# the world, so the town's region, weather, landmarks and "metres above the ground" footing
 	# told her Anon was not on the moon. Only a pony inside the dream's MoonDream scene gets this.
@@ -371,7 +409,7 @@ func sample(id: String, observer: Node3D, characters: Dictionary, player: Node3D
 		if sample.pets > previous.get("pets", 0): events.append({"time": now, "text": "The player petted your %s." % (observer.pet_region() if observer.has_method("pet_region") and observer.pet_region() != "" else "coat")})
 		if sample.kisses > previous.kisses: events.append({"time": now, "text": "The player kissed your face."})
 		if sample.place.get("id") != previous.place.get("id") or sample.place.get("inside") != previous.place.get("inside"):
-			events.append({"time": now, "text": "Your mapped surroundings changed; use the current place below."})
+			events.append({"time": now, "text": "Your surroundings have changed. Go by the description below."})
 		var before: Array = previous.visible.map(func(peer): return peer.id)
 		for peer: Dictionary in sample.visible:
 			if peer.id not in before: events.append({"time": now, "text": "%s came into view." % peer.name})
@@ -429,7 +467,7 @@ func footing(observer: Node3D, position: Vector3) -> String:
 func describe(sample: Dictionary, player_name: String, now: float) -> PackedStringArray:
 	var lines := PackedStringArray()
 	var place: Dictionary = sample.place
-	if sample.get("dream", false): lines.append("- Place: the surface of the moon, in Anon's dream. You walk in dreams and drew his sleeping mind up here; his body sleeps safely in his bed. This truly is the moon: never deny it, and do not send him to bed. He wakes when he chooses.")
+	if sample.get("dream", false): lines.append("- Place: the moon's surface, in Anon's dream. You walk in dreams and drew his mind up here while his body sleeps safely in bed. Never deny that you are really on the moon, and do not send him to bed. He wakes when he wants.")
 	elif place.is_empty(): lines.append("- Place: unknown.")
 	elif place.inside: lines.append("- Place: within the mapped %s region (%s)." % [place.name, place.kind])
 	else: lines.append("- Place: between mapped regions, about %.0f m from the edge of %s; not at that destination." % [place.distance, place.name])
@@ -439,17 +477,20 @@ func describe(sample: Dictionary, player_name: String, now: float) -> PackedStri
 	if sample.get("doorway", false):
 		# The older wording ("if someone needs to get through") had ponies hearing knocks at the door
 		# in every indoor chat (2026-10-28 player report). Nobody is at the door unless an event says so.
-		lines.append("- You are standing in a doorway. If somepony walks up to pass, step out of the way with [step: aside]; nobody is at the door otherwise.")
+		lines.append("- You are standing in a doorway. Use [step: aside] to move if somepony walks up to pass. Otherwise, nobody is at the door.")
 	if sample.get("riding", false):
-		lines.append("- You are riding in Anon's hot-air balloon, in its basket with him. " + ("It is up in the air, drifting over Equestria; you step off once it lands with the gate open." if sample.get("aloft", false) else "It is resting on the ground with the gate open."))
+		lines.append("- You are in the basket of Anon's hot-air balloon, riding with him. " + ("It is up in the air, drifting over Equestria. You can step off once it lands and the gate opens." if sample.get("aloft", false) else "It is resting on the ground with the gate open."))
 	if sample.get("asleep", false):
 		if sample.get("cradle", "") == "asleep": lines.append(CRADLE_REST.ASLEEP_LINE)
-		else: lines.append("- It is night and you were fast asleep, lying in bed with your eyes shut. A voice has half-woken you: you are drowsy, yawning, and would rather go back to sleep. If you decide to get up after all, use wake_up(); otherwise you stay in bed.")
+		else: lines.append("- It is night and you were fast asleep, " + ("lying in bed" if str(sample.get("ground", "")).begins_with("lying in") else "lying down") + " with your eyes shut. A voice has barely woken you up. You're drowsy and yawning, and you'd rather go back to sleep. Stay in bed unless you decide to get up, in which case call wake_up().")
 	if str(sample.get("footing", "")) != "":
-		lines.append("- Where you stand: %s. This is certain: never deny it, and do not invent a ladder, stairs or any way down that is not listed here." % sample.footing)
+		lines.append("- Where you stand: %s. Never deny being up here, and do not make up any ladder, stairs, or other way down unless it is listed here." % sample.footing)
 	# Bridal carried (cradle_rest.gd), she knows how she is being held.
 	var cradled: bool = sample.get("cradle", "") in ["cradled", "drowsy"]
 	var body := (CRADLE_REST.BODY_WORDS if cradled else "being held in the player's arms right now") if sample.held else ("moving" if sample.moving else "at rest")
+	# Sitting or lying, she is told how and on what (board #52); her bed words already say "lying in".
+	var resting := str(sample.get("own_posture", ""))
+	if not sample.held and not sample.moving and not resting.is_empty() and not str(sample.get("ground", "")).begins_with("lying"): body = resting
 	if str(sample.get("ground", "")) != "": body += ", " + str(sample.ground)
 	if str(sample.get("facing", "")) != "": body += ", facing " + str(sample.facing)
 	lines.append("- Your body: %s." % body)
@@ -463,11 +504,16 @@ func describe(sample: Dictionary, player_name: String, now: float) -> PackedStri
 		if not motion.is_empty(): pass
 		elif speed > 4.5: motion = "running " + ("toward you" if closing > 1.0 else ("away from you" if closing < -1.0 else "past you"))
 		elif speed > 0.4: motion = "walking " + ("toward you" if closing > 0.3 else ("away from you" if closing < -0.3 else "past you"))
-		else: motion = "standing still"
+		elif sample.player_visible: motion = "standing still"
 		var gaze := "looking at you" if sample.get("player_looking_at_you", false) else ("looking at " + str(sample.player_facing) if str(sample.get("player_facing", "")) != "" else "looking elsewhere")
 		# Both flags true is the usual case and needs no words (2026-10-22 token diet).
 		var reach := "" if sample.player_visible and sample.player_audible else (" Heard, not seen." if sample.player_audible else " Seen, but not within unobstructed speaking range.")
-		lines.append("- The player (%s) is %s, %s%s, %s, %s.%s" % [player_name, sample.get("player_bearing", "nearby"), distance_words(sample.player_distance), height_words(float(sample.get("player_height", 0.0))), motion, gaze, reach])
+		# Unseen, his stance and gaze are not claimed (board #52: a pony facing away from his bed was
+		# told he stood still); seen, the line is as before.
+		var parts := PackedStringArray([str(sample.get("player_bearing", "nearby")), distance_words(sample.player_distance) + height_words(float(sample.get("player_height", 0.0)))])
+		if not motion.is_empty(): parts.append(motion)
+		if sample.player_visible: parts.append(gaze)
+		lines.append("- The player (%s) is %s.%s" % [player_name, ", ".join(parts), reach])
 	else: lines.append("- The player is not currently seen or within unobstructed speaking range; do not claim to know their position.")
 	if sample.player_visible:
 		var carried := PackedStringArray()
@@ -484,7 +530,7 @@ func describe(sample: Dictionary, player_name: String, now: float) -> PackedStri
 	for peer: Dictionary in sample.get("present", []):
 		if peer.get("id", peer.name) in seen_ids: continue # already listed as visible: right here
 		present.append("%s (%s, %s)" % [peer.name, peer.get("bearing", "nearby"), distance_words(peer.distance)])
-	if not present.is_empty(): lines.append("- Also physically present beside you, including behind you: " + ", ".join(present) + ". Do not ask where one of these ponies is or describe her as absent.")
+	if not present.is_empty(): lines.append("- Also physically right here with you, including behind you: " + ", ".join(present) + ". Do not ask where one of these ponies is or act like she is absent.")
 	if not sample.audible.is_empty(): lines.append("- Currently audible voices: " + ", ".join(sample.audible))
 	for object: Dictionary in sample.objects: lines.append("- Visible object: %s (%s, %s)." % [object.name, object.get("bearing", "nearby"), distance_words(object.distance)])
 	if not sample.get("landmarks", []).is_empty():
@@ -492,7 +538,7 @@ func describe(sample: Dictionary, player_name: String, now: float) -> PackedStri
 		for landmark: Dictionary in sample.landmarks:
 			spots.append("%s (%s, %s)" % [landmark.name, landmark.get("bearing", "somewhere"), distance_words(float(landmark.distance))])
 		lines.append("- Nearby places: " + ", ".join(spots) + ". Directions are from where you face.")
-	if sample.get("hoof_held",false): lines.append("- The player is holding one of your hooves; your other legs support you.")
+	if sample.get("hoof_held",false): lines.append("- The player holds one of your hooves while you stand on the others.")
 	for event: Dictionary in sample.events: lines.append("- %.0f s ago: %s" % [maxf(0.0, now - event.time), event.text])
 	return lines
 

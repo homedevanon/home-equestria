@@ -63,7 +63,105 @@ func _physics_process(delta: float) -> void:
 	_physics_step(delta)
 	if started > 0: CPU_PROFILE.record("day_runner", started)
 
+## The half-second check spread over DAY_SLICE_TICKS physics steps (performance overhaul
+## 2026-11-21): each resident is still checked once every CHECK seconds, in the same order, a slice
+## of them per step instead of all of them in one step (1.2 to 1.5 ms in one step twice a second).
+## Not over all 30 steps of the half second: each slice pays the per-frame costs again, most likely
+## the population's house assignment that home_house() runs once per frame (30 slices measured twice the cost of one pass; six
+## add about a fifth). The kit day, chat stops and the card clean-up run once per round as before.
+## Rollback: SPREAD_RESIDENTS = false (one step does every resident).
+const SPREAD_RESIDENTS := true
+const DAY_SLICE_TICKS := 6
+var _round_chunk := 1
+var _round: Array = []
+var _round_at := 0
+var _round_live: Dictionary = {}
+var _round_busy: Dictionary = {}
+
 func _physics_step(delta: float) -> void:
+	if not SPREAD_RESIDENTS:
+		_whole_pass(delta)
+		return
+	_timer -= delta
+	if population == null or clock == null: return
+	if _round_at >= _round.size():
+		if _timer > 0.0: return
+		_end_round()
+		_timer = CHECK
+		_round = population.config.assignments.keys()
+		_round_at = 0
+		_round_chunk = maxi(1, ceili(float(_round.size()) / float(maxi(1, DAY_SLICE_TICKS))))
+		var kit_state: Node = KIT_STATE.for_node(self)
+		if kit_state != null: kit_state.advance_day(_day_key())
+	var take := _round_chunk
+	if take <= 0 or _round_at >= _round.size(): return
+	var prof := CPU_PROFILE.enabled
+	var lap := Time.get_ticks_usec() if prof else 0
+	var day := _day_key()
+	var hours := _card_hours()
+	var assignments: Dictionary = population.config.assignments
+	var stop := mini(_round.size(), _round_at + take)
+	while _round_at < stop:
+		var id: String = _round[_round_at]
+		_round_at += 1
+		if assignments.has(id): lap = _resident(id, day, hours, _round_live, _round_busy, prof, lap)
+
+## The close of a spread round: chat stops over the residents met this round, then cards of
+## residents no longer assigned (both ran right after the residents in the single-step pass).
+func _end_round() -> void:
+	if not _round.is_empty():
+		var live: Dictionary = {}
+		for id: String in _round_live:
+			var actor: Variant = _round_live[id]
+			if is_instance_valid(actor) and (actor as Node3D).is_inside_tree(): live[id] = actor
+		var prof := CPU_PROFILE.enabled
+		var lap := Time.get_ticks_usec() if prof else 0
+		chats.tick(live, _round_busy, CHECK)
+		if prof: lap = _lap("day_chats", lap)
+		for id: String in cards.keys():
+			if not population.config.assignments.has(id):
+				_end_card(id, cards[id])
+				cards.erase(id)
+				_fidgets.erase(id)
+	_round_live = {}
+	_round_busy = {}
+
+## One resident's half-second check (the body of the single-step pass). Returns the profile lap.
+func _resident(id: String, day: int, hours: float, live: Dictionary, busy: Dictionary, prof: bool, lap: int) -> int:
+	var actor: Node3D = population.live.get(id, {}).get("actor")
+	var alive := is_instance_valid(actor) and actor.is_inside_tree()
+	if not alive and not ESSENCE.unloaded(population, id): return lap   # visiting, on the train
+	if held.has(id): return lap
+	var card: Dictionary = cards.get(id, {})
+	if card.is_empty() or card.get("day", -1) != day:
+		_end_card(id, card)
+		var mech := _rolled_mech(id, day)
+		card = {"day": day, "steps": APPOINTMENT_STEPS.merge(id, day, PLANNER.roll(id, day, _info(id, actor if alive else null, day, mech)), _appointments()), "index": 0,
+			"action": null, "ctx": {}, "sidetracked": false, "essence": {}, "shown_on": null, "mech": mech}
+		card.index = mini(_resumed_index(id, day), card.steps.size())
+		cards[id] = card
+	if prof: lap = _lap("day_cards", lap)
+	if alive:
+		if not card.essence.is_empty(): _essence_to_body(id, card)
+		if card.shown_on != actor: _publish(id, actor, card)
+		_step(id, actor, card, hours)
+		if prof: lap = _lap("day_step", lap)
+		var picker: RefCounted = _fidgets.get(id)
+		if picker == null:
+			picker = FIDGETS.new()
+			_fidgets[id] = picker
+		picker.tick(actor, id, CHECK, not _idle_ok(id, card))
+		if prof: lap = _lap("day_fidgets", lap)
+		live[id] = actor
+		if card.action != null: busy[id] = true
+	else:
+		if card.action != null: _body_to_essence(id, card)
+		_step_essence(id, card, hours)
+		if prof: lap = _lap("day_essence", lap)
+	return lap
+
+## The single-step pass as it was before 2026-11-21 (SPREAD_RESIDENTS = false).
+func _whole_pass(delta: float) -> void:
 	_timer -= delta
 	if _timer > 0.0 or population == null or clock == null: return
 	_timer = CHECK
@@ -122,6 +220,8 @@ static func _lap(label: String, since: int) -> int:
 
 ## Where each resident is in today's card, for the save (game_saves.gd "day_plans"). A step
 ## running at save time starts again on load; earlier ones are not redone.
+const CHECKPOINT_INJECTED_ONLY := true
+
 func checkpoint() -> Dictionary:
 	var result := {}
 	var pending: Variant = population.get("resumed_plans") if population != null else null
@@ -131,8 +231,12 @@ func checkpoint() -> Dictionary:
 		if card.is_empty(): continue
 		# Steps a [use] put in (inject_now) are not in the rolled card a load rebuilds.
 		var index := int(card.index)
-		for i: int in mini(index, card.steps.size()):
-			if bool(card.steps[i].get("injected", false)): index -= 1
+		# Only a card inject_now() touched can hold injected steps (a rolled card never does);
+		# the walk over every card's steps was most of this checkpoint's 0.5 ms in the autosave
+		# frame (performance overhaul 2026-11-21). Rollback: CHECKPOINT_INJECTED_ONLY = false.
+		if card.get("injected_any", false) or not CHECKPOINT_INJECTED_ONLY:
+			for i: int in mini(index, card.steps.size()):
+				if bool(card.steps[i].get("injected", false)): index -= 1
 		result[id] = {"day": int(card.day), "index": index}
 		# The mechanics answers the card rolled with (_rolled_mech), so a load rolls the same steps.
 		var mech: Variant = card.get("mech")
@@ -582,6 +686,7 @@ func inject_now(id: String, step: Dictionary) -> bool:
 	entry.until = now + clampf(float(entry.get("hours", 1.0)) if (entry.get("hours") is float or entry.get("hours") is int) else 1.0, 0.25, 4.0)
 	entry.fixed = true
 	entry.injected = true
+	card["injected_any"] = true
 	if card.get("action") != null:
 		card.action.stop(card.ctx)
 		_cancel_step_state(card.ctx)

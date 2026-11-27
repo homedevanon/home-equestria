@@ -1,7 +1,10 @@
 extends RefCounted
 ## Imported project images stay readable inside a PCK; user-painted files stay raw.
 static func read(path:String)->Image:
-	if path.begins_with("res://") and not OS.has_feature("editor") and ResourceLoader.exists(path):
+	# A source run reads the raw file, except an image that only a mounted mod pack supplies: that one
+	# exists as an imported texture only, as in an exported game.
+	var imported_only:=not OS.has_feature("editor") or not FileAccess.file_exists(ProjectSettings.globalize_path(path))
+	if path.begins_with("res://") and imported_only and ResourceLoader.exists(path):
 		var texture:=load(path) as Texture2D
 		if texture==null:return null
 		var image:=texture.get_image()

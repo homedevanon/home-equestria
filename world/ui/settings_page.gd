@@ -15,10 +15,11 @@ const STYLE := preload("res://world/ui/menu_style.gd")
 const ICON := preload("res://world/ui/menu_icon.gd")
 const PICKER := preload("res://world/ui/menu_picker.gd")
 const CAPTION := preload("res://world/ui/speech_caption.gd")
+const CHATTER := preload("res://world/ai/chatter_voice.gd")
 ## Sidebar order, captions and pictures; a tab missing here is listed at the end.
 const GROUPS := [
 	["Story & AI", [["AI Settings", "chat"], ["Prompts", "quill"], ["Saved notes", "note"]]],
-	["Look & sound", [["Graphics", "sun"], ["Audio", "music"], ["Reading", "book"], ["World", "globe"]]],
+	["Look & sound", [["Graphics", "sun"], ["Audio", "music"], ["Reading", "book"], ["World", "globe"], ["Who lives where", "pony"]]],
 	["Play", [["Controls", "keyboard"], ["Controls map", "map"], ["VR comfort", "headset"], ["Accessibility", "access"], ["Mods", "gem"]]],
 ]
 ## Choices side by side at most; more go in a list.
@@ -63,6 +64,8 @@ var _updates_presses := 0
 var _updates_pressed_at := -10.0
 ## Settings → Mods switches by pack file, so switching a scenario mod on shows the others go off.
 var _mod_toggles: Dictionary = {}
+## Settings → Audio → Old voices switches by pony id.
+var _old_voice_toggles: Dictionary = {}
 
 
 ## `size` is the page's full size; `back_text` names the host's button ("" for none).
@@ -143,6 +146,7 @@ func _fill_list(t: int, list: VBoxContainer) -> void:
 		list.add_child(_lighting_controls)
 		_lighting_controls.setup(font_size, _redraw)
 	if str(tab[0]) == "Mods": _build_mods(list)
+	if str(tab[0]) == "Audio": _build_old_voices(list)
 	if str(tab[0]) == "Updates": _build_updates.call_deferred(list)
 	if str(tab[0]) == "Debug": _build_debug(list)
 	if str(tab[0]) == "VR comfort":
@@ -226,6 +230,7 @@ func _build_sidebar(body: HBoxContainer, width: float) -> void:
 			button.set_meta("no_sparkle", true)
 			_tabs[index] = button; _tab_order.append(button)
 			if str(entry[0]) == "Updates": button.pressed.connect(_on_updates_pressed)
+			if str(entry[0]) == "Who lives where": button.pressed.connect(_open_population)
 			if str(entry[0]) == "Debug":
 				_debug_button = button; button.visible = Settings.get_value("debug/unlocked") == true
 
@@ -245,6 +250,8 @@ func _row(list: VBoxContainer, label_text: String, key: String) -> void:
 		var action := key.get_slice(":", 1)
 		# The controls map is a page of its own, not a Settings action.
 		var run := (func(): show_tab("Controls map")) if action == "controls_map" else (func(): Settings.run_action(action))
+		# The population manager is a window of its own, opened from here and from its tab button.
+		if action == "population_manager": run = _open_population
 		var button := _button(list, Settings.action_label(action, label_text), run)
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -522,6 +529,41 @@ func _mod_row(list: VBoxContainer, row: Dictionary) -> void:
 	toggle.text = "On" if loader.switched_on(file) else "Off"
 
 
+## Settings → Audio → Old voices (player card 66): one switch per pony who can speak the old Ponese
+## voice (world/ai/chatter_voice_v2.gd). Everyone is off, today's voice, until switched.
+func _build_old_voices(list: VBoxContainer) -> void:
+	if not Settings.DEFAULTS.has(CHATTER.OLD_SETTING): return
+	_old_voice_toggles.clear()
+	_mods_heading(list, "Old voices", "Ponies switched on speak Ponese the way they did before the November 2026 voice update. A voice server's character voices stay as they are.")
+	for pony: Array in CHATTER.old_voice_ponies():
+		var id := str(pony[0])
+		var line := HBoxContainer.new(); line.add_theme_constant_override("separation", 6); list.add_child(line)
+		var label := STYLE.label(str(pony[1]), "", font_size - 2); label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL; line.add_child(label)
+		var toggle := _button(line, "", _switch_old_voice.bind(id))
+		toggle.custom_minimum_size.x = font_size * 6
+		_old_voice_toggles[id] = toggle
+	_refresh_old_voices()
+
+
+func _switch_old_voice(id: String) -> void:
+	var chosen: Array = []
+	var stored: Variant = Settings.get_value(CHATTER.OLD_SETTING)
+	if stored is Array: chosen = (stored as Array).duplicate()
+	if chosen.has(id): chosen.erase(id)
+	else: chosen.append(id)
+	Settings.set_value(CHATTER.OLD_SETTING, chosen)
+	refresh()
+
+
+func _refresh_old_voices() -> void:
+	var stored: Variant = Settings.get_value(CHATTER.OLD_SETTING)
+	for id: String in _old_voice_toggles:
+		var toggle: Variant = _old_voice_toggles[id]
+		if is_instance_valid(toggle) and toggle is Button:
+			(toggle as Button).text = "On" if stored is Array and (stored as Array).has(id) else "Off"
+
+
 ## One scenario mod at a time (world/modding/scenario.gd): switching one on switches every other
 ## scenario mod off. Returns the one-line note ("" when nothing else changed). Scenario switches
 ## apply at the next launch only (mod_loader.gd switch()).
@@ -606,6 +648,7 @@ func _build_debug(list: VBoxContainer) -> void:
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL; button.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_debug_field(list, "Pony name, e.g. rainbowdash", "Spawn pony", func(text: String) -> String: return "spawn " + text)
 	_debug_field(list, "Any command: help, show, ponese …", "Run", func(text: String) -> String: return text)
+	_row(list, "Performance capture", "debug/perf_capture")
 	var hide_button := _button(list, "Hide the Debug tab", func() -> void:
 		Settings.set_value("debug/unlocked", false)
 		Settings.message = "Debug tab hidden. Press Updates five times to bring it back."
@@ -776,6 +819,13 @@ func _appear(node: Control) -> void:
 	tween.parallel().tween_method(func(_v: float) -> void: _redraw(), 0.0, 1.0, 0.2)
 
 
+## The ponies' homes window (world/ui/population/population_window.gd), over the page that asked.
+func _open_population() -> void:
+	var window: Variant = load("res://world/ui/population/population_window.gd")
+	var host: Node = window.settings_host(get_tree())
+	window.open(host if host != null else get_tree().root)
+
+
 func show_tab(title: String) -> void:
 	for i in Settings.TABS.size():
 		if str(Settings.TABS[i][0]) == title: _show_tab(i)
@@ -818,6 +868,7 @@ func refresh() -> void:
 	# Window size only means something for a window (dev 2026-10-27: "grey it out when not windowed").
 	_set_row_enabled("video/window_size", str(Settings.get_value("video/window")) == "windowed")
 	_set_row_enabled("access/caption_opacity", Settings.get_value("access/caption_card") == true)
+	_refresh_old_voices()
 	if is_instance_valid(_quality_note): _quality_note.text = _quality_description()
 	_status.text = Settings.message
 	_status.visible = not Settings.message.is_empty()

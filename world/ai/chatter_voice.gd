@@ -14,9 +14,17 @@ const STYLES := ["syllables"]
 const KINDS := ["mare", "filly", "stallion", "colt"]
 ## Native voices kept loaded (each holds its bank and its made syllables).
 const MAX_LOADED := 16
+## The old voice (version 2, 2026-10-14 to 2026-11-02) for ponies the player switches back to it
+## under Settings > Audio > Old voices (player card 66). The setting holds their profile ids.
+const OLD := preload("res://world/ai/chatter_voice_v2.gd")
+const OLD_SETTING := "voice/old_voices"
+## Where pony profiles live, by id, for the names the Old voices list shows.
+const PROFILE_PATHS := ["res://world/ai/characters/%s.json", "res://world/characters/background/ai/%s.json", "res://world/characters/princesses/%s.json"]
 static var _manifest: Dictionary = {}
+static var _old_ponies: Array = []
 var _voices: Dictionary = {}
 var _order: Array[String] = []
+var _old: RefCounted
 
 static func manifest() -> Dictionary:
 	if _manifest.is_empty() and FileAccess.file_exists(MANIFEST):
@@ -96,6 +104,12 @@ static func current_style(_profile: Dictionary = {}) -> String:
 	return STYLES[0]
 
 func prepare(profile: Dictionary) -> Dictionary:
+	# Switched back to the old voice: the archived version 2 voice prepares and composes her line.
+	if uses_old_voice(profile):
+		if _old == null: _old = OLD.new()
+		var old: Dictionary = _old.call("prepare", profile)
+		old["old"] = true
+		return old
 	var data := manifest()
 	if data.is_empty(): return {"error":"missing ponese manifest"}
 	if not ClassDB.class_exists(NATIVE_CLASS): return {"error":"ponese voice library missing"}
@@ -121,6 +135,35 @@ func prepare(profile: Dictionary) -> Dictionary:
 	voice["syllables"] = syllable_share()
 	return voice
 
+## True when Settings > Audio > Old voices has this pony switched to the old voice. Main thread.
+static func uses_old_voice(profile: Dictionary) -> bool:
+	var id := str(profile.get("id", ""))
+	if id.is_empty(): return false
+	var tree := Engine.get_main_loop() as SceneTree
+	var settings: Node = tree.root.get_node_or_null("Settings") if tree != null else null
+	if settings == null: return false
+	var chosen: Variant = settings.call("get_value", OLD_SETTING)
+	return chosen is Array and (chosen as Array).has(id)
+
+## The ponies the Old voices list offers, as [id, name] pairs sorted by name: every pony with a
+## profile who had a voice of her own in the old voice, and the main cast (Spike had none).
+static func old_voice_ponies() -> Array:
+	if not _old_ponies.is_empty(): return _old_ponies
+	var ids: Array = []
+	var assign: Variant = OLD.manifest().get("assign", {})
+	if assign is Dictionary: ids.append_array((assign as Dictionary).keys())
+	for file: String in DirAccess.get_files_at("res://world/ai/characters"):
+		if file.ends_with(".json") and not ids.has(file.get_basename()): ids.append(file.get_basename())
+	for id: Variant in ids:
+		for pattern: String in PROFILE_PATHS:
+			var path := pattern % str(id)
+			if not FileAccess.file_exists(path): continue
+			var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+			if data is Dictionary: _old_ponies.append([str(id), str((data as Dictionary).get("name", str(id).capitalize()))])
+			break
+	_old_ponies.sort_custom(func(a: Array, b: Array) -> bool: return str(a[1]).naturalnocasecmp_to(str(b[1])) < 0)
+	return _old_ponies
+
 ## Settings > Audio > Ponese syllables as a share (0.25-1): how many of a word's syllables she
 ## says. Read here on the main thread; compose() runs on a worker.
 static func syllable_share() -> float:
@@ -133,6 +176,8 @@ static func syllable_share() -> float:
 ## Composes on a worker thread: text in, 24 kHz PCM, mouth cues and word cues out.
 static func compose(text: String, voice: Dictionary, emotion := "neutral", variation := 0) -> Dictionary:
 	if voice.has("error"): return voice
+	# The old voice composes as it did before (16 kHz PCM and its own mouth cues).
+	if bool(voice.get("old", false)): return OLD.compose(text, voice, emotion, variation)
 	var clean := text.strip_edges()
 	if clean.begins_with("[") and clean.find("]") < 24:
 		var end := clean.find("]")

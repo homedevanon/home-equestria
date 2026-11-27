@@ -21,6 +21,15 @@ const META := &"merged_static"
 const RANGE_REACH := true
 const REACH := &"range_reach"
 
+## Perf overhaul 2026-11-21 (lane draws): standard materials that differ ONLY in albedo colour
+## share one draw; each piece's colour rides on its vertices (sRGB, rounded to the 8 bits the vertex
+## colour keeps) and the merged material multiplies it in, as albedo_color did. Anything else that
+## differs (roughness, emission, textures, flags, transparency, any shader material) still splits.
+## A look whose pieces all share one colour keeps its own material. Materials that already use
+## vertex colour as albedo are never tinted. Rollback: MERGE_TINTS = false.
+const MERGE_TINTS := false
+static var merge_tints := MERGE_TINTS
+
 ## Returns [sources hidden, merged meshes added].
 ## `shadow_floor` > 0 (rooms inside the town): a piece that town_render_budget.gd would stop
 ## casting on its own (world size under the floor, or under FLAT_CASTER tall) merges as a
@@ -49,7 +58,7 @@ static func merge(root: Node3D, open_groups: Array = [], shaders: Array = [], la
 				ok = false; break
 			var signature := "default"
 			if material != null:
-				if not signatures.has(material): signatures[material] = _signature(material)
+				if not signatures.has(material): signatures[material] = _signature(material, _tintable(material))
 				signature = signatures[material]
 			keys.append("%s|%d|%d|%.3f|%.3f|%d|%d" % [signature, cast, mi.layers,
 				mi.visibility_range_end, mi.visibility_range_end_margin, mi.visibility_range_fade_mode, mi.gi_mode])
@@ -57,19 +66,33 @@ static func merge(root: Node3D, open_groups: Array = [], shaders: Array = [], la
 		for s: int in mi.mesh.get_surface_count():
 			var key: String = keys[s]
 			if not groups.has(key):
-				groups[key] = {"material": mi.get_active_material(s), "template": mi, "cast": cast, "parts": [], "points": []}
-			(groups[key].parts as Array).append([mi.mesh.surface_get_arrays(s), xform])
+				groups[key] = {"material": mi.get_active_material(s), "template": mi, "cast": cast, "parts": [], "points": [], "tints": {}}
+			var tint: Variant = null
+			var active: Material = mi.get_active_material(s)
+			if _tintable(active):
+				tint = (active as BaseMaterial3D).albedo_color
+				(groups[key].tints as Dictionary)[tint] = true
+			(groups[key].parts as Array).append([mi.mesh.surface_get_arrays(s), xform, tint])
 			# Visibility ranges are measured per instance: remember where each piece measured from.
 			(groups[key].points as Array).append_array([xform.origin, xform * mi.get_aabb().get_center()])
 		sources.append(mi)
 	var added := 0
 	for key: String in groups:
 		var group: Dictionary = groups[key]
-		var surface: Array = _build(group.parts)
+		# Only a look with more than one colour needs the colours on its vertices.
+		var tinted: bool = (group.tints as Dictionary).size() > 1
+		var surface: Array = _build(group.parts, tinted)
 		if (surface[Mesh.ARRAY_INDEX] as PackedInt32Array).is_empty(): continue
 		var mesh := ArrayMesh.new()
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surface)
-		mesh.surface_set_material(0, group.material)
+		var material: Material = group.material
+		if tinted:
+			var white := (material as BaseMaterial3D).duplicate() as BaseMaterial3D
+			white.albedo_color = Color.WHITE
+			white.vertex_color_use_as_albedo = true
+			white.vertex_color_is_srgb = true
+			material = white
+		mesh.surface_set_material(0, material)
 		var template: MeshInstance3D = group.template
 		var view := MeshInstance3D.new()
 		view.name = "%s%02d" % [label, added]
@@ -154,8 +177,13 @@ static func _material_ok(material: Material, shaders: Array) -> bool:
 		return true
 	return false
 
-## Every stored property, resources by identity: equal strings draw identically.
-static func _signature(material: Material) -> String:
+## A standard material whose albedo colour may ride on the vertices instead (see MERGE_TINTS).
+static func _tintable(material: Material) -> bool:
+	return merge_tints and material is BaseMaterial3D and not (material as BaseMaterial3D).vertex_color_use_as_albedo
+
+## Every stored property, resources by identity: equal strings draw identically. `skip_tint`
+## leaves the albedo colour out (the merge then carries it per vertex).
+static func _signature(material: Material, skip_tint := false) -> String:
 	if material == null: return "default"
 	var parts := PackedStringArray([material.get_class(), str(material.render_priority)])
 	if material is ShaderMaterial:
@@ -169,16 +197,27 @@ static func _signature(material: Material) -> String:
 		if not (int(property.usage) & PROPERTY_USAGE_STORAGE): continue
 		var name: String = property.name
 		if name.begins_with("resource_") or name == "script": continue
+		if skip_tint and name == "albedo_color":
+			parts.append("albedo_color=per_vertex")
+			continue
 		var value: Variant = material.get(name)
 		parts.append("%s=%s" % [name, str(value.get_instance_id()) if value is Object else var_to_str(value)])
 	return "|".join(parts)
 
 ## One surface from every part, in root space. Arrays only some parts have are filled with the
 ## values Godot assumes when they are absent (UV 0, tangent +X, colour white), so nothing changes look.
-static func _build(parts: Array) -> Array:
+## `tinted`: every vertex gets its part's albedo colour (part[2]) instead of its own colour.
+## The vertex colour is stored as 8 bits per channel, truncated: aim at the middle of the nearest
+## step so it keeps the rounded value of the albedo colour.
+static func _vertex_tint(tint: Variant) -> Color:
+	var c: Color = tint if tint is Color else Color.WHITE
+	return Color((roundf(c.r * 255.0) + 0.25) / 255.0, (roundf(c.g * 255.0) + 0.25) / 255.0,
+		(roundf(c.b * 255.0) + 0.25) / 255.0, (roundf(c.a * 255.0) + 0.25) / 255.0)
+
+static func _build(parts: Array, tinted := false) -> Array:
 	var has_uv := false
 	var has_tangent := false
-	var has_color := false
+	var has_color := tinted
 	for part: Array in parts:
 		var arrays: Array = part[0]
 		has_uv = has_uv or arrays[Mesh.ARRAY_TEX_UV] != null
@@ -212,7 +251,10 @@ static func _build(parts: Array) -> Array:
 					var t := (xform.basis * Vector3(tangents[i * 4], tangents[i * 4 + 1], tangents[i * 4 + 2])).normalized()
 					out_tangent.append_array([t.x, t.y, t.z, tangents[i * 4 + 3]])
 				else: out_tangent.append_array([1.0, 0.0, 0.0, 1.0])
-		if has_color:
+		if tinted:
+			var colors := PackedColorArray(); colors.resize(count); colors.fill(_vertex_tint(part[2]))
+			out_color.append_array(colors)
+		elif has_color:
 			var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR] if arrays[Mesh.ARRAY_COLOR] != null else PackedColorArray()
 			if colors.size() != count:
 				colors = PackedColorArray(); colors.resize(count); colors.fill(Color.WHITE)

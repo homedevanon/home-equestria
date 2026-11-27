@@ -92,6 +92,18 @@ func set_grip_input(side: String, pressed: Variant) -> void:
 func is_carrying(actor: Node) -> bool:
 	return actor in _held_ponies.values()
 
+## Hands that must open before they may take a pony again (a pony who struggled free).
+var _regrip_wait: Dictionary = {}
+
+## She struggled out of his hands (carry_struggle.gd): every hand on her lets go through the usual
+## release, as a gentle set-down, never a throw, and that fist takes nothing until it opens again.
+func let_go(actor: Node) -> void:
+	for side: String in SIDES:
+		if held_pony(side) != actor: continue
+		_throw_samples[side].clear(); _throw_previous.erase(side)
+		_release(side)
+		_regrip_wait[side] = true
+
 func held_pony(side: String) -> Node:
 	var actor: Variant = _held_ponies.get(side)
 	return actor if is_instance_valid(actor) else null
@@ -100,7 +112,15 @@ func is_holding(side: String) -> bool:
 	return bool(_holding[side]) or hoof_grabber.is_holding(side) or (is_instance_valid(cuddle_input) and cuddle_input.holding(side))
 
 
+## A closed fist, unless it is still the fist a pony just struggled out of (let_go): that one counts
+## as open, for the hoof and cuddle holds too, until the player really opens it.
 func _grip_pressed(side: String) -> bool:
+	var reading := _grip_reading(side)
+	if not reading: _regrip_wait.erase(side)
+	return reading and not _regrip_wait.has(side)
+
+
+func _grip_reading(side: String) -> bool:
 	var hand: Node = _hands.get(side)
 	if is_instance_valid(hand) and hand.get_meta("inventory_busy", false): return false
 	var tracker:Node=_controllers.get(side)

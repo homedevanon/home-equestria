@@ -13,9 +13,21 @@ func clear() -> void:
 	goal = Vector3.INF
 	requester_ref=null
 
+## 2026-11-19 (tools/interiors_nav/test_upstairs_exit.gd --house=library): a pony waiting inside
+## for the door's passage ticket stands beside the doorway, often on the ticket holder's own way
+## from the stairs to the door. She has a destination, so she could never be asked to step aside,
+## and the holder pressed against her until her own trip gave up (Twilight and Spike, 20 to 40 s).
+## A leaving pony that only waits for the door now steps aside like an idle one; her trip resumes
+## where it was. Rollback: DOOR_WAITERS_YIELD = false.
+static var DOOR_WAITERS_YIELD := true
+
+static func _door_waiter(nav:Node) -> bool:
+	var trip: RefCounted = nav.get("house_travel")
+	return DOOR_WAITERS_YIELD and trip != null and trip.active() and bool(trip.waiting_for_ticket) and not bool(trip.entering)
+
 func available(nav:Node) -> bool:
 	var pony:CharacterBody3D = nav.pony
-	return nav.native_follow and not nav._has_target and not is_instance_valid(nav._follow_target) \
+	return nav.native_follow and (not nav._has_target or _door_waiter(nav)) and not is_instance_valid(nav._follow_target) \
 		and not is_instance_valid(nav._conversation_target) and not nav.face_point.is_finite() \
 		and not pony.motion_paused and not pony._held and pony._interaction.is_empty() \
 		and pony.get("sleeping") != true and pony.grounded() \

@@ -34,10 +34,10 @@ const ACT_TEASE := {"cards": "the dancing deck of cards", "pick_card": "a card t
 	"doves": "the doves from the magic hat", "rings": "the linking rings", "vanish": "the vanishing box",
 	"cannon": "the human cannonball"}
 const ACT_MOMENT := {"cards": "Trixie makes a whole deck of cards dance in the air in rings, stars and a heart",
-	"pick_card": "Trixie floats a card to a pony in the crowd and makes it reappear from her hat",
+	"pick_card": "Trixie floats a card to a pony in the crowd, then pulls it back out of her hat",
 	"doves": "Trixie pulls a flock of doves out of her magician's hat",
 	"rings": "Trixie spins and links metal rings in the air around herself",
-	"vanish": "Trixie vanishes from her magic box and reappears behind the crowd",
+	"vanish": "Trixie disappears in her magic box and pops up behind the crowd",
 	"cannon": "Trixie fires a human cannonball out of her stage cannon"}
 ## What the crowd calls out (words over their heads, no AI call): a few ponies at each moment.
 const SHOUTS := {
@@ -146,7 +146,7 @@ func _opening_speech() -> bool:
 	for s: float in [-1.0, 1.0]:
 		var from := front + _facing() * 9.0 + _side() * 6.0 * s + Vector3.UP * 7.0
 		_lights.append(FX.spotlight(_stage_set, from, mark + Vector3.UP * 1.0))
-	_moment("Trixie stands in the spotlights giving her opening speech before the show")
+	_moment("under the spotlights, Trixie gives her opening speech before the show")
 	_shout("smile")
 	if not await _wait(2.0): return false
 	if not await _speak("speech_open", "", 30.0, 7.0): return false
@@ -689,7 +689,7 @@ func _act_vanish() -> bool:
 		# She was never gone: the puff clears and she is still standing there, sooty.
 		trixie.visible = true
 		_react("giggle", 5.0)
-		_line("mishap", "her vanishing act failed and she was still standing there when the smoke cleared")
+		_line("mishap", "her vanishing act failed, and when the smoke cleared she was still standing there")
 		if not await _wait(4.0): return false
 	else:
 		# ...and reappears behind the audience.

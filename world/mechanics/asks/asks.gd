@@ -225,6 +225,14 @@ func cancel(id: String, reason: String) -> bool:
 	row["outcome"] = reason.left(WHY_CHARS)
 	return true
 
+## Closes an open favour as done without the usual payment, friendship and message: for a mechanic
+## that saw Anon do it and thanks and rewards her in its own words (the wagon wheel,
+## world/mechanics/wagon_wheel/wagon_wheel.gd). The closed row, or {} when it was not open.
+func close_done(id: String, outcome: String) -> Dictionary:
+	var row := _close(id, "done")
+	if not row.is_empty(): row["outcome"] = outcome.left(WHY_CHARS)
+	return row
+
 # --- Completion --------------------------------------------------------------------------------
 
 func _process(delta: float) -> void:
@@ -344,7 +352,7 @@ func _pay(row: Dictionary) -> Dictionary:
 			"say": "%s paid you %d bits for the favour." % [_name(from), n], "text": "%s paid Anon %d bits for a favour." % [_name(from), n],
 			"witnesses": [from, "player"]})
 		if why.is_empty(): return {"ok": true, "line": "You paid him the %d bits you promised." % n}
-		return {"ok": false, "line": "You could not pay him the %d bits you promised (%s); you still owe him." % [n, why.trim_suffix(".")]}
+		return {"ok": false, "line": "You couldn't pay him the %d bits you promised (%s). You still owe him." % [n, why.trim_suffix(".")]}
 	if given.begins_with("item:"):
 		var item := given.substr(5)
 		var name := ASK_RULES.reward_words(given)

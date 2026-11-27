@@ -11,7 +11,31 @@ static func recover_saved_depth(point: Vector3) -> Vector3:
 const PROFILE := preload("res://world/characters/locomotion/pony_gait_profile.gd")
 const WATER := preload("res://world/water/water_contact.gd")
 
+## 2026-11-18 perf (town street, 8 s: building 12 ms / 3619 calls, about 19 per support() call,
+## whose nine floor rays and nine overhead rays mostly hit the same one or two colliders). The answer
+## reads only the names and metas up the node's parent chain, which no counter tracks, so it is kept
+## for the same physics step of the same main-loop iteration only, keyed by the node's instance id.
+## Rollback: BUILDING_MEMO = false.
+const BUILDING_MEMO := true
+static var _building_known: Dictionary = {}
+static var _building_physics := -1
+static var _building_process := -1
 static func building(node:Node)->bool:
+	if not BUILDING_MEMO or not is_instance_valid(node): return _building_walk(node)
+	var physics := Engine.get_physics_frames()
+	var process := Engine.get_process_frames()
+	if physics != _building_physics or process != _building_process:
+		_building_known.clear()
+		_building_physics = physics
+		_building_process = process
+	var id := node.get_instance_id()
+	var known: Variant = _building_known.get(id)
+	if known != null: return bool(known)
+	var found := _building_walk(node)
+	_building_known[id] = found
+	return found
+
+static func _building_walk(node:Node)->bool:
 	while is_instance_valid(node):
 		# Town houses are instanced as plot_NNNN under PonyvilleTown: their names never say
 		# "house", so roofs passed as ground and residents spawned on them (2026-09-22).

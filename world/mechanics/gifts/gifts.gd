@@ -19,6 +19,9 @@ const SIGNATURE_KEY := "signature_given"  # {pony_id: day}
 const DIMINISH := [1.0, 0.5, 0.25]        # 1st, 2nd, 3rd gift to her today; 4th+ = 0
 const MAX_POINTS := 5
 const MAX_VALUE := 500
+## What a pony always has on her to hand Anon with [give], without limit and outside any stock:
+## Berry Punch carries the cider mug the cider stand pours (player card 61).
+const CARRIES := {"berry_punch": ["food:sweet-apple-acres-cider"]}
 const GIVE_RANGE := 3.0                   # Anon's camera to her, for [give]
 const GAZE_RELEASE := 2.5
 ## The kind word in her note: the first of these tags the item carries.
@@ -27,6 +30,8 @@ const KIND_WORDS := [["home_good", "home good"], ["book", "book"], ["painting", 
 	["fabric", "fabric"], ["tea", "tea"], ["plant", "plant"]]
 const TASTE_LINES := {2: "You love that kind of thing.", 1: "You like that kind of thing.", 0: "", -1: "It is not really your thing."}
 static var _tastes: Dictionary = {}
+## "pony|item" -> the day her model last heard that she could not wear it (not saved).
+var _declined_told: Dictionary = {}
 
 var context: Node      # world_context
 var game: Node         # inventory, director (both optional)
@@ -158,6 +163,21 @@ func received(pony: Node3D, pony_id: String, item_id: String, ref := "gift") -> 
 	if n < DIMINISH.size(): _tell(pony, pony_id, note(pony, item_id, like))
 	_release_gaze(pony)
 
+## Anon held out wear she cannot take (pony_wardrobe.gd refusal(); thread 2026-11-13: "I told her I
+## got it for her", then nothing happened). Nothing changes hands and no bond moves; her model hears
+## why, once per pony, item and day (a paid line, so a hand left at her muzzle cannot repeat it).
+func declined(pony: Node3D, pony_id: String, item_id: String, why: String) -> void:
+	if pony_id.is_empty(): return
+	var key := "%s|%s" % [pony_id, ITEM_CATALOG.canonical(item_id)]
+	if int(_declined_told.get(key, -1)) != _day():
+		_declined_told[key] = _day()
+		_tell(pony, pony_id, decline_note(item_id, why))
+	_release_gaze(pony)
+
+## "Anon held out a red scarf for you to wear. You cannot wear it: ... You did not take it; tell him kindly."
+static func decline_note(item_id: String, why: String) -> String:
+	return "Anon offered you %s to wear, which you can't. %s You didn't take it, so turn him down kindly." % [phrase(item_id), why.strip_edges()]
+
 ## Her one observed line: "Anon gave you a tea set (home good, worth 25 bits). You like that kind of thing."
 static func note(pony: Node3D, item_id: String, like: int) -> String:
 	var tags := ITEM_CATALOG.tags(item_id)
@@ -193,21 +213,32 @@ func _tell(_pony: Node3D, pony_id: String, line: String) -> void:
 func _release_gaze(pony: Node3D) -> void:
 	if not is_instance_valid(pony) or not pony.has_method("set_action_gaze") or not is_inside_tree(): return
 	var camera: Node = get_viewport().get_camera_3d() if get_viewport() != null else null
-	get_tree().create_timer(GAZE_RELEASE).timeout.connect(func() -> void:
-		if not is_instance_valid(pony): return
-		var target: Variant = pony.get("action_gaze_target")
-		if target == null or (is_instance_valid(target) and (target == camera or target is Camera3D)): pony.set_action_gaze(null))
+	# Weak references, not lambda captures: a load can free her and the camera before the timer
+	# fires (the tree's timer outlives the scene), which logged "Lambda capture was freed".
+	get_tree().create_timer(GAZE_RELEASE).timeout.connect(_gaze_back.bind(weakref(pony), weakref(camera) if camera != null else null))
+
+func _gaze_back(pony_ref: WeakRef, camera_ref: Variant) -> void:
+	var pony: Variant = pony_ref.get_ref()
+	if not is_instance_valid(pony): return
+	var camera: Variant = (camera_ref as WeakRef).get_ref() if camera_ref is WeakRef else null
+	var target: Variant = (pony as Node).get("action_gaze_target")
+	if target == null or (is_instance_valid(target) and (target == camera or target is Camera3D)): (pony as Node).call("set_action_gaze", null)
 
 # --- give-back: [give: ITEM] -----------------------------------------------------------------
 
 func _signature_today(pony_id: String) -> bool:
 	return int(FACTS._number(_state_dict(SIGNATURE_KEY).get(pony_id), -1)) == _day()
 
-## Things she could hand Anon now: {"id", "source": "belonging"|"stock"|"signature", "ref"} rows,
-## one per id, belongings first.
+## Things she could hand Anon now: {"id", "source": "carried"|"belonging"|"stock"|"signature", "ref"}
+## rows, one per id. What she always carries (CARRIES) comes first, so it never uses up her
+## belongings or her stall stock.
 func givables(pony_id: String) -> Array[Dictionary]:
 	var rows: Array[Dictionary] = []
 	var seen: Array[String] = []
+	for value: Variant in CARRIES.get(pony_id, []):
+		var carried := ITEM_CATALOG.canonical(str(value))
+		if carried in seen or not ITEM_CATALOG.has(carried): continue
+		seen.append(carried); rows.append({"id": carried, "source": "carried", "ref": ""})
 	if is_instance_valid(belongings):
 		for row: Dictionary in belongings.items(pony_id):
 			var id := ITEM_CATALOG.canonical(str(row.id))

@@ -37,17 +37,17 @@ static func frame_for(state: Dictionary, speaker: String) -> String:
 	var welcomed := _welcomed(arrival)
 	if speaker == TWILIGHT:
 		if not meeting_for(state, speaker).is_empty():
-			facts.append("Twilight Sparkle: you found the confused newcomer alone in the Everfree Forest. At that meeting their origin was unknown; this establishes a meeting, not a friendship or knowledge of their name.")
+			facts.append("Twilight Sparkle: you found the confused newcomer alone in the Everfree Forest, not knowing where they came from. That only establishes a first meeting, not a friendship or knowing their name.")
 		if bool(arrival.get("teleported", false)):
-			facts.append("You already rescued the newcomer from the Everfree by teleporting both of you to Ponyville. Leaving the forest is completed history, not a future rescue or teleport still to perform.")
+			facts.append("You already rescued the newcomer from the Everfree by teleporting you both to Ponyville. That escape is in the past, so don't treat the rescue or the teleport as something still to do.")
 		elif str(arrival.get("stage", "")) == "found" and bool(arrival.get("transport_requested", false)):
-			facts.append("You have already committed to teleport the newcomer to Golden Oak. Transport is still pending: come back beside them before casting. Do not forget this commitment, start walking to Ponyville instead, or claim you have arrived.")
+			facts.append("You already promised to teleport the newcomer to Golden Oak, and you still haven't done it. Get back next to them before you cast. Don't forget your promise, start walking to Ponyville instead, or act like you've arrived.")
 		elif bool(arrival.get("shelter_explained", false)) or bool(arrival.get("celestia_briefed", false)) or welcomed:
-			facts.append("You already brought the newcomer out of the Everfree to safety; the rescue is completed history.")
+			facts.append("You already got the newcomer safely out of the Everfree. That rescue is in the past.")
 		if bool(arrival.get("shelter_explained", false)):
-			facts.append("You sheltered the newcomer inside Golden Oak Library and offered its downstairs guest bed.")
+			facts.append("You took the newcomer in at Golden Oak Library and offered them the guest bed downstairs.")
 		if bool(arrival.get("celestia_briefed", false)):
-			facts.append("You sent Celestia a message about finding the newcomer in the Everfree and sheltering them at Golden Oak.")
+			facts.append("You wrote to Celestia about finding the newcomer in the Everfree and taking them in at Golden Oak.")
 		if welcomed:
 			facts.append("Celestia already met and welcomed the newcomer and offered a permanent free Ponyville home, with no rent, debt or repayment. The welcome is completed, not a future appointment.")
 		var home := str(arrival.get("home", ""))
@@ -55,11 +55,11 @@ static func frame_for(state: Dictionary, speaker: String) -> String:
 		if not home.is_empty():
 			facts.append("The home is freely usable: ponies do not lock their homes or use house keys.")
 		if bool(arrival.get("done_explained", false)):
-			facts.append("You explained the confirmed bed, furniture, welcome food and 50 bits already provided; the newcomer is free to choose their next activity.")
+			facts.append("You already told the newcomer about the bed, furniture, welcome food, and 50 bits provided for them. Now they are free to do what they want.")
 	else:
 		if bool(arrival.get("celestia_briefed", false)) or welcomed:
-			facts.append("Celestia: Twilight's message told you she found the confused newcomer in the Everfree and brought them to safety. You learned this from Twilight; you did not witness the forest encounter or perform the rescue.")
+			facts.append("Celestia: Twilight's message told you she found the confused newcomer in the Everfree and brought them to safety. You only know this from her report. You didn't see them in the forest or rescue them yourself.")
 		if welcomed:
-			facts.append("You already met and welcomed the newcomer and offered a permanent free Ponyville home, with no rent, debt or repayment. Your welcome is completed, not a future appointment.")
+			facts.append("You already met and welcomed the newcomer, offering them a permanent Ponyville home free of rent, debt, or repayment. That welcome is done, so don't treat it as an upcoming meeting.")
 	if facts.is_empty(): return ""
 	return "Participant %s's durable arrival knowledge (ONLY %s's own knowledge, usable in their own speech; other participants did not thereby witness or learn this past; saved completed facts take precedence over older encounter plans):\n- %s" % [speaker, speaker, "\n- ".join(facts)]

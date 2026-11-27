@@ -101,6 +101,15 @@ func _ready() -> void:
 		_near.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 		_near.material_override = _near_material
 		add_child(_near)
+		# Quality key window_glow_near (autoload/quality.gd AMBIENCE_CONFIG, on for every tier today).
+		var quality: Node = get_node_or_null("/root/Quality")
+		if quality != null:
+			_near_quality(0)
+			quality.connect("preset_changed", _near_quality)
+
+func _near_quality(_preset: int) -> void:
+	var quality: Node = get_node_or_null("/root/Quality")
+	if is_instance_valid(_near) and quality != null: _near.visible = bool(quality.call("get_value", "window_glow_near", true))
 
 static func _load_panes() -> Dictionary:
 	if _panes.is_empty() and FileAccess.file_exists(PANES):

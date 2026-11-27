@@ -36,6 +36,11 @@ void PonySolverNative::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("contacts_plant", "feet", "hits", "state", "scalars"), &PonySolverNative::contacts_plant);
 	ClassDB::bind_method(D_METHOD("contacts_finish", "feet", "contacts", "delta", "state", "global", "model_frame"),
 			&PonySolverNative::contacts_finish);
+	ClassDB::bind_method(D_METHOD("contacts_begin_plant", "source_pose", "feet", "global", "pivot", "model_frame", "delta",
+								 "timing", "motion", "state", "scalars", "ray"),
+			&PonySolverNative::contacts_begin_plant);
+	ClassDB::bind_method(D_METHOD("contacts_resample_finish", "feet", "delta", "state", "global", "model_frame", "ray"),
+			&PonySolverNative::contacts_resample_finish);
 	ClassDB::bind_method(D_METHOD("bind_tail", "tips", "rest_bases", "angle_limits"), &PonySolverNative::bind_tail);
 	ClassDB::bind_method(D_METHOD("tail_update", "angles", "velocity", "base_pose", "mount_frame", "delta", "world_acceleration",
 								 "mount_state", "amounts"),

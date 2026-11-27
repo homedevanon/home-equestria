@@ -14,6 +14,13 @@ extends Node3D
 ## rustling at a nearby crown when autumn is windy, a louder dawn chorus in spring (two extra
 ## birds that only sing around sunrise), no crickets on winter nights. Recorded samples only.
 
+## Rollback (2026-11-18): false restores the old frame path. Measured before: 10 µs a frame for
+## _process with _daylight and _update_forest (script profiler, town street, ~470 FPS). Same values,
+## same rate: the clock's daylight() is called directly (has_method checked once per clock node
+## instead of every frame), volume reads and writes use the players' typed property instead of
+## get()/set() by name, and per-frame get() lookups take a StringName.
+## Off 2026-11-18: script profiler, street, 8 s: 33.5 ms before, 35.4 ms with the trim (no measurable gain).
+const FRAME_TRIM := false
 const WIND := preload("res://world/audio/designed/environment/breeze.ogg")
 const FOREST_DAY := preload("res://world/audio/ambience/forest_day.ogg")
 const CRICKETS := preload("res://world/audio/ambience/crickets.mp3")
@@ -236,7 +243,7 @@ func _process(delta: float) -> void:
 		_update_water(.35)
 	# Head immersion already has a camera-owned blend; reuse it without waiting for a room scan.
 	if is_instance_valid(_water_view):
-		var head_gain := clampf(float(_water_view.get("immersion")), 0.0, 1.0)
+		var head_gain := clampf(float(_water_view.get(&"immersion") if FRAME_TRIM else _water_view.get("immersion")), 0.0, 1.0)
 		if absf(head_gain-underwater) >= .01:
 			underwater = head_gain
 			SOUNDS.set_listener_context(self, 1.0-outdoor_gain, underwater)
@@ -258,7 +265,7 @@ func _process(delta: float) -> void:
 	_update_wind(delta, daylight)
 	_update_forest(delta, daylight)
 	var night_gain := (1.0 - smoothstep(.05, .4, daylight)) * _biome_gains.z * outdoor_gain * (1.0 - underwater) * _season_crickets
-	_set_db(_crickets, crickets_db + linear_to_db(maxf(night_gain, .00001)))
+	_set_db_flat(_crickets, crickets_db + linear_to_db(maxf(night_gain, .00001)))
 	if night_gain <= .005 and _crickets.playing: _crickets.stop()
 	elif night_gain > .005 and not _crickets.playing: _crickets.play(_rng.randf() * 5.0)
 	_update_creak(delta)
@@ -289,7 +296,7 @@ func _hold_bird(bird: AudioStreamPlayer3D) -> void:
 	if not is_instance_valid(host) or not host.is_visible_in_tree():
 		bird.stop(); _bird_hosts.erase(bird); _schedule_bird(bird)
 	else:
-		_set_db(bird, float(_bird_levels.get(bird, bird_db)) + linear_to_db(maxf(outdoor_gain * (1.0-underwater), .00001)))
+		_set_db_3d(bird, float(_bird_levels.get(bird, bird_db)) + linear_to_db(maxf(outdoor_gain * (1.0-underwater), .00001)))
 
 
 ## Seasonal mix at the listener (pure, so tests can pin it). `season` is "spring".."winter" (""
@@ -390,11 +397,11 @@ func _update_rustle(origin: Vector3) -> void:
 func _fade_season_beds(delta: float) -> void:
 	if _winter_wind.playing and _winter_gain != _winter_target:
 		_winter_gain = move_toward(_winter_gain, _winter_target, delta / 4.0)
-		_set_db(_winter_wind, winter_wind_db + linear_to_db(maxf(_winter_gain, .00001)))
+		_set_db_flat(_winter_wind, winter_wind_db + linear_to_db(maxf(_winter_gain, .00001)))
 		if _winter_gain <= 0.0: _winter_wind.stop()
 	if _rustle.playing and _rustle_gain != _rustle_target:
 		_rustle_gain = move_toward(_rustle_gain, _rustle_target, delta / 2.0)
-		_set_db(_rustle, rustle_db + linear_to_db(maxf(_rustle_gain, .00001)))
+		_set_db_3d(_rustle, rustle_db + linear_to_db(maxf(_rustle_gain, .00001)))
 		if _rustle_gain <= 0.0: _rustle.stop(); _rustle_host = null
 
 
@@ -415,11 +422,22 @@ func _update_wind(delta: float, daylight: float) -> void:
 	var fade := minf(2.0, _wind_duration*.25)
 	var envelope := smoothstep(0.0, fade, _wind_elapsed) * smoothstep(0.0, fade, _wind_duration-_wind_elapsed)
 	# A quiet air/leaf bed, softer after dark; no repeating pitched whoosh.
-	_set_db(_wind, wind_db - (1.0-daylight)*2.0 + linear_to_db(maxf(envelope*_biome_gains.x*outdoor_gain*(1.0-underwater), .00001)))
+	_set_db_flat(_wind, wind_db - (1.0-daylight)*2.0 + linear_to_db(maxf(envelope*_biome_gains.x*outdoor_gain*(1.0-underwater), .00001)))
 
+
+## The clock _daylight() last checked, and whether it has daylight() (FRAME_TRIM).
+var _daylight_clock: Node
+var _daylight_known := false
 
 func _daylight() -> float:
+	if FRAME_TRIM:
+		# Same test as below, redone whenever _tod is another node; a node's methods do not change.
+		if _tod != _daylight_clock or not _daylight_known:
+			_daylight_clock = _tod; _daylight_known = true
+			_clock_has_daylight = _tod != null and _tod.has_method("daylight")
+		return float(_tod.daylight()) if _clock_has_daylight else 1.0
 	return float(_tod.call("daylight")) if _tod != null and _tod.has_method("daylight") else 1.0
+var _clock_has_daylight := false
 
 
 func _update_forest(delta: float, daylight: float) -> void:
@@ -440,15 +458,25 @@ func _update_forest(delta: float, daylight: float) -> void:
 				_forest.play(_rng.randf() * 5.0)
 	var weather_gain := 1.0
 	if is_instance_valid(_weather):
-		var weather_params: Dictionary = _weather.get("params")
+		var weather_params: Dictionary = _weather.get(&"params") if FRAME_TRIM else _weather.get("params")
 		weather_gain = 1.0 - float(weather_params.get("rain", 0.0)) * .8
-	_set_db(_forest, forest_db + linear_to_db(maxf(daylight * _biome_gains.y * _forest_gain * outdoor_gain * (1.0-underwater) * weather_gain * _season_forest, .00001)))
+	_set_db_3d(_forest, forest_db + linear_to_db(maxf(daylight * _biome_gains.y * _forest_gain * outdoor_gain * (1.0-underwater) * weather_gain * _season_forest, .00001)))
 
 
 ## Perf 0.1.0: the beds' levels settle and then hold; a volume write on a playing player rebuilds
 ## its bus mix details (an allocation each), so a change under 0.01 dB is not written. Inaudible.
 static func _set_db(player: Node, db: float) -> void:
 	if absf(float(player.get("volume_db")) - db) >= .01: player.set("volume_db", db)
+
+## _set_db for a known player type (FRAME_TRIM): the typed property is the same volume_db the
+## named get()/set() read and wrote.
+static func _set_db_flat(player: AudioStreamPlayer, db: float) -> void:
+	if not FRAME_TRIM: _set_db(player, db); return
+	if absf(player.volume_db - db) >= .01: player.volume_db = db
+
+static func _set_db_3d(player: AudioStreamPlayer3D, db: float) -> void:
+	if not FRAME_TRIM: _set_db(player, db); return
+	if absf(player.volume_db - db) >= .01: player.volume_db = db
 
 
 func _bird_perch() -> Dictionary:

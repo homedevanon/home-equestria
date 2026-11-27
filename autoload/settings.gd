@@ -41,8 +41,10 @@ const DEFAULTS := {
 	"ponies/size": "canon",
 	"ponies/max_nearby": 0,
 	"ponies/boop_makes_mares_horny": false,
-	# How fast friendship and romance grow (M-AI-14): a multiplier on world/ai/impressions/
-	# pony_impressions.gd's gains and caps. 1.0 is the pace every number was tuned at.
+	# Relationship pace: Slow 0.5, Normal 1.0, Fast 2.0 (same key and values as M-AI-14): the multiplier
+	# on pony_impressions.gd's gains. With the relationship overhaul on (--new-relationships,
+	# world/relationships/bond_rules.gd DYNAMIC) it multiplies nothing: it changes one sentence that
+	# tells a pony how to weigh things (docs/RELATIONSHIP_OVERHAUL_2026_11_21.md 3.6).
 	"relationship/pace": 1.0,
 	"video/quality": "High",
 	# The tier a "Custom" quality started from: its keys stay under the edited rows (hidden).
@@ -58,6 +60,9 @@ const DEFAULTS := {
 	# Seasonal effects (world/seasons/season_state.gd effects_level()): Off keeps season colours
 	# and snow cover but drops falling leaves and petals, snow trails and leaf piles.
 	"video/seasonal_effects": "full",
+	# Tree crowns (AMD report 2026-11-12, docs/THREAD_FIX_AMD_TREES_2026_11_19.md): "classic" draws
+	# crowns as before 0.3.1; "safe" also turns the depth pre-pass off from the next launch.
+	"video/tree_crowns": "standard",
 	"video/vr_desktop_effects": false,
 	"video/color_grade": true,
 	"video/ocean": "preset",
@@ -104,6 +109,9 @@ const DEFAULTS := {
 	# Share of a word's syllables Ponese says (dev 2026-11-03): fewer sounds for the same words make
 	# lines shorter and less tiring. 100 = every syllable (PonyPoneseVoice "syllables" option).
 	"voice/ponese_syllables": 100,
+	# Profile ids of ponies that speak the old Ponese voice (Settings > Audio > Old voices, player
+	# card 66; world/ai/chatter_voice_v2.gd). Empty: everyone speaks today's voice.
+	"voice/old_voices": [],
 	"world/day_length_minutes": 60.0,
 	"world/season_days": 20,
 	"world/weather_frequency": 100,
@@ -119,6 +127,9 @@ const DEFAULTS := {
 	"ai/freeze_while_talking": true,
 	"ai/freeze_while_thinking": false,
 	"ai/freeze_effect": false,
+	# Second look (bond_rules.gd SECOND_LOOK_KEY, design section 9): "off" or "on". Only the player
+	# turns it on; the game never does, because it spends the player's tokens.
+	"ai/second_look": "off",
 	"reading/paper": "cream",
 	"reading/font": "literata",
 	"reading/size": 26,
@@ -128,6 +139,7 @@ const DEFAULTS := {
 	# Settings > Updates pressed five times shows the Debug tab and opens the developer tools in
 	# a player build too (world/dev_tools.gd, dev 2026-10-30).
 	"debug/unlocked": false,
+	"debug/perf_capture": false,
 }
 ## Validation and display. choice: [value, label] pairs; int/float: min, max, step, fmt;
 ## bool: [off label, on label]. "note" is appended to the row label ("restart" etc.).
@@ -146,6 +158,7 @@ const SPECS := {
 	"ponies/max_nearby": {"type": "choice", "options": [[0, "Unlimited"], [4, "4"], [8, "8"], [12, "12"], [16, "16"], [24, "24"], [32, "32"], [48, "48"], [64, "64"]]},
 	"ponies/boop_makes_mares_horny": {"type": "bool", "labels": ["Off", "On"]},
 	"relationship/pace": {"type": "choice", "options": [[0.5, "Slow"], [1.0, "Normal"], [2.0, "Fast"]], "note": "friendship and romance"},
+	"ai/second_look": {"type": "choice", "options": [["off", "Off"], ["on", "On"]], "note": "reads relationship tags a model leaves out; about 4% more tokens"},
 	"video/quality": {"type": "choice", "options": [["Very Low", "Very Low"], ["Low", "Low"], ["Medium", "Medium"], ["High", "High"], ["Ultra", "Ultra"], ["Custom", "Custom"]]},
 	"video/quality_base": {"type": "choice", "options": [["Very Low", "Very Low"], ["Low", "Low"], ["Medium", "Medium"], ["High", "High"], ["Ultra", "Ultra"]]},
 	"video/shadows": {"type": "choice", "options": [["preset", "Follow preset"], ["off", "Off"], ["very_low", "Very Low"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]},
@@ -155,6 +168,7 @@ const SPECS := {
 	"video/clouds": {"type": "choice", "options": [["preset", "Follow preset"], ["flat", "Flat sky clouds"], ["volumetric", "Volumetric"]]},
 	"video/weather_particles": {"type": "bool", "labels": ["Off", "On"]},
 	"video/seasonal_effects": {"type": "choice", "options": [["full", "Full"], ["reduced", "Reduced"], ["off", "Off"]]},
+	"video/tree_crowns": {"type": "choice", "options": [["standard", "Standard"], ["classic", "As before 0.3.1"], ["safe", "Safe (restart, no ambient occlusion)"]], "note": "if trees draw as blocks"},
 	# dev 2026-09-25: try the desktop glow in the headset. Restart the game after changing it.
 	"video/vr_desktop_effects": {"type": "bool", "labels": ["Off (restart)", "On (restart)"]},
 	"video/color_grade": {"type": "bool", "labels": ["Off", "On"]},
@@ -193,6 +207,8 @@ const SPECS := {
 	"audio/music": {"type": "int", "min": 0, "max": 100, "step": 10, "fmt": "%d%%"},
 	"voice/tts": {"type": "bool", "labels": ["Ponese only", "Character voices (TTS)"]},
 	"voice/ponese_syllables": {"type": "int", "min": 25, "max": 100, "step": 5, "fmt": "%d%%", "note": "shorter pony speech"},
+	# A list of names; the Audio tab draws its own rows for it (world/ui/settings_page.gd).
+	"voice/old_voices": {"type": "list"},
 	"world/day_length_minutes": {"type": "float", "min": 15.0, "max": 720.0, "presets": [15.0, 30.0, 60.0, 90.0, 180.0, 360.0, 720.0], "fmt": "%.0f real minutes"},
 	"world/season_days": {"type": "int", "min": 5, "max": 60, "step": 5, "fmt": "%d days"},
 	"world/weather_frequency": {"type": "int", "min": 0, "max": 300, "step": 25, "fmt": "%d%%", "zero": "Never wet"},
@@ -218,6 +234,7 @@ const SPECS := {
 	"reading/size": {"type": "int", "min": 16, "max": 44, "step": 2, "fmt": "%d px"},
 	"updates/check": {"type": "bool", "labels": ["Off", "On"]},
 	"debug/unlocked": {"type": "bool", "labels": ["Off", "On"]},
+	"debug/perf_capture": {"type": "bool", "labels": ["Off", "On"], "note": "after the next load, measures the game for about a minute and writes a file to the performance folder of the user folder; turn it off afterwards"},
 }
 ## Actions offered for rebinding (project.godot [input]); debug actions are left out.
 const BINDABLE := [["Move forward", "move_forward"], ["Move back", "move_back"], ["Move left", "move_left"],
@@ -235,7 +252,7 @@ const TABS := [
 	["Saved notes", []],
 	["Graphics", [["Quality preset", "video/quality"], ["Shadows", "video/shadows"], ["Ambient occlusion", "video/ambient_occlusion"], ["Glow", "video/glow"], ["Draw distance", "video/draw_distance"],
 		["Grass density", "video/grass_density"], ["Trees & plants", "video/foliage_density"], ["Max nearby ponies", "ponies/max_nearby"], ["Pony pictures from", "video/pony_impostors"],
-["Clouds", "video/clouds"], ["Rain & snow particles", "video/weather_particles"], ["Seasonal effects", "video/seasonal_effects"], ["Ocean", "video/ocean"], ["Glow in VR", "video/vr_desktop_effects"], ["Colour grade", "video/color_grade"],
+["Clouds", "video/clouds"], ["Rain & snow particles", "video/weather_particles"], ["Seasonal effects", "video/seasonal_effects"], ["Tree crowns", "video/tree_crowns"], ["Ocean", "video/ocean"], ["Glow in VR", "video/vr_desktop_effects"], ["Colour grade", "video/color_grade"],
 		["Render scale", "video/render_scale"], ["Upscaler", "video/upscaler"], ["Anti-aliasing", "video/antialiasing"], ["V-Sync", "video/vsync"], ["FPS cap", "video/fps_cap"], ["Extra frame ahead", "video/frames_ahead"], ["Window", "video/window"], ["Window size", "video/window_size"]]],
 	["Controls", [["Mouse sensitivity", "controls/mouse_sensitivity"], ["Invert mouse Y", "controls/invert_y"], ["Field of view", "controls/fov"],
 		["Move forward", "bind:move_forward"], ["Move back", "bind:move_back"], ["Move left", "bind:move_left"], ["Move right", "bind:move_right"],
@@ -247,8 +264,10 @@ const TABS := [
 		["Measure my height now", "action:measure_height"], ["Forget measured height", "action:forget_height"]]],
 	["Audio", [["Master volume", "audio/master"], ["Voice volume", "audio/voice"], ["Effects volume", "audio/sfx"], ["Ambience volume", "audio/ambience"], ["Flight wind volume", "audio/wind"], ["Music volume", "audio/music"], ["Pony voices", "voice/tts"], ["Ponese syllables", "voice/ponese_syllables"]]],
 	["World", [["Day length (time speed)", "world/day_length_minutes"], ["Season length", "world/season_days"], ["Title screen view", "title/view"], ["Rain & snow frequency", "world/weather_frequency"], ["Opening", "world/opening"], ["Anon's height (your real height)", "player/height_cm"], ["Pony size", "ponies/size"],
-		["Relationship pace", "relationship/pace"], ["Boop Makes Mares Horny", "ponies/boop_makes_mares_horny"],
+		["Relationship pace", "relationship/pace"], ["Second look", "ai/second_look"], ["Boop Makes Mares Horny", "ponies/boop_makes_mares_horny"],
 		["Ponies freeze while I talk or type", "ai/freeze_while_talking"], ["A pony freezes while she thinks", "ai/freeze_while_thinking"], ["Time-stop look (vignette, slow sound)", "ai/freeze_effect"], ["Summon the Great Evil", "action:spawn_barbiepone"]]],
+	# The population manager (world/ui/population/population_window.gd); its tab button opens the window.
+	["Who lives where", [["Choose who lives where", "action:population_manager"]]],
 	["Accessibility", [["Subtitles", "access/subtitles"], ["Subtitle size", "access/subtitle_scale"], ["Caption background", "access/caption_card"], ["Background opacity", "access/caption_opacity"], ["Pony speech text", "access/speech_text"], ["Menu text size", "access/ui_scale"], ["Reduced motion", "access/reduced_motion"]]],
 	["Reading", [["Paper", "reading/paper"], ["Font", "reading/font"], ["Text size", "reading/size"]]],
 	["Mods", []],
@@ -404,6 +423,7 @@ func _ready() -> void:
 	_apply_audio()
 	_apply_display(true)
 	_apply_text_scale()
+	apply_tree_crowns()
 	# Quality is the next autoload: its node does not exist yet during this _ready.
 	_apply_quality.call_deferred()
 
@@ -434,6 +454,15 @@ static func validate(key: String, value: Variant) -> Variant:
 				if typeof(option[0]) == TYPE_FLOAT and (value is int or value is float) and is_equal_approx(float(value), float(option[0])): return option[0]
 				if typeof(option[0]) == TYPE_STRING and value is String and value == option[0]: return option[0]
 			return null
+		"list":
+			# Names without blanks or repeats, sorted, as a plain Array.
+			if not (value is Array or value is PackedStringArray): return null
+			var names: Array = []
+			for item: Variant in value:
+				var text := str(item)
+				if not text.is_empty() and not names.has(text): names.append(text)
+			names.sort()
+			return names
 	return null
 
 
@@ -662,6 +691,7 @@ func _apply(key: String) -> void:
 	elif key in ["video/vsync", "video/fps_cap", "video/window"]: _apply_display(key == "video/window")
 	elif key == "video/window_size": _apply_window_size()
 	elif key == "video/frames_ahead": _write_frames_ahead()
+	elif key == "video/tree_crowns": apply_tree_crowns()
 	elif key == "access/ui_scale": _apply_text_scale()
 	elif key == "video/grass_density": apply_grass()
 	elif key in ["access/subtitles", "access/subtitle_scale"]: apply_subtitles()
@@ -710,6 +740,10 @@ func _apply_quality() -> void:
 	var occlusion := str(get_value("video/ambient_occlusion"))
 	if occlusion == "off": overrides["ssao"] = false; overrides["ssil"] = false
 	elif occlusion == "on": overrides["ssao"] = true
+	# Without Godot's depth pre-pass (Tree crowns: Safe, read at launch) Forward+ never computes SSAO
+	# or SSIL but still applies their buffers, which turned the whole High scene near black (sweep
+	# of 2026-11-19, docs/THREAD_FIX_AMD_TREES_2026_11_19.md). Both stay off while it is off.
+	if not bool(ProjectSettings.get_setting("rendering/driver/depth_prepass/enable", true)): overrides["ssao"] = false; overrides["ssil"] = false
 	var glow := str(get_value("video/glow"))
 	if glow != "preset": overrides["glow"] = glow == "on"
 	quality.vr_desktop_effects = bool(get_value("video/vr_desktop_effects"))
@@ -752,6 +786,31 @@ func frames_ahead_on() -> bool:
 	var tier := str(get_value("video/quality"))
 	if tier == "Custom": tier = str(get_value("video/quality_base"))
 	return tier in FRAMES_AHEAD_TIERS
+
+## "Tree crowns" (AMD report 2026-11-12, docs/THREAD_FIX_AMD_TREES_2026_11_19.md), a last resort
+## for a graphics driver we cannot test. "classic" sets the shader global vegetation_classic_crowns:
+## crowns are drawn as before 0.3.1 (world/foliage/vegetation_color.gdshaderinc vegetation_spring_on;
+## world/seasons/tree_query.gd flowers() follows it for petals). "safe" also turns Godot's depth
+## pre-pass off from the next launch (user://launch.cfg): opaque surfaces then test and write their
+## own depth instead of matching the pre-pass exactly, and Godot drops ambient occlusion with it.
+## Standard writes the engine default back. Desktop only for the pre-pass: Quest's renderer has none.
+func apply_tree_crowns() -> void:
+	var mode := str(get_value("video/tree_crowns"))
+	RenderingServer.global_shader_parameter_set(&"vegetation_classic_crowns", mode in ["classic", "safe"])
+	if DisplayServer.get_name() == "headless" or OS.has_feature("editor") or OS.has_feature("android"): return
+	var err := write_tree_crowns_launch(mode)
+	if err != OK: push_warning("[settings] could not write the depth pre-pass to launch.cfg: %s" % error_string(err))
+
+## The launch.cfg half of "Tree crowns" (static so tools/seasons/test_tree_crowns_setting.gd can run it
+## on a scratch file). A player who never chose Safe keeps a launch.cfg without the key (the engine
+## default); once written, Standard and classic write the default (true) back.
+static func write_tree_crowns_launch(mode: String, path: String = "") -> Error:
+	var target: String = path if not path.is_empty() else str(preload("res://world/launch_config.gd").PATH)
+	var file := ConfigFile.new()
+	var written := file.load(target) == OK and file.has_section_key("rendering", "driver/depth_prepass/enable")
+	if mode != "safe" and not written: return OK
+	var err: Error = preload("res://world/launch_config.gd").write_overrides({"rendering/driver/depth_prepass/enable": mode != "safe"}, target)
+	return err
 
 func _write_frames_ahead() -> void:
 	if DisplayServer.get_name() == "headless" or OS.has_feature("editor") or OS.has_feature("android"): return
@@ -847,7 +906,8 @@ func weather_frequency() -> float:
 	return int(get_value("world/weather_frequency")) / 100.0
 
 
-## The relationship pace multiplier (M-AI-14): 0.5 slow, 1.0 normal, 2.0 fast.
+## The relationship pace (M-AI-14): 0.5 slow, 1.0 normal, 2.0 fast: the multiplier on gains. With
+## the overhaul on (--new-relationships) it only chooses the wording of a pony's "Your way" line.
 func relationship_pace() -> float:
 	return float(get_value("relationship/pace"))
 
@@ -1003,6 +1063,9 @@ func run_action(id: String) -> void:
 			message = "Measured height forgotten; Anon's height is 6 ft again, estimated while you stand in VR."
 		"spawn_barbiepone":
 			# world/events/barbiepone/barbiepone.gd answers the signal below.
+			message = ""
+		"population_manager":
+			# The settings page opens the ponies' homes window itself (world/ui/settings_page.gd _open_population).
 			message = ""
 	changed.emit("action:" + id)
 

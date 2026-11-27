@@ -91,6 +91,9 @@ private:
 	};
 	ContactLeg contact_legs[4];
 	ContactFoot contact_feet[4];
+	// contacts_begin_plant() -> contacts_resample_finish(): contacts_plant()'s re-sample points.
+	PackedVector3Array contact_resample_points;
+	PackedByteArray contact_resample;
 	// Only hoof leaves, sole ends and their ancestors; invalidated by either binding.
 	std::vector<int32_t> contact_fk_bones;
 	std::vector<Transform3D> contact_local_fk;
@@ -277,6 +280,19 @@ public:
 	Array contacts_plant(const Array &p_feet, const Array &p_hits, const PackedInt32Array &p_state, const PackedFloat64Array &p_scalars);
 	void contacts_finish(const Array &p_feet, const Array &p_contacts, double p_delta, const PackedInt32Array &p_state,
 			const Transform3D &p_global, const Transform3D &p_model_frame);
+	// Perf 2026-11-21 (lane native_calls, contacts_fused.cpp): the same three phases with their
+	// probes made here through probe() (the same rays, in the same order), so a HERO tick makes two
+	// calls instead of three plus four to eight script _probe() calls and their dictionaries.
+	// contacts_begin_plant() = contacts_begin(), probe() at the four references, contacts_plant();
+	// it returns contacts_plant()'s array. contacts_resample_finish() = probe() at each re-sample
+	// point contacts_plant() asked for, then contacts_finish(). `ray`: hip_height, mask,
+	// max_slope_degrees (probe()'s arguments).
+	Array contacts_begin_plant(const Array &p_source_pose, const Array &p_feet, const Transform3D &p_global,
+			const Transform3D &p_pivot, const Transform3D &p_model_frame, double p_delta, const PackedFloat64Array &p_timing,
+			const PackedFloat64Array &p_motion, const PackedInt32Array &p_state, const PackedFloat64Array &p_scalars,
+			const PackedFloat64Array &p_ray);
+	void contacts_resample_finish(const Array &p_feet, double p_delta, const PackedInt32Array &p_state,
+			const Transform3D &p_global, const Transform3D &p_model_frame, const PackedFloat64Array &p_ray);
 	// The hybrid tail springs (tail.cpp).
 	void bind_tail(const PackedVector3Array &p_tips, const Array &p_rest_bases, const PackedFloat64Array &p_angle_limits);
 	Array tail_update(const PackedVector3Array &p_angles, const PackedVector3Array &p_velocity, const Array &p_base_pose,

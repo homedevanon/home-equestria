@@ -151,11 +151,21 @@ static func spoken_words(text: String) -> String:
 func handle_feedback(text: String) -> void:
 	host.feedback_input.submit(text)
 
+## True once the microphone's failure (speech_input.gd FAILED_TEXT) has been shown; it is shown
+## once per failure, and a retry that clears the failure arms it again.
+var _mic_failure_shown := false
+
 func _on_speech_state(value: String) -> void:
 	if value == "hearing": _dictation_overlap = host.state == "speaking"
 	if value == "hearing" and (host.state != "idle" or host.group.active()) and not host.floor_held() and not dictating(): host.interrupt()
+	var failure := str(host.speech.get("failure")) if host.speech.get("failure") is String else ""
+	if failure.is_empty(): _mic_failure_shown = false
 	if host.state == "idle":
-		host.hud.set_state("feedback" if value == "hearing" and host.speech.feedback_mode else value, host.hud.detail if value == "listening" else "")
+		var detail: String = host.hud.detail if value == "listening" else ""
+		if value == "off" and not failure.is_empty() and not _mic_failure_shown:
+			_mic_failure_shown = true
+			detail = failure
+		host.hud.set_state("feedback" if value == "hearing" and host.speech.feedback_mode else value, detail)
 
 
 ## Button down takes the floor immediately, before any microphone samples arrive.

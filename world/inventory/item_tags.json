@@ -25,6 +25,7 @@
 		"goods:camera": ["tool"],
 		"goods:easel": ["tool"],
 		"goods:quill": ["tool"],
+		"food:cart-wheel": ["tool"],
 		"river-fish": ["fish"],
 		"rake": ["tool"]
 	},

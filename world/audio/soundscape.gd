@@ -152,7 +152,12 @@ func _process(delta: float) -> void:
 	_timer -= delta
 	if _timer <= 0.0:
 		_timer = STEP
-		_decide()
+		# Quality key soundscape (autoload/quality.gd AMBIENCE_CONFIG, on for every tier today):
+		# off fades every placed sound out and stops it, and nothing is placed or started.
+		var quality: Node = get_node_or_null("/root/Quality")
+		if quality == null or bool(quality.call("get_value", "soundscape", true)): _decide()
+		else:
+			for name: String in _loops: _want(name, 0.0)
 		# The targets may have moved; one pass also restarts a loop that stopped on its own.
 		_settled = false
 	# Every loop sits at its target: nothing to fade until the next decision.

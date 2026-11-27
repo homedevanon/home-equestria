@@ -50,10 +50,12 @@ const SINGLES := 500
 const MAX_LEAVES := 20000
 const POLL := 0.5
 const MOVE_STEP := 6.0
-const TREES_PER_POLL := 1
-## While trees wait to be laid the tick runs at this pace: the same two trees a POLL as before,
-## one per frame instead of both in one (a tree is up to about 2,000 leaves of script work).
-const POLL_LAYING := 0.25
+## While trees wait to be laid the tick runs at this pace and lays at most this many leaves, so a
+## big tree (up to about 2,000 leaves of script work) is spread over several ticks instead of
+## landing in one frame (audit 2026-11-20; it was one whole tree every 0.25 s). About 5,000 leaves a
+## second, a little more than before.
+const POLL_LAYING := 0.06
+const LEAVES_PER_POLL := 300
 ## Leaf length in metres [least, most], and the side of a handful (its leaves are about a third of it).
 const SIZE := Vector2(0.13, 0.21)
 const HANDFUL := Vector2(0.5, 0.75)
@@ -86,6 +88,19 @@ var _centre := Vector3.INF
 var _litter := -1.0
 var _petals := false          # spring: petals under flowering trees instead of leaves
 var _paths: RefCounted
+## The trees in reach at the last look (nearest first) and their keys; kept while trees wait.
+var _rows: Array = []
+var _row_keys: Array[String] = []
+var _waiting := false
+## The tree being laid over several ticks: {key, row, rng, petals, count, handfuls, next, out}.
+var _job: Dictionary = {}
+## Trees laid for an older litter: they stay on show as they are until laid again, so a new day
+## no longer sweeps the whole carpet away and grows it back.
+var _stale: Dictionary = {}
+## Path weight of each terrain corner the tree being laid has asked for (float32, as
+## world/navigation/terrain_paths.gd rounds it): leaves share corners, the terrain is asked once.
+var _corners: Dictionary = {}
+var _float32 := PackedFloat32Array([0.0])
 
 
 func setup(season: Node) -> void:
@@ -120,9 +135,13 @@ func refresh() -> void:
 	# The count under every tree follows the litter: lay them again when it has moved.
 	var petals := state != null and str(state.call("season")) == "spring"
 	if absf(litter - _litter) > 0.02 or petals != _petals:
+		if petals != _petals:
+			_trees.clear(); _stale.clear()
+		else:
+			for key: Variant in _trees: _stale[key] = true
 		_litter = litter
 		_petals = petals
-		_trees.clear(); _centre = Vector3.INF
+		_job = {}; _centre = Vector3.INF
 	poll()
 
 
@@ -131,6 +150,7 @@ func _stop() -> void:
 	if is_instance_valid(_instance): _instance.queue_free()
 	_timer = null; _instance = null; _mesh = null
 	_trees.clear(); _shown.clear(); _centre = Vector3.INF; _litter = -1.0; leaves = 0
+	_rows.clear(); _row_keys.clear(); _stale.clear(); _job = {}; _corners.clear(); _waiting = false
 
 
 func _build() -> void:
@@ -161,14 +181,46 @@ func _build() -> void:
 	add_child(_timer)
 
 
-## The 2 Hz step: which trees are in reach, lay a few new ones, rewrite the buffer if the set changed.
+## The 2 Hz step: which trees are in reach, lay some leaves, rewrite the buffer if the set changed.
 func poll() -> void:
 	if _instance == null: return
 	var camera := PLAYER_VIEW.camera(self)
 	if camera == null: return
 	var eye := camera.global_position
 	if not eye.is_finite(): return
-	if _centre.is_finite() and eye.distance_to(_centre) < MOVE_STEP: return
+	var moved := not _centre.is_finite() or eye.distance_to(_centre) >= MOVE_STEP
+	if not moved and not _waiting: return
+	# The trees are looked up again only after a move; while some still wait, the list stays.
+	if moved:
+		_look(eye)
+		_centre = eye
+	var keys: Array = []
+	var budget := LEAVES_PER_POLL
+	var total := 0
+	var waiting := false
+	var changed := false
+	for index: int in _rows.size():
+		var key := _row_keys[index]
+		if not _trees.has(key) or _stale.has(key):
+			if budget > 0:
+				budget = _lay_some(_rows[index], key, budget)
+				changed = changed or (_trees.has(key) and not _stale.has(key))
+			if not _trees.has(key):
+				waiting = true
+				continue
+			if _stale.has(key): waiting = true
+		var count := (_trees[key] as PackedFloat32Array).size() / FLOATS
+		if total + count > MAX_LEAVES: break
+		total += count
+		keys.append(key)
+	_waiting = waiting
+	var pace := POLL_LAYING if waiting else POLL
+	if is_instance_valid(_timer) and not is_equal_approx(_timer.wait_time, pace): _timer.wait_time = pace
+	if changed or keys != _shown: _write(keys)
+
+
+## The leafy (or, in spring, flowering) trees within REACH of the eye, nearest first.
+func _look(eye: Vector3) -> void:
 	var rows: Array = []
 	for row: Dictionary in TREE_QUERY.canopies(get_tree() if is_inside_tree() else null, eye, REACH):
 		if _petals:
@@ -178,34 +230,56 @@ func poll() -> void:
 		if CLIMATE.sample(Vector2(at.x, at.z), 1) < MIN_DECIDUOUS: continue
 		rows.append(row)
 	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return (a.position as Vector3).distance_squared_to(eye) < (b.position as Vector3).distance_squared_to(eye))
-	var keys: Array = []
+	_rows = rows
+	_row_keys.clear()
 	var in_reach := {}
-	var laid := 0
-	var total := 0
-	var waiting := false
-	for row: Dictionary in rows: in_reach[_key(row.position)] = true
 	for row: Dictionary in rows:
 		var key := _key(row.position)
-		if not _trees.has(key):
-			if laid >= TREES_PER_POLL:
-				waiting = true
-				continue
-			_trees[key] = _lay(row)
-			laid += 1
-		var count := (_trees[key] as PackedFloat32Array).size() / FLOATS
-		if total + count > MAX_LEAVES: break
-		total += count
-		keys.append(key)
+		_row_keys.append(key)
+		in_reach[key] = true
 	# Trees that fell out of reach are forgotten (they are laid the same way on return). A tree in
 	# reach that did not fit under MAX_LEAVES keeps its leaves: forgetting it laid it again on
 	# every move.
 	for key: Variant in _trees.keys():
-		if not in_reach.has(key): _trees.erase(key)
-	# While trees still wait to be laid, the next tick carries on from here.
-	_centre = Vector3.INF if waiting else eye
-	var pace := POLL_LAYING if waiting else POLL
-	if is_instance_valid(_timer) and not is_equal_approx(_timer.wait_time, pace): _timer.wait_time = pace
-	if keys != _shown: _write(keys)
+		if not in_reach.has(key):
+			_trees.erase(key); _stale.erase(key)
+
+
+## Lays up to `budget` more leaves of this tree and returns the budget left. Its rows go into
+## _trees once every leaf is laid.
+func _lay_some(row: Dictionary, key: String, budget: int) -> int:
+	if _job.is_empty() or str(_job.key) != key: _job = _begin(row, key)
+	var from := int(_job.next)
+	var to := mini(int(_job.count), from + budget)
+	if bool(_job.petals): _lay_petals(_job, from, to)
+	else: _lay(_job, from, to)
+	_job.next = to
+	if to >= int(_job.count):
+		_trees[key] = _job.out
+		_stale.erase(key)
+		_job = {}
+	return budget - (to - from)
+
+
+## A tree's laying job: how many leaves, and the random sequence that places them (fixed by the
+## tree's place, so the same tree is always laid the same way).
+func _begin(row: Dictionary, key: String) -> Dictionary:
+	_corners.clear()
+	var radius := float(row.radius)
+	var rng := RandomNumberGenerator.new()
+	var job := {"key": key, "row": row, "rng": rng, "petals": _petals, "next": 0, "handfuls": 0}
+	if _petals:
+		rng.seed = hash(key) + 7
+		job["count"] = int(round(PETALS_PER_TREE * _litter * _scale() * clampf(radius / 2.5, 0.6, 2.0)))
+	else:
+		rng.seed = hash(key)
+		var share := _litter * _scale() * clampf(radius / 2.5, 0.6, 2.0)
+		job["handfuls"] = int(round(PER_TREE * share))
+		job["count"] = int(job.handfuls) + int(round(SINGLES * share))
+	var out := PackedFloat32Array()
+	out.resize(int(job.count) * FLOATS)
+	job["out"] = out
+	return job
 
 
 func _write(keys: Array) -> void:
@@ -225,25 +299,21 @@ func _key(at: Vector3) -> String:
 	return "%d_%d" % [roundi(at.x * 2.0), roundi(at.z * 2.0)]
 
 
-## The leaves under one tree, as MultiMesh buffer rows. Fixed by the tree's place.
-func _lay(row: Dictionary) -> PackedFloat32Array:
+## Leaves `from` up to `to` under one tree, written into the job's MultiMesh buffer rows.
+func _lay(job: Dictionary, from: int, to: int) -> void:
+	var row: Dictionary = job.row
 	var crown: Vector3 = row.position
 	var radius := float(row.radius)
 	var root: Vector3 = row.get("root", Vector3(crown.x, 0.0, crown.z))
 	var kind := autumn_tree(root)
-	if _petals: return _lay_petals(row)
-	var rng := RandomNumberGenerator.new()
-	rng.seed = hash(_key(crown))
+	var rng: RandomNumberGenerator = job.rng
 	var fallen := _litter > 0.9     # after the Running: every leaf is down, and lies wider
 	var reach := radius * SPREAD * (1.3 if fallen else 1.0) + MARGIN
-	var share := _litter * _scale() * clampf(radius / 2.5, 0.6, 2.0)
-	var handfuls := int(round(PER_TREE * share))
-	var count := handfuls + int(round(SINGLES * share))
-	var out := PackedFloat32Array()
-	out.resize(count * FLOATS)
+	var handfuls := int(job.handfuls)
+	var out: PackedFloat32Array = job.out
 	var drift := DOWNWIND.normalized() * reach * 0.25
 	var terrain := is_instance_valid(WorldTerrain.instance)
-	for index: int in count:
+	for index: int in range(from, to):
 		var angle := rng.randf() * TAU
 		var away := reach * pow(rng.randf(), 0.75)
 		var at := Vector3(crown.x + cos(angle) * away + drift.x, crown.y, crown.z + sin(angle) * away + drift.z)
@@ -269,24 +339,22 @@ func _lay(row: Dictionary) -> PackedFloat32Array:
 		out[slot + 4] = basis.x.y; out[slot + 5] = basis.y.y; out[slot + 6] = basis.z.y; out[slot + 7] = at.y
 		out[slot + 8] = basis.x.z; out[slot + 9] = basis.y.z; out[slot + 10] = basis.z.z; out[slot + 11] = at.z
 		out[slot + 12] = kind.x; out[slot + 13] = kind.y; out[slot + 14] = rng.randf(); out[slot + 15] = 1.0 if handful else 0.0
-	return out
+	job.out = out
 
 
 ## The fallen petals under one flowering tree, as MultiMesh buffer rows: handfuls only (custom w
-## = 2), custom y = the tree's blossom kind. Fixed by the tree's place.
-func _lay_petals(row: Dictionary) -> PackedFloat32Array:
+## = 2), custom y = the tree's blossom kind. Petals `from` up to `to` of the job.
+func _lay_petals(job: Dictionary, from: int, to: int) -> void:
+	var row: Dictionary = job.row
 	var crown: Vector3 = row.position
 	var radius := float(row.radius)
 	var blossom := TREE_QUERY.blossom_kind(row)
-	var rng := RandomNumberGenerator.new()
-	rng.seed = hash(_key(crown)) + 7
+	var rng: RandomNumberGenerator = job.rng
 	var reach := radius * SPREAD + MARGIN
-	var count := int(round(PETALS_PER_TREE * _litter * _scale() * clampf(radius / 2.5, 0.6, 2.0)))
-	var out := PackedFloat32Array()
-	out.resize(count * FLOATS)
+	var out: PackedFloat32Array = job.out
 	var drift := DOWNWIND.normalized() * reach * 0.25
 	var terrain := is_instance_valid(WorldTerrain.instance)
-	for index: int in count:
+	for index: int in range(from, to):
 		var angle := rng.randf() * TAU
 		var away := reach * pow(rng.randf(), 0.75)
 		var at := Vector3(crown.x + cos(angle) * away + drift.x, crown.y, crown.z + sin(angle) * away + drift.z)
@@ -304,7 +372,7 @@ func _lay_petals(row: Dictionary) -> PackedFloat32Array:
 		out[slot + 4] = basis.x.y; out[slot + 5] = basis.y.y; out[slot + 6] = basis.z.y; out[slot + 7] = at.y
 		out[slot + 8] = basis.x.z; out[slot + 9] = basis.y.z; out[slot + 10] = basis.z.z; out[slot + 11] = at.z
 		out[slot + 12] = 0.0; out[slot + 13] = blossom; out[slot + 14] = rng.randf(); out[slot + 15] = 2.0
-	return out
+	job.out = out
 
 
 ## The tree's autumn as the leaf shaders work it out (world/seasons/tree_query.gd autumn_tree).
@@ -329,4 +397,22 @@ func _path_weight(at: Vector3) -> float:
 			var rows: Array = (doc as Dictionary).get("textures", []) if doc is Dictionary else []
 			_paths = TERRAIN_PATHS.new()
 			_paths.call("bind", data, rows)
-	return float(_paths.call("weight_at", at)) if _paths != null else 0.0
+	if _paths == null: return 0.0
+	# terrain_paths.gd weight_at(), with each corner read from the terrain once per tree.
+	var corner := Vector2(at.x, at.z).floor()
+	var f := Vector2(at.x, at.z) - corner
+	var x := int(corner.x)
+	var z := int(corner.y)
+	return lerpf(lerpf(_corner(x, z, at.y), _corner(x + 1, z, at.y), f.x), lerpf(_corner(x, z + 1, at.y), _corner(x + 1, z + 1, at.y), f.x), f.y)
+
+
+func _corner(x: int, z: int, y: float) -> float:
+	var key := Vector2i(x, z)
+	var known: Variant = _corners.get(key)
+	if known != null: return float(known)
+	var data: Variant = _paths.get("data")
+	if not data is Object or not is_instance_valid(data): return 0.0
+	_float32[0] = float(_paths.call("control_weight", int((data as Object).call("get_control", Vector3(x, y, z)))))
+	var weight: float = _float32[0]
+	_corners[key] = weight
+	return weight

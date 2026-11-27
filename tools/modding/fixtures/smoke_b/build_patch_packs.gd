@@ -6,9 +6,14 @@ extends SceneTree
 ##       --expect PATCH_PACKS_BUILT --log LOG res://tools/modding/fixtures/smoke_b/build_patch_packs.gd
 ## Options: --bundled-dir=<abs folder holding the patch folders> (default: the private root's
 ## bundled_mods, beside home-equestria-public), --out-dir=<abs folder> (default: each pack's own folder).
+## --only=<folder>[,<folder>] builds just those folders.
 ## folder -> pack id. pony_dances_patch is built but not bundled unless the dev says so (DECISIONS.md:
 ## Pony Dances ships as-is).
-const PATCHES := {"pegasus_ride_v2_patch": "pegasus_ride_v2_patch", "watch_party_patch": "watch_party_patch", "pony_dances_patch": "dance_mod_patch", "mirror_pool_patch": "mirror_pool_patch"}
+const PATCHES := {"pegasus_ride_v2_patch": "pegasus_ride_v2_patch", "watch_party_patch": "watch_party_patch", "pony_dances_patch": "dance_mod_patch", "mirror_pool_patch": "mirror_pool_patch",
+	# 2026-11-18 perf: idle fixes for Kissing 1.2.9 and Horn Glow 1.1.1 (not bundled until the dev says so).
+	"kiss_intensity": "kiss_intensity", "kissing_patch": "kissing_patch", "horn_glow_patch": "horn_glow_patch",
+	# 2026-11-22: Fishing 0.7.1 fixes (pony catch call-outs only within earshot, no pony catches in the bucket).
+	"fishing_patch": "fishing_patch"}
 
 func _initialize() -> void: run.call_deferred()
 
@@ -47,7 +52,9 @@ func run() -> void:
 	var bundled := arg("--bundled-dir=", default_bundled_dir())
 	var out_dir := arg("--out-dir=", "")
 	var failed := false
+	var only := arg("--only=", "")
 	for folder: String in PATCHES:
+		if not only.is_empty() and not folder in only.split(","): continue
 		var id := str(PATCHES[folder])
 		var out := (out_dir if not out_dir.is_empty() else bundled.path_join(folder)).path_join(id + ".pck")
 		var result := build(bundled, folder, out)

@@ -3,9 +3,12 @@
 // Vector3/AABB are single precision; each conversion below is the one the script makes.
 #include "pony_column_sampler.h"
 
+#include "terrain_reads.h"
+
 #include <godot_cpp/classes/physics_direct_space_state3d.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/core/object.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
@@ -15,6 +18,7 @@
 
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 using namespace godot;
@@ -42,6 +46,37 @@ double max_zero(double value) {
 	return 0.0 < value ? value : 0.0;
 }
 
+// Perf 2026-11-21 (lane native_calls): terrain heights and normals read from Terrain3D's images
+// (terrain_reads.h) instead of the script's height_at/normal_at, dictionary keys and names built
+// once, and each collider's "navigation_ceiling" meta read once per call (by collider_id) instead
+// of the collider object on every hit. Same rays, order and outputs. Rollback: false.
+constexpr bool NATIVE_FAST_PATHS = true;
+bool fast_paths = NATIVE_FAST_PATHS;
+
+struct Keys {
+	const Variant position = StringName("position");
+	const Variant normal = StringName("normal");
+	const Variant rid = StringName("rid");
+	const Variant collider = StringName("collider");
+	const Variant collider_id = StringName("collider_id");
+	const StringName height_at = StringName("height_at");
+	const StringName normal_at = StringName("normal_at");
+	const StringName floor_y = StringName("floor_y");
+	const StringName slope_deg = StringName("slope_deg");
+	const StringName water_depth = StringName("water_depth");
+	const StringName headroom = StringName("headroom");
+	const StringName flags = StringName("flags");
+	const StringName paint_cost = StringName("paint_cost");
+	const StringName trail_weight = StringName("trail_weight");
+	const StringName coord = StringName("coord");
+	const StringName ceiling_meta = StringName("navigation_ceiling");
+};
+
+const Keys &keys() {
+	static const Keys k;
+	return k;
+}
+
 struct ChunkArrays {
 	PackedFloat32Array floor_y;
 	PackedByteArray slope_deg;
@@ -58,6 +93,55 @@ void PonyColumnSampler::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("sample", "space", "ray", "volume", "chunk", "first_column", "max_columns",
 								 "deadline_usec", "bounds", "blockers", "terrain"),
 			&PonyColumnSampler::sample);
+	ClassDB::bind_static_method("PonyColumnSampler", D_METHOD("set_fast_paths", "enabled"), &PonyColumnSampler::set_fast_paths);
+	ClassDB::bind_static_method("PonyColumnSampler", D_METHOD("get_fast_paths"), &PonyColumnSampler::get_fast_paths);
+	ClassDB::bind_static_method("PonyColumnSampler", D_METHOD("terrain_reads", "terrain", "points"),
+			&PonyColumnSampler::terrain_reads);
+	ClassDB::bind_static_method("PonyColumnSampler", D_METHOD("set_follow_caller_block", "enabled"),
+			&PonyColumnSampler::set_follow_caller_block);
+	// Perf trial grid_parallel (pony_column_parallel.cpp).
+	ClassDB::bind_method(D_METHOD("set_parallel", "enabled"), &PonyColumnSampler::set_parallel);
+	ClassDB::bind_method(D_METHOD("get_parallel"), &PonyColumnSampler::get_parallel);
+	ClassDB::bind_method(D_METHOD("set_merge_terrain", "enabled"), &PonyColumnSampler::set_merge_terrain);
+	ClassDB::bind_method(D_METHOD("get_merge_terrain"), &PonyColumnSampler::get_merge_terrain);
+	ClassDB::bind_method(D_METHOD("set_parallel_blocks", "blocks"), &PonyColumnSampler::set_parallel_blocks);
+	ClassDB::bind_method(D_METHOD("get_last_parallel"), &PonyColumnSampler::get_last_parallel);
+}
+
+extern bool pony_follow_caller_block; // navigation_parallel.cpp
+
+void PonyColumnSampler::set_follow_caller_block(bool p_enabled) {
+	pony_follow_caller_block = p_enabled;
+}
+
+void PonyColumnSampler::set_fast_paths(bool p_enabled) {
+	fast_paths = p_enabled;
+}
+
+bool PonyColumnSampler::get_fast_paths() {
+	return fast_paths;
+}
+
+PackedFloat64Array PonyColumnSampler::terrain_reads(Object *p_terrain, const PackedVector3Array &p_points) {
+	PackedFloat64Array out;
+	pony::TerrainReads reads;
+	if (!reads.bind(p_terrain)) {
+		return out;
+	}
+	out.resize(p_points.size() * 4);
+	double *w = out.ptrw();
+	for (int64_t i = 0; i < p_points.size(); ++i) {
+		const double h = reads.height_at(Vector3(p_points[i].x, 0.0f, p_points[i].z));
+		const Vector3 n = reads.normal_at(Vector3(p_points[i].x, real_t(std::isfinite(h) ? h : 0.0), p_points[i].z));
+		if (!reads.usable()) {
+			return PackedFloat64Array();
+		}
+		w[i * 4] = h;
+		w[i * 4 + 1] = n.x;
+		w[i * 4 + 2] = n.y;
+		w[i * 4 + 3] = n.z;
+	}
+	return out;
 }
 
 int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryParameters3D> &p_ray,
@@ -68,23 +152,29 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 	ERR_FAIL_NULL_V(space, 0);
 	ERR_FAIL_COND_V(p_ray.is_null() || p_volume.is_null(), 0);
 	ERR_FAIL_NULL_V(p_chunk, 0);
+	if (parallel || merge_terrain) { // perf trial grid_parallel (pony_column_parallel.cpp)
+		return sample_blocks(p_space, p_ray, p_volume, p_chunk, p_first_column, p_max_columns, p_deadline_usec, p_bounds,
+				p_blockers, p_terrain);
+	}
 	const int64_t columns = CHUNK_CELLS * CHUNK_CELLS;
 	if (p_first_column < 0 || p_first_column >= columns || p_max_columns <= 0) {
 		return 0;
 	}
+	const Keys &k = keys();
+	const bool fast = fast_paths;
 	ChunkArrays a;
-	a.floor_y = p_chunk->get("floor_y");
-	a.slope_deg = p_chunk->get("slope_deg");
-	a.water_depth = p_chunk->get("water_depth");
-	a.headroom = p_chunk->get("headroom");
-	a.flags = p_chunk->get("flags");
-	a.paint_cost = p_chunk->get("paint_cost");
-	a.trail_weight = p_chunk->get("trail_weight");
+	a.floor_y = p_chunk->get(k.floor_y);
+	a.slope_deg = p_chunk->get(k.slope_deg);
+	a.water_depth = p_chunk->get(k.water_depth);
+	a.headroom = p_chunk->get(k.headroom);
+	a.flags = p_chunk->get(k.flags);
+	a.paint_cost = p_chunk->get(k.paint_cost);
+	a.trail_weight = p_chunk->get(k.trail_weight);
 	const int64_t slots = columns * SPANS;
 	ERR_FAIL_COND_V_MSG(a.floor_y.size() != slots || a.slope_deg.size() != slots || a.water_depth.size() != slots ||
 					a.headroom.size() != slots || a.flags.size() != slots || a.paint_cost.size() != columns,
 			0, "PonyColumnSampler needs an allocated WalkChunk");
-	const Vector2i coord = p_chunk->get("coord");
+	const Vector2i coord = p_chunk->get(k.coord);
 	std::vector<AABB> blockers;
 	for (int64_t i = 0; i < p_blockers.size(); ++i) {
 		if (p_blockers[i].get_type() == Variant::AABB) {
@@ -97,6 +187,31 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 	const Vector3 up(0, 1, 0);
 	Time *time = Time::get_singleton();
 	const StringName ceiling_meta("navigation_ceiling");
+	// Fast path: each collider's ceiling meta once per call (nothing sets it during a call).
+	std::vector<std::pair<uint64_t, bool>> ceilings;
+	auto is_ceiling = [&](const Dictionary &p_hit) -> bool {
+		if (!fast) {
+			Object *collider = p_hit["collider"];
+			return collider != nullptr && bool(collider->get_meta(ceiling_meta, false));
+		}
+		const uint64_t id = uint64_t(int64_t(p_hit[k.collider_id]));
+		for (const std::pair<uint64_t, bool> &seen : ceilings) {
+			if (seen.first == id) {
+				return seen.second;
+			}
+		}
+		Object *collider = ObjectDB::get_instance(id);
+		const bool ceiling = collider != nullptr && bool(collider->get_meta(k.ceiling_meta, false));
+		ceilings.emplace_back(id, ceiling);
+		return ceiling;
+	};
+	// Fast path: the terrain read natively, bound on the first column that needs it.
+	pony::TerrainReads reads;
+	bool reads_bound = false;
+	bool reads_ok = false;
+	const Variant &key_position = fast ? k.position : Variant(String("position"));
+	const Variant &key_normal = fast ? k.normal : Variant(String("normal"));
+	const Variant &key_rid = fast ? k.rid : Variant(String("rid"));
 	auto blocked = [&blockers](const Vector3 &point) {
 		for (const AABB &box : blockers) {
 			if (box.grow(real_t(.18)).has_point(point)) {
@@ -134,7 +249,7 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 		p_ray->set_collision_mask(WATER_MASK);
 		p_ray->set_hit_from_inside(false);
 		const Dictionary water = space->intersect_ray(p_ray);
-		const double water_y = water.is_empty() ? -std::numeric_limits<double>::infinity() : double(Vector3(water["position"]).y);
+		const double water_y = water.is_empty() ? -std::numeric_limits<double>::infinity() : double(Vector3(water[key_position]).y);
 		p_ray->set_collision_mask(1);
 		double height = top;
 		int64_t found = 0;
@@ -155,16 +270,15 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 			if (hit.is_empty()) {
 				break;
 			}
-			const Vector3 position = hit["position"];
+			const Vector3 position = hit[key_position];
 			height = double(position.y) - .025;
 			// Non-walkable roof/ceiling shells still block motion and headroom rays.
-			Object *collider = hit["collider"];
-			if (collider != nullptr && bool(collider->get_meta(ceiling_meta, false))) {
-				floor_excludes.append(RID(hit["rid"]));
+			if (is_ceiling(hit)) {
+				floor_excludes.append(RID(hit[key_rid]));
 				excluding = true;
 				continue;
 			}
-			const Vector3 normal = hit["normal"];
+			const Vector3 normal = hit[key_normal];
 			if (double(normal.y) <= .01) {
 				continue;
 			}
@@ -178,7 +292,7 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 			p_ray->set_hit_from_inside(true);
 			const Dictionary ceiling = space->intersect_ray(p_ray);
 			a.headroom.set(slot, ceiling.is_empty() ? std::numeric_limits<float>::infinity()
-													 : float(double(Vector3(ceiling["position"]).y) - double(position.y)));
+													 : float(double(Vector3(ceiling[key_position]).y) - double(position.y)));
 			// Catch thin vertical walls between column centres.
 			p_volume->set_transform(Transform3D(Basis(), position + up * real_t(.237)));
 			if (!space->intersect_shape(p_volume, 1).is_empty()) {
@@ -194,9 +308,33 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 		}
 		if (found == 0 && p_terrain != nullptr) {
 			// No physics floor here: the world heightmap is the ground.
-			const double ground = double(p_terrain->call("height_at", Vector3(real_t(x), 0.0f, real_t(z))));
+			const Vector3 ground_at{ real_t(x), 0.0f, real_t(z) };
+			double ground = 0.0;
+			bool read = false;
+			if (fast) {
+				if (!reads_bound) {
+					reads_ok = reads.bind(p_terrain);
+					reads_bound = true;
+				}
+				if (reads_ok) {
+					ground = reads.height_at(ground_at);
+					read = reads_ok = reads.usable();
+				}
+			}
+			if (!read) {
+				ground = double(p_terrain->call(fast ? k.height_at : StringName("height_at"), ground_at));
+			}
 			if (std::isfinite(ground)) {
-				const Vector3 normal = p_terrain->call("normal_at", Vector3(real_t(x), real_t(ground), real_t(z)));
+				const Vector3 normal_at{ real_t(x), real_t(ground), real_t(z) };
+				Vector3 normal;
+				read = false;
+				if (fast && reads_ok) {
+					normal = reads.normal_at(normal_at);
+					read = reads_ok = reads.usable();
+				}
+				if (!read) {
+					normal = p_terrain->call(fast ? k.normal_at : StringName("normal_at"), normal_at);
+				}
 				const int64_t slot = column * SPANS;
 				a.floor_y.set(slot, float(ground));
 				a.slope_deg.set(slot, uint8_t(slope_degrees(double(normal.y))));
@@ -208,7 +346,7 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 				p_ray->set_hit_from_inside(true);
 				const Dictionary ceiling = space->intersect_ray(p_ray);
 				a.headroom.set(slot, ceiling.is_empty() ? std::numeric_limits<float>::infinity()
-														 : float(double(Vector3(ceiling["position"]).y) - ground));
+														 : float(double(Vector3(ceiling[key_position]).y) - ground));
 				p_volume->set_transform(Transform3D(Basis(), Vector3(real_t(x), real_t(ground + .237), real_t(z))));
 				if (!space->intersect_shape(p_volume, 1).is_empty()) {
 					a.headroom.set(slot, 0.0f);
@@ -219,12 +357,12 @@ int64_t PonyColumnSampler::sample(Object *p_space, const Ref<PhysicsRayQueryPara
 			}
 		}
 	}
-	p_chunk->set("floor_y", a.floor_y);
-	p_chunk->set("slope_deg", a.slope_deg);
-	p_chunk->set("water_depth", a.water_depth);
-	p_chunk->set("headroom", a.headroom);
-	p_chunk->set("flags", a.flags);
-	p_chunk->set("paint_cost", a.paint_cost);
-	p_chunk->set("trail_weight", a.trail_weight);
+	p_chunk->set(k.floor_y, a.floor_y);
+	p_chunk->set(k.slope_deg, a.slope_deg);
+	p_chunk->set(k.water_depth, a.water_depth);
+	p_chunk->set(k.headroom, a.headroom);
+	p_chunk->set(k.flags, a.flags);
+	p_chunk->set(k.paint_cost, a.paint_cost);
+	p_chunk->set(k.trail_weight, a.trail_weight);
 	return done;
 }

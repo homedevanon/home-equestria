@@ -58,6 +58,9 @@ func _wear_on_pony(item: Node, id: String) -> bool:
 			host.held.erase(side);host._track.erase(side);host._claim(side,false);host._haptic(side)
 	host.loose.erase(token);item.queue_free();host._refresh_holding()
 	_play_select();SFX.play_event(host,"prop_clothing",{},host.camera.global_position)
+	# Said on the wrist (thread 43708003: the cup scarf left the hand silently and read as eaten).
+	var bar:Variant=host.get("hotbar")
+	if bar is Node and (bar as Node).has_method("set_message"):(bar as Node).call("set_message","You put on the %s. Take it off at the wardrobe mirror."%str(SHOP_ITEMS.definition(id).get("name",id)).to_lower())
 	print("[inventory] ","AnonPony" if host._pony() else "Anon"," wears ",id)
 	return true
 
@@ -133,3 +136,16 @@ func held_usable(item: Node) -> bool:
 	var id:=str(item.get_meta("item_id",""))
 	if id.begins_with("goods:paper-") or id == "goods:quill" or id.begins_with("letter:") or id == "notebook" or id == "photo-journal": return true
 	return id == "goods:folded-blanket" or id == "goods:easel" or id in host.EDIBLE or FOOD.CATALOG.can_consume(id) or wearable(item)
+
+
+## The word for what that click does (world/ui/interaction_hints.gd), "" when it does nothing. Only
+## food that is eaten says Eat or Drink (thread 43712559: the held cup scarf said "Eat").
+func use_verb(item: Node) -> String:
+	if not held_usable(item): return ""
+	var id:=str(item.get_meta("item_id",""))
+	if wearable(item): return "Wear"
+	if id == "goods:folded-blanket": return "Lay out"
+	if id == "goods:easel" or id == "goods:game-board": return "Unfold"
+	if id in host.EDIBLE or FOOD.CATALOG.can_consume(id):
+		return "Drink" if FOOD.CATALOG.has(id) and bool(FOOD.CATALOG.definition(id).get("drink", false)) else "Eat"
+	return "Use"

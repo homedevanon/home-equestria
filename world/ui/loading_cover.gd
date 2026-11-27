@@ -441,6 +441,7 @@ func reveal(seconds: float, logo_seconds: float) -> void:
 func finish() -> void:
 	set_progress(1.0)
 	trip = {}; splash = ""
+	_return_heap()
 	if _logo_mode or STYLE.still() or not is_inside_tree():
 		_free(); return
 	name = "LoadingCoverFading"
@@ -448,6 +449,15 @@ func finish() -> void:
 	_fading = create_tween()
 	_fading.tween_method(_set_alpha, 1.0, 0.0, FADE_OUT)
 	_fading.tween_callback(_free)
+
+## Lane memory 2026-11-21: loading frees large temporary buffers the C allocator keeps resident.
+## One malloc_trim while the cover is still opaque (11 ms on High, 0.23 GB of resident memory back;
+## world switches pass through here too). Never during play. Linux/glibc only (PonyHeap no-ops
+## elsewhere); older native libraries without PonyHeap skip it. false = no trim.
+const RETURN_HEAP_AFTER_LOAD := true
+func _return_heap() -> void:
+	if RETURN_HEAP_AFTER_LOAD and ClassDB.class_has_method(&"PonyHeap", &"trim"):
+		ClassDB.class_call_static(&"PonyHeap", &"trim")
 
 func _free() -> void:
 	if is_instance_valid(_rig): _rig.queue_free()

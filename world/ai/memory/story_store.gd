@@ -250,6 +250,46 @@ func copy_to(destination: String) -> bool:
 	if FileAccess.file_exists(destination): DirAccess.rename_absolute(absolute, absolute + ".previous")
 	return _run("VACUUM INTO ?;", [absolute])
 
+## The same copy taken on the save worker (performance overhaul 2026-11-21, lane services:
+## VACUUM INTO on the main thread was 7 to 11 ms in the autosave frame). copy_source() runs on the
+## main thread at the checkpoint moment: a second connection to the journal and its PRAGMA
+## data_version. copy_from_source() runs on the worker: VACUUM INTO the pending file, then
+## data_version again. Any commit by the game's own connection in between changes it, and the copy
+## is reported stale (no file is left), so the caller can redo the save the old way and the pair
+## stays exact. The journal is in WAL mode (a reader sees one consistent snapshot while the game
+## writes) and the bundled SQLite is built THREADSAFE=1 on every shipped platform.
+func copy_source() -> Dictionary:
+	if db == null or not available() or path.is_empty(): return {}
+	var other: Object = ClassDB.instantiate("SQLite")
+	other.path = path
+	other.verbosity_level = 0
+	if not other.open_db(): return {}
+	var version := _data_version(other)
+	if version < 0:
+		other.close_db()
+		return {}
+	return {"db": other, "version": version}
+
+## On a worker. 0 = copied and still paired, 1 = stale (the journal changed since copy_source),
+## 2 = failed. Always closes the second connection; leaves no file at `destination` unless 0.
+static func copy_from_source(source: Dictionary, destination: String) -> int:
+	var other: Object = source.get("db")
+	if other == null: return 2
+	var absolute := ProjectSettings.globalize_path(destination)
+	DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
+	var copied: bool = not FileAccess.file_exists(destination) and other.query_with_bindings("VACUUM INTO ?;", [absolute])
+	var version := _data_version(other) if copied else -1
+	other.close_db()
+	if copied and version == int(source.get("version", -2)): return 0
+	if copied and FileAccess.file_exists(destination): DirAccess.remove_absolute(absolute)
+	return 1 if copied else 2
+
+static func _data_version(connection: Object) -> int:
+	if not connection.query("PRAGMA data_version;"): return -1
+	var rows: Array = connection.query_result
+	if rows.is_empty() or not rows[0] is Dictionary or (rows[0] as Dictionary).is_empty(): return -1
+	return int((rows[0] as Dictionary).values()[0])
+
 ## Replace the live journal with a save slot's copy (loading a save).
 func restore_from(source: String) -> bool:
 	if not FileAccess.file_exists(source): return false

@@ -1,0 +1,7 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+[resource]
+resource_name = "clean_door_groove"
+albedo_color = Color(0.52, 0.27, 0.4, 1)
+roughness = 0.9
+texture_filter = 5

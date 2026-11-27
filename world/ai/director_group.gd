@@ -213,10 +213,10 @@ func _begin_group(ids: Array[String], ambient := false) -> void:
 func ambient_request(ids: Array[String]) -> String:
 	var request := ""
 	if ids.size() < 2:
-		request = "An ordinary spontaneous remark from %s, to herself, about something she actually perceives or knows; silence is fine. Nobody will answer: do not address anypony by name and do not ask a question. Not addressed to Anon." % ids[0]
+		request = "Have %s make a small passing remark to herself about something she notices or knows, or just stay quiet. Nobody will answer, so don't ask questions or use anyone's name, and don't direct it at Anon." % ids[0]
 	else:
 		var others := ", ".join(ids.slice(1))
-		request = "Write the whole conversation now, all at once: an ordinary spontaneous chat that %s starts with %s, standing right here facing each other. Script every line in speaking order. Each participant speaks at least once, and whoever is spoken to answers on the very next line, politely and in character; nobody is left hanging. Usually 2 to 6 short lines, each one bringing something new, ending naturally (a goodbye, a plan or an easy pause). Mark each line [to: listener_id]. Continue only from completed shared speech. Anon being nearby is not a cue to greet or address him." % [ids[0], others]
+		request = "Write the whole conversation at once. %s starts an ordinary, spontaneous chat with %s as they stand here facing each other. Write their lines in order, with each participant speaking at least once. Whoever is addressed replies on the very next line, politely and in character, so nobody is left hanging. It usually takes 2 to 6 short lines, each adding something new, before ending naturally with a goodbye, a plan, or an easy pause. Mark every line with [to: listener_id]. Only build on shared lines that were actually finished. Anon being nearby is no reason to greet or talk to him." % [ids[0], others]
 	request += " " + CHATTER.seed_line() + " Ponies standing right here are present: talk with them, never about them or their house as if they were elsewhere."
 	if ids.size() > 1 and host._walking_together(ids): request += " They are out together as friends, walking side by side while they talk: they can mention where they're heading, the walk, stopping somewhere, or suggest what to do next together."
 	return request
@@ -340,7 +340,7 @@ func _on_group_reply(text: String, error: String, turn: int) -> void:
 		# not pay a second full-price request for them; a group the player addressed is first asked
 		# once more with recovery room. Nothing usable: silence for ambient, an error code otherwise.
 		var salvaged := complete_lines(text, host.group.members)
-		if (salvaged.is_empty() or not host.group.ambient) and host._repair_response(text, "The exchange was cut off by the model output limit. Return fewer COMPLETE short lines, finishing every sentence and tag; omit optional feelings/thoughts.", true): return
+		if (salvaged.is_empty() or not host.group.ambient) and host._repair_response(text, "Your output hit the length limit and cut off. Write fewer, shorter lines, and finish every sentence and tag. Leave out optional feelings and thoughts.", true): return
 		if salvaged.is_empty():
 			if host.group.ambient: host._finish_silence(); return
 			var addressed: String = host.group.members[0]
@@ -450,7 +450,7 @@ func _on_group_reply(text: String, error: String, turn: int) -> void:
 		address_lines(decoded.beats, host.group.members)
 		var speakers := {}
 		for beat: Dictionary in decoded.beats: speakers[beat.speaker_id] = true
-		if host.group.members.size() > 1 and speakers.size() == 1 and host._repair_response(text, "Only one pony speaks. Write the whole conversation: the pony she addresses answers on the very next line, and each participant speaks at least once.", true): return
+		if host.group.members.size() > 1 and speakers.size() == 1 and host._repair_response(text, "Only one pony spoke. Write the whole exchange so everyone gets to speak at least once, and the pony she talks to answers on the very next line.", true): return
 	host.group.beats = voiced_beats(SENTENCES.expand(decoded.beats))
 	_start_script()
 

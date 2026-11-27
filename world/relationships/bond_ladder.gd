@@ -35,12 +35,58 @@ static func seed_romance(score: int) -> int:
 	if s < 85.0: return roundi(150.0 + (s - 55.0) * 25.0 / 3.0)
 	return roundi(400.0 + (s - 85.0) * 20.0)
 
+## The exact inverses of the seeds (relationship overhaul 2026-11-21, design 10.2): the old 0..100
+## score old readers are given for a fixed XP. unseed_friendship(60) is 25, unseed_romance(30) is 25.
+static func unseed_friendship(xp: int) -> int:
+	var x := float(maxi(xp, 0))
+	if x < 60.0: return clampi(roundi(x / 2.4), 0, 100)
+	if x < 180.0: return clampi(roundi(25.0 + (x - 60.0) / 4.0), 0, 100)
+	if x < 450.0: return clampi(roundi(55.0 + (x - 180.0) / 9.0), 0, 100)
+	return clampi(roundi(85.0 + (x - 450.0) / 20.0), 0, 100)
+
+static func unseed_romance(xp: int) -> int:
+	var x := float(maxi(xp, 0))
+	if x < 30.0: return clampi(roundi(x / 1.2), 0, 100)
+	if x < 150.0: return clampi(roundi(25.0 + (x - 30.0) / 4.0), 0, 100)
+	if x < 400.0: return clampi(roundi(55.0 + (x - 150.0) * 3.0 / 25.0), 0, 100)
+	return clampi(roundi(85.0 + (x - 400.0) / 20.0), 0, 100)
+
 ## facts: {"met", "stage", "familiarity", "trust", "friend_xp", "love_xp", "romance" (may romance at
 ## all), "stallion", "turned_down" (a dating ask refused recently), "together_s", "ready_s"}.
 ## Returns {"friendship": row, "love": row or {}} where a row is
 ## {"names", "level" (0-based), "name", "next", "have", "need", "fill" (0..1), "max", "waiting"}.
+## With the key "standing" (player_bonds.standing(), relationship overhaul 2026-11-21) the levels
+## are her own stated steps (design 10.2): the same shape, names and integers, and no bar to fill.
 static func compute(facts: Dictionary) -> Dictionary:
+	if facts.has("standing") and facts.standing is Dictionary:
+		return _from_standing(facts.standing, bool(facts.get("stallion", false)))
 	return {"friendship": _friend_row(facts), "love": _love_row(facts)}
+
+## Love: no level -1, Crush 0 (a crush or more, not a couple), New Couple 1 (a couple, a crush),
+## Marefriend 2 (a couple, in love), Head Over Hooves 3 (a couple, devoted), Soulmates 4 (married and
+## devoted). A couple whose heart is below a crush has no love level.
+static func _from_standing(s: Dictionary, stallion: bool) -> Dictionary:
+	var at := maxi(0, CLOSENESS_ORDER.find(str(s.get("closeness", "stranger"))))
+	var friend := _row(FRIEND_NAMES, at, 0, 1)
+	friend.fill = 0.0
+	if not bool(s.get("romance", false)): return {"friendship": friend, "love": {}}
+	var names := ["Crush", "New Couple", "Coltfriend" if stallion else "Marefriend", "Head Over Hooves", "Soulmates"]
+	var heart := HEART_ORDER.find(str(s.get("heart", "none")))
+	var status := str(s.get("status", "none"))
+	var level := -1
+	if heart >= 2:
+		if status == "none": level = 0
+		else:
+			level = heart - 1
+			if status == "married" and heart == 4: level = 4
+	if level < 0:
+		return {"friendship": friend, "love": {"names": names, "level": -1, "name": "No crush yet", "next": "Crush", "have": 0, "need": 0, "fill": 0.0, "max": false, "waiting": ""}}
+	var love := _row(names, level, 0, 1)
+	love.fill = 0.0
+	return {"friendship": friend, "love": love}
+
+const CLOSENESS_ORDER := ["stranger", "acquaintance", "friend", "good_friend", "best_friend", "blood_brothers", "kindred_soul"]
+const HEART_ORDER := ["none", "noticing", "crush", "in_love", "devoted"]
 
 static func _row(names: Array, level: int, have: int, need: int, waiting := "") -> Dictionary:
 	var top := level >= names.size() - 1

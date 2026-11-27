@@ -150,6 +150,9 @@ func _ready() -> void:
 	if not requested_world.is_empty():context_world_id=requested_world
 	if saves_script.start_fresh:
 		TimeOfDay.day = saves_script.fresh_start_day
+		# A new world reads "Day 1" on its first day whichever way it was started (the title sets
+		# it too; --new-game and any later path come through here). Thread 43714566: "day 35".
+		TimeOfDay.first_day = saves_script.fresh_start_day
 		TimeOfDay.hours = 8.5
 		TimeOfDay.active_seconds = 0.0
 		TimeOfDay.paused = false
@@ -523,6 +526,8 @@ func _exit_tree() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and preload("res://world/dev_tools.gd").enabled():
+		# Page Up/Down are a text field's own keys and pass the typing guard: not while typing.
+		if preload("res://world/ui/typing_guard.gd").active(): return
 		if (event as InputEventKey).physical_keycode == KEY_PAGEUP: Settings.cycle("ponies/size", 1)
 		elif (event as InputEventKey).physical_keycode == KEY_PAGEDOWN: Settings.cycle("ponies/size", -1)
 		elif (event as InputEventKey).physical_keycode == KEY_F3 and event.shift_pressed: _debug_magic()

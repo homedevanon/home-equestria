@@ -1,4 +1,4 @@
-extends SkeletonModifier3D
+extends PonyEyeMotionNative
 ## Native iris controls and skinned lids. The devkit uses mFaceNoseLeft/Right
 ## for pupils (Copy Location + normal-tracking Shrinkwrap onto IKEye), not mEye*.
 ## Keep that curved surface, original weights, facial topology and textures.
@@ -6,29 +6,30 @@ extends SkeletonModifier3D
 const CROWD_PROFILE := preload("res://tools/crowd_cpu_profile.gd")  # timed only under the crowd lab's --profile-cpu
 const FK := preload("res://world/characters/locomotion/limb_solver.gd")
 const NATIVE := preload("res://world/characters/locomotion/native_solver.gd")
-## PonySolverNative (docs/NATIVE_SOLVER_2026_09_25.md) runs the modifier pass with the same
-## result; null keeps the GDScript below.
-var native: RefCounted
-@export var convergence_degrees := 5.0
-var closure := 0.0
-## Temporary expression underneath the blink; zero is the fully open default.
-var expression_closure := 0.0
-var expression_brows: Dictionary = {}
+## Native pony step (lane face, 2026-11-21, captures/perf_2026-11-21/port_face.md): the state
+## below lives in the native base PonyEyeMotionNative (face_modifiers_native.cpp) as properties
+## with these same names, so every reader and writer by name keeps working:
+##   native: PonySolverNative (docs/NATIVE_SOLVER_2026_09_25.md) runs the modifier pass with the
+##     same result; null keeps the GDScript below.
+##   convergence_degrees (5.0), closure, expression_closure (temporary expression underneath the
+##   blink; zero is the fully open default), expression_brows, expression_eyes, expression_ears
+##   (Dictionaries their owners edit in place), gaze (head-local yaw/pitch, radians),
+##   surface_update (optional curved iris artwork: shares the resolved target/saccade and native
+##   lid clock), target_world, target_weight, saccades_enabled, rate_divisor and rate_phase
+##   (PonyCrowd NEAR mares, 6 m and beyond: full run every `rate_divisor`-th physics tick, the
+##   cached bone writes in between), _player, blink_enabled, blink_strength, _head_bone, _rng and
+##   the saccade, blink and on-target clocks (_wait ... _drift_goal, focus_saccades, focus_glances),
+##   cross_inward.
+## NATIVE_STEP runs this script's modifier pass and advance() in C++ (native_step,
+## native_advance), bit for bit; false (rollback) keeps the GDScript bodies below. The user
+## argument --native-face turns it on for a test run. Only this script itself takes the native
+## pass: a subclass (background_eye_motion.gd, the parity fixtures) keeps the GDScript one.
+const NATIVE_STEP := true  # rollback switch: false keeps the GDScript bodies (parity: port_face.md)
+static var _native_on: bool = NATIVE_STEP or OS.get_cmdline_user_args().has("--native-face")
+const SCRIPT_PATH := "res://world/characters/openpony/openpony_eye_motion.gd"
 var _brow_shapes: Dictionary = {}
-var expression_eyes: Dictionary = {}
-var expression_ears: Dictionary = {}
 var _eye_shapes: Dictionary = {}
 var _ear_shapes: Dictionary = {}
-var gaze := Vector2.ZERO # head-local yaw/pitch; radians
-## Optional curved iris artwork shares the resolved target/saccade and native lid clock.
-var surface_update: Callable
-var target_world := Vector3.ZERO
-var target_weight := 0.0
-var saccades_enabled := true
-## PonyCrowd NEAR mares (6 m and beyond): full run every `rate_divisor`-th physics tick,
-## the cached bone writes in between. Nobody sees a 20 Hz glance at that range.
-var rate_divisor := 1
-var rate_phase := 0
 var _written: Dictionary = {}
 ## Unchanged inputs reuse the last full run (0.1.0 perf pass). Between blinks and saccades, with no
 ## moving target, a full run recomputed the very poses it wrote last time (lids, brows, ears and both
@@ -37,35 +38,16 @@ var _written: Dictionary = {}
 ## eye surface update. Rollback: REUSE_UNCHANGED = false.
 const REUSE_UNCHANGED := true
 var _last_inputs: Array = []
-## The head's AnimationPlayer (bind): a playing clip moves brow/ear source poses, so no reuse.
-var _player: AnimationPlayer
-var blink_enabled := true
-## Closed smiling expressions already have lid contact; their blink clock keeps
-## running without briefly pulling that pose back toward an open native eye.
-var blink_strength := 1.0
+## _player (native): the head's AnimationPlayer (bind): a playing clip moves brow/ear source poses,
+## so no reuse. blink_strength (native): closed smiling expressions already have lid contact; their
+## blink clock keeps running without briefly pulling that pose back toward an open native eye.
 var _rests: Array[Transform3D] = []
 var _parents: Array[int] = []
 var _rest_globals: Array[Transform3D] = []
 var _lid_open: Dictionary = {}
 var _lid_closed: Dictionary = {}
 var _eye_bones: Array[int] = []
-var _head_bone := -1
 var _eye_center_head := Vector3.ZERO
-var _rng := RandomNumberGenerator.new()
-var _wait := 2.0
-var _from := Vector2.ZERO
-var _to := Vector2.ZERO
-var _offset := Vector2.ZERO
-var _scan_offset := Vector2.ZERO
-var _fixation := 0.0
-var _elapsed := 1.0
-var _duration := 0.08
-var _blink_wait := 3.0
-var _blink_time := -1.0
-var _blink_close := .13
-var _blink_hold := .025
-var _blink_open := .23
-var _paired_blink := false
 
 ## Eye life on a target (dev 2026-11-03: "her pupils are just dead solid facing me"). While she
 ## fixates (target_weight), a second clock darts both eyes together between the viewer's face points
@@ -92,7 +74,7 @@ const FACE_GAZE_MOODS := {"angry": "focused", "ponyrage": "focused", "annoyed": 
 	"suspicious": "focused", "anticipation": "focused", "angersmug": "focused",
 	"happy": "happy", "delighted": "happy", "silly": "happy", "amused": "happy", "crookedsmile": "happy",
 	"relaxed": "relaxed", "affectionate": "relaxed", "shy": "shy", "disgusted": "shy",
-	"fearful": "fearful", "surprised": "surprised", "ooo": "surprised", "confused": "confused",
+	"fearful": "fearful", "surprised": "surprised", "gasp": "surprised", "ooo": "surprised", "confused": "confused",
 	"sad": "sad", "pain": "sad"}
 ## The viewer's face in half-eye-spacings: left eye, right eye, between them, mouth; and how often
 ## each is the next dart's landing point.
@@ -103,21 +85,9 @@ const FACE_POINT_ODDS: Array[float] = [.37, .37, .16, .10]
 const FACE_HALF_EYES := .032
 const FACE_POINT_GAIN := 1.5
 var gaze_mood := "neutral"
-var _mood := PackedFloat32Array(GAZE_MOODS.neutral)
-var _mood_goal := PackedFloat32Array(GAZE_MOODS.neutral)
-var _focus_from := Vector2.ZERO
-var _focus_to := Vector2.ZERO
-var _focus_offset := Vector2.ZERO
-var _focus_elapsed := 1.0
-var _focus_duration := .05
-var _focus_wait := .3
-var _focus_point := -1
-var _glance_left := -1.0
-var _drift := Vector2.ZERO
-var _drift_goal := Vector2.ZERO
-## Darts and glances made on a target since bind (labs read them).
-var focus_saccades := 0
-var focus_glances := 0
+## Native: _mood and _mood_goal (PackedFloat32Array, GAZE_MOODS.neutral at first), the dart clock
+## (_focus_from ... _drift_goal) and the darts and glances made on a target since bind
+## (focus_saccades, focus_glances; labs read them).
 
 
 ## `face`: an expression face or a GAZE_MOODS name; "" or unknown -> neutral. Eased in advance().
@@ -126,7 +96,9 @@ func set_gaze_mood(face: String) -> void:
 	if mood == gaze_mood: return
 	gaze_mood = mood
 	var values: Array = GAZE_MOODS[mood]
-	for i in values.size(): _mood_goal[i] = float(values[i])
+	var goal := _mood_goal
+	for i in values.size(): goal[i] = float(values[i])
+	_mood_goal = goal
 
 
 ## Every clip bind() samples. With the rig's bones they are all its poses depend on.
@@ -176,6 +148,7 @@ func bind(player: AnimationPlayer) -> void:
 	if native != null:
 		native.bind_eyes(_lid_open, _lid_closed, _eye_shapes, _brow_shapes, _ear_shapes, PackedInt32Array(_eye_bones),
 			_head_bone, _eye_center_head, _rest_globals, PackedInt32Array(_parents))
+	native_reset(not _rest_globals.is_empty(), (get_script() as Script).resource_path == SCRIPT_PATH)
 
 
 func _bind_poses(sk: Skeleton3D, player: AnimationPlayer, errors: PackedStringArray) -> void:
@@ -241,6 +214,7 @@ func _sample(anim: Animation, time: float) -> Array[Transform3D]:
 
 
 func advance(delta: float) -> void:
+	if _native_on and native_advance(delta): return
 	# Attention already owns target_weight for listening, looking and carrying.
 	# Fixation competes with exploratory scans regardless of target identity/distance.
 	_fixation = lerpf(_fixation, clampf(target_weight, 0.0, 1.0), 1.0 - exp(-delta * 5.0))
@@ -300,7 +274,10 @@ func advance(delta: float) -> void:
 ## The on-target clock: per-pony floats only, no allocation.
 func _advance_focus(delta: float) -> void:
 	var ease := 1.0 - exp(-delta * 3.0)
-	for i in _mood.size(): _mood[i] = lerpf(_mood[i], _mood_goal[i], ease)
+	var mood := _mood
+	var goal := _mood_goal
+	for i in mood.size(): mood[i] = lerpf(mood[i], goal[i], ease)
+	_mood = mood
 	_focus_wait -= delta
 	if _glance_left >= 0.0:
 		_glance_left -= delta
@@ -460,10 +437,9 @@ func _inputs(sk: Skeleton3D) -> Array:
 		expression_eyes, expression_brows, expression_ears, surface_update]
 
 
-## Radians both eyes turn inward toward something right at her nose (a booping finger,
-## hybrid_mare.gd): the same per-eye path as background_eye_motion.gd's asymmetric gaze, which the
-## native eye pass applies (angles * 0.2 plus the inward shift). 0 = ordinary gaze.
-var cross_inward := 0.0
+## cross_inward (native): radians both eyes turn inward toward something right at her nose (a
+## booping finger, hybrid_mare.gd): the same per-eye path as background_eye_motion.gd's asymmetric
+## gaze, which the native eye pass applies (angles * 0.2 plus the inward shift). 0 = ordinary gaze.
 
 func surface_angles(side_index: int, angles: Vector2) -> Vector2:
 	if cross_inward > 0.0:
@@ -596,7 +572,7 @@ func _bind_pinned_ears(sk: Skeleton3D) -> void:
 
 func _process_modification() -> void:
 	var started := Time.get_ticks_usec() if CROWD_PROFILE.enabled else 0
-	_unprofiled_process_modification()
+	if not (_native_on and native_step(REUSE_UNCHANGED)): _unprofiled_process_modification()
 	if CROWD_PROFILE.enabled: CROWD_PROFILE.record("eye_motion", started)
 
 

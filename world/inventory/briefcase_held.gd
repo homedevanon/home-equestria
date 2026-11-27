@@ -104,8 +104,9 @@ func _release_velocity(side:String)->Array:
 
 func take_slot(side: String, index: int, pose := Transform3D.IDENTITY, from_case := true) -> bool:
 	if host.hand_busy(side) or index<0 or index>=STORE.SLOT_COUNT or (from_case and not host.case.opened):return false
-	if host.inventory.loans.size()>=host.MAX_LOOSE:
-		host.case.ui.message="Put some loose items away first.";host.case.ui.refresh();return false
+	# Things placed at home do not count (inventory_store.gd out_count, thread fix 2026-11-19).
+	if host.inventory.out_count()>=host.MAX_LOOSE:
+		host._panel_note("Put some loose items away first.");return false
 	var slot:Dictionary=host.inventory.slots[index]
 	if slot.is_empty() or slot.count<=0:return false
 	var scene:PackedScene=CATALOG.scene(slot.id)
@@ -140,15 +141,15 @@ func grab_take(side: String, offer: Dictionary, sample: Dictionary) -> bool:
 func _take_shelf_book(side: String, book: Node3D, pose: Transform3D) -> bool:
 	if not is_instance_valid(book) or not book.is_in_group("shelf_books") or not book.is_visible_in_tree(): return false
 	if host.hand_busy(side) or not pose.is_finite(): return false
-	if host.inventory.loans.size() >= host.MAX_LOOSE:
-		host.case.ui.message = "Put some loose items away first."; host.case.ui.refresh(); return false
+	if host.inventory.out_count() >= host.MAX_LOOSE:
+		host._panel_note("Put some loose items away first."); return false
 	var id:String=String(book.get_meta("item_id",""))
 	var key := str(book.get_meta("shelf_key", ""))
 	var scene: PackedScene = CATALOG.scene(id)
 	if key.is_empty() or scene == null: return false
 	var slot := STORE._place(host.inventory.slots, id, -1)
 	if slot < 0:
-		host.case.ui.message = "No room in the briefcase."; host.case.ui.refresh(); return false
+		host._panel_note("No room in the briefcase."); return false
 	var visual: Node3D = scene.instantiate()
 	var before_shelf := LIBRARY.snapshot()
 	if not LIBRARY.mark_taken(key): visual.free(); return false

@@ -12,6 +12,8 @@ extends RefCounted
 ##    downloaded update (user://mods/bundled_updates/) in place of the shipped file;
 ## 2. the mods folders (user://mods/, and mods/ beside the executable), in file name order;
 ## 3. loose .pck files beside the executable that are not the game's own (the older way).
+## A pack whose mod.json "depends" names mods carried by a later pack mounts after those packs
+## (_depends_first()); without "depends" the order above holds.
 ## A patch pack (bundled_mods.json or mod.json "patches": {"<mod id>": "<exact version>"}) mounts
 ## right after the pack it patches and switches with it. When a bundled mod and a pack the player
 ## installed carry the same mod id, the higher version loads and the other is "superseded".
@@ -37,6 +39,11 @@ const BUILT := "mod.built.json"
 const BUNDLED_PREFIX := "bundled/"
 ## Game scripts whose replacement breaks new worlds, saving and loading when it is out of date.
 const CORE_SCRIPTS := ["res://world/game.gd", "res://world/game_saves.gd"]
+## Mods that became part of the game (mod id -> the game version that took them in): the mailbox at
+## the player's front door (world/letters/courier/) and Applejack's wagon wheel (world/mechanics/
+## wagon_wheel/). A pack that still carries one of these ids is not mounted, or the feature would
+## run twice (two mailboxes, two letters from Applejack).
+const BUILT_IN := {"mailbox": "0.3.2", "wagon_wheel": "0.3.2"}
 ## The scenario rules (mod.json "scenario"); loaded when first needed (it preloads this script).
 const SCENARIO_PATH := "res://world/modding/scenario.gd"
 
@@ -83,6 +90,9 @@ static func boot(dirs: Array = [], loose_dirs: Array = [], disabled_override: Va
 		if not update.is_empty():
 			row.path = update.path; row.version = update.version; row.update = update.source
 			print("[mods] %s %s: the downloaded update loads instead of the bundled %s" % [entry.id, update.version, entry.version])
+		# The bundled copy was checked against this game version when it was staged; an author's
+		# downloaded update was not, so it is judged by its own mod.json like any other pack.
+		if update.is_empty(): row.checked_game = str(entry.get("checked_game", ""))
 		row.enabled = BUNDLED.is_on(str(entry.id), bool(entry.default_on))
 		if not FileAccess.file_exists(str(row.path)):
 			row.enabled = false; row.error = "missing from the game folder"
@@ -103,9 +113,10 @@ static func boot(dirs: Array = [], loose_dirs: Array = [], disabled_override: Va
 			rows.append(row)
 	clock.mark("inspect %d packs" % rows.size())
 	_supersede(rows)
+	_built_in(rows)
 	_link_patches(rows)
 	for row: Dictionary in rows: _hold(row)
-	var ordered: Array = BUNDLED.mount_order(rows)
+	var ordered: Array = _depends_first(BUNDLED.mount_order(rows))
 	_one_scenario(ordered)
 	_settle_patches(rows)
 	clock.mark("rules")
@@ -197,7 +208,7 @@ static func disabled_files() -> PackedStringArray:
 ## covered (an enabled patch pack replaces all its game files again, so it is not held as old),
 ## scenario ({} or {id, name} of the scenario a mod in it declares, world/modding/scenario.gd),
 ## scenario_held (held because another scenario mod is on), declared ({mod id: {name, version,
-## author, scenario}} from the pack's mod.json files, also for a pack that is off), caution ("" or
+## author, scenario, depends}} from the pack's mod.json files, also for a pack that is off), caution ("" or
 ## the bundled manifest's caution line)}.
 static func pack_rows() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
@@ -372,10 +383,13 @@ static func switched_on(file: String) -> bool:
 ## switches it on in Settings → Mods; that choice holds until the next game version. A mod that
 ## replaces no game file, declares no version, or declares this one is never held back, and
 ## neither is a pack whose replaced game files are all covered by an enabled patch pack made for
-## exactly its version (covered, _link_patches()).
+## exactly its version (covered, _link_patches()), and neither is a bundled pack whose replaced files
+## were checked against this game version when it was staged (bundled_mods.json "checked_game").
 static func is_old(row: Dictionary) -> bool:
-	return not bool(row.get("covered", false)) and not (row.get("overrides", PackedStringArray()) as PackedStringArray).is_empty() \
-		and version_older(str(row.get("game_version", "")), game_version())
+	if bool(row.get("covered", false)) or (row.get("overrides", PackedStringArray()) as PackedStringArray).is_empty(): return false
+	var checked := str(row.get("checked_game", ""))
+	if not checked.is_empty() and not version_older(checked, game_version()): return false
+	return version_older(str(row.get("game_version", "")), game_version())
 
 static func game_version() -> String:
 	return str(ProjectSettings.get_setting("application/config/version", ""))
@@ -442,7 +456,9 @@ static func _inspect(row: Dictionary) -> void:
 		if version.is_empty() and built is Dictionary: version = str(built.get("game_version", "")).strip_edges()
 		if not version.is_empty() and (str(row.game_version).is_empty() or version_older(version, str(row.game_version))): row.game_version = version
 		if not doc is Dictionary: continue
-		var info := {"name": str(doc.get("name", id)), "version": str(doc.get("version", "")).strip_edges(), "author": str(doc.get("author", "")), "scenario": {}}
+		var info := {"name": str(doc.get("name", id)), "version": str(doc.get("version", "")).strip_edges(), "author": str(doc.get("author", "")), "scenario": {}, "depends": {}}
+		# The mods it needs, for the load order (_depends_first()); a wrong shape is reported later.
+		if doc.get("depends") is Dictionary: info.depends = (doc.depends as Dictionary).duplicate()
 		if doc.get("scenario") is Dictionary and doc.scenario.get("id") is String and RegEx.create_from_string(ID_PATTERN).search(str(doc.scenario.id)) != null:
 			info.scenario = {"id": str(doc.scenario.id), "name": str(doc.scenario.get("name", doc.scenario.id)) if doc.scenario.get("name", doc.scenario.id) is String else str(doc.scenario.id)}
 		row.declared[id] = info
@@ -482,6 +498,18 @@ static func _supersede(rows: Array) -> void:
 				loser.reason = "Superseded by %s %s%s." % [winner.title, _version_of(winner, id), " (bundled with the game)" if winner.bundled else " (in your mods folder)"]
 				break
 			if not str(user.superseded_by).is_empty(): break
+
+## A pack carrying a mod the game now has built in (BUILT_IN) stays off, with the reason on the
+## Mods screen. It has no switch: like a superseded copy, it follows the thing that replaced it.
+static func _built_in(rows: Array) -> void:
+	for row: Dictionary in rows:
+		if not str(row.superseded_by).is_empty(): continue
+		for id: String in _ids_of(row):
+			if not BUILT_IN.has(id): continue
+			row.superseded_by = "the game"
+			row.enabled = false
+			row.reason = "Part of the game since %s, so this pack stays off. You can remove it." % str(BUILT_IN[id])
+			break
 
 ## Patch packs: each finds the pack it patches (the copy of that mod that is not superseded). It
 ## loads only while that pack is on and carries exactly the version it was made for; a pack whose
@@ -692,7 +720,20 @@ static func read_manifest(id: String, row: Dictionary) -> Dictionary:
 
 ## mod.json "depends": a mod whose dependency is not running, or runs an older version than it
 ## needs, gets an error and does not run (repeated until stable: that can stop its dependants).
+## Mods whose needs loop back to themselves (a needs b, b needs a) cannot load one before the
+## other, so none of them runs and each says which loop it is in (player board #57).
 static func _check_depends() -> void:
+	var by_id := {}
+	for mod: Dictionary in mods:
+		if mod.enabled and mod.errors.is_empty() and not by_id.has(mod.id): by_id[mod.id] = mod
+	var loops := {}   # mod id -> [ids around the loop, starting and ending with it]
+	for id: String in by_id:
+		var path := _need_loop(id, id, by_id, [id])
+		if not path.is_empty(): loops[id] = path
+	for id: String in loops:
+		var path: Array = loops[id]
+		var names := PackedStringArray(path.map(func(other: String) -> String: return _mod_title(other)))
+		(by_id[id].errors as Array).append("needs %s, which needs it back (a loop: %s); one of them must stop needing the other" % [names[1], " needs ".join(names)])
 	var changed := true
 	while changed:
 		changed = false
@@ -703,15 +744,93 @@ static func _check_depends() -> void:
 			if not mod.enabled or not mod.errors.is_empty(): continue
 			for id: String in mod.depends:
 				var spec := str(mod.depends[id])
-				var need := "needs %s%s" % [id, (" " + spec) if not spec.strip_edges().is_empty() and spec != "*" else ""]
+				var need := "needs %s%s" % [_mod_title(id), _spec_words(spec)]
 				if not running.has(id):
-					var present := mods.any(func(other: Dictionary) -> bool: return other.id == id)
+					# A switched-off pack is not mounted, so its mods are known only from its directory.
+					var present := mods.any(func(other: Dictionary) -> bool: return other.id == id) \
+						or packs.any(func(row: Dictionary) -> bool: return (row.get("declared", {}) as Dictionary).has(id))
 					mod.errors.append(need + (" (it is switched off or not loaded)" if present else " (not installed)"))
 				elif not BUNDLED.satisfies(str(running[id]), spec):
 					mod.errors.append(need + " (%s is installed)" % running[id])
 				else: continue
 				changed = true
 				break
+
+## The ids from `id` through the needs of running mods back to `start` ([start, ..., start]), or []
+## when its needs never lead back. `seen` is the path so far; each mod is walked once per path.
+static func _need_loop(start: String, id: String, by_id: Dictionary, seen: Array) -> Array:
+	var mod: Variant = by_id.get(id)
+	if not mod is Dictionary: return []
+	for need: String in (mod as Dictionary).depends:
+		if need == start: return seen + [start]
+		if need in seen: continue
+		var path := _need_loop(start, need, by_id, seen + [need])
+		if not path.is_empty(): return path
+	return []
+
+## A mod's name for the player ("Bakery Core"), else its id when it is not installed.
+static func _mod_title(id: String) -> String:
+	for mod: Dictionary in mods:
+		if mod.id == id and not str(mod.name).strip_edges().is_empty(): return str(mod.name)
+	for row: Dictionary in packs:
+		var info: Variant = (row.get("declared", {}) as Dictionary).get(id)
+		if info is Dictionary and not str(info.get("name", "")).strip_edges().is_empty(): return str(info.name)
+	return id
+
+## A "depends" version spec in plain words: ">=1.2" is " 1.2 or newer", "" and "*" say nothing.
+static func _spec_words(spec: String) -> String:
+	var text := spec.strip_edges()
+	if text.is_empty() or text == "*": return ""
+	for pair: Array in [[">=", " %s or newer"], ["<=", " %s or older"], ["==", " %s"], [">", " newer than %s"], ["<", " older than %s"], ["=", " %s"]]:
+		if text.begins_with(str(pair[0])): return str(pair[1]) % text.substr(str(pair[0]).length()).strip_edges()
+	return " %s or newer" % text
+
+## mod.json "depends" and the load order (player board #57): a pack mounts after the packs that
+## carry the mods it needs, so their files, data merges, script extensions and entry scripts come
+## first. A pack whose needs are later in the list waits for them and every other pack keeps its
+## place; a patch pack stays right after the pack it patches. Packs whose needs loop keep their
+## order (_check_depends() stops and reports them). Without any "depends" the order is unchanged.
+static func _depends_first(ordered: Array) -> Array:
+	var groups: Array = []   # a pack and the patch packs right after it
+	for row: Dictionary in ordered:
+		var last: Array = groups.back() if not groups.is_empty() else []
+		if not str(row.get("patch_of", "")).is_empty() and last.any(func(other: Dictionary) -> bool: return other.file == row.patch_of): last.append(row)
+		else: groups.append([row])
+	var owner := {}   # mod id -> the group that carries it (a superseded copy never mounts)
+	for i in groups.size():
+		for row: Dictionary in groups[i]:
+			if not str(row.get("superseded_by", "")).is_empty(): continue
+			for id: String in _ids_of(row):
+				if not owner.has(id): owner[id] = i
+	var waits: Array = []   # group index -> the group indexes it waits for
+	var any := false
+	for i in groups.size():
+		var list: Array = []
+		for row: Dictionary in groups[i]:
+			for id: String in row.declared:
+				var info: Variant = row.declared[id]
+				var needs: Variant = (info as Dictionary).get("depends", {}) if info is Dictionary else {}
+				if not needs is Dictionary: continue
+				for need: Variant in needs:
+					var at: int = owner.get(str(need), -1)
+					if at >= 0 and at != i and at not in list: list.append(at)
+		any = any or not list.is_empty()
+		waits.append(list)
+	if not any: return ordered
+	var placed := {}
+	var out: Array = []
+	while placed.size() < groups.size():
+		var next := -1
+		for i in groups.size():
+			if not placed.has(i) and (waits[i] as Array).all(func(j: int) -> bool: return placed.has(j)): next = i; break
+		if next < 0:
+			# The rest wait on a loop: they keep their order.
+			for i in groups.size():
+				if not placed.has(i): placed[i] = true; out.append_array(groups[i])
+			break
+		placed[next] = true
+		out.append_array(groups[next])
+	return out
 
 ## Deep-merges each mod's res://mods/<id>/merge/<path>.json over the game's res://<path>.json
 ## (dictionaries merge key by key, lists append, anything else replaces; later mods win) and mounts

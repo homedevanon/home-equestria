@@ -326,7 +326,7 @@ func context_for(observer:String,topics:String,visible_ids:Array=[],place:="",bu
 	for other:String in ([] if not audience.is_empty() else visible_ids.slice(0,6)):
 		if other==observer:continue
 		var r:=relationship(observer,other)
-		var line:="[Your relationship toward %s only] familiarity %.2f, trust %.2f, company preference %.2f. This reveals no private thoughts."%[other,r.familiarity,r.trust,r.preference]
+		var line:="[Your relationship toward %s only] familiarity %.2f, trust %.2f, fondness for company %.2f. You cannot read their thoughts."%[other,r.familiarity,r.trust,r.preference]
 		if used+line.length()+1<=budget:lines.append(line);used+=line.length()+1
 	return "\n".join(lines)
 

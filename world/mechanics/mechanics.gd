@@ -17,6 +17,7 @@ const ASKS := preload("res://world/mechanics/asks/asks.gd")
 const ASK_RULES := preload("res://world/mechanics/asks/ask_rules.gd")
 const CALENDAR := preload("res://world/mechanics/calendar/town_calendar.gd")
 const SAA_SITES := preload("res://world/mechanics/stations/saa_sites.gd")
+const WAGON_WHEEL := preload("res://world/mechanics/wagon_wheel/wagon_wheel.gd")
 const ITEM_CATALOG := preload("res://world/inventory/item_catalog.gd")
 const AI_CACHE_S := 2.0
 const NOTE_CHARS := 400
@@ -31,6 +32,7 @@ var jobs: Node         # jobs/jobs.gd; WP5
 var calendar: Node     # calendar/town_calendar.gd; WP7
 var market: Node       # market/market.gd; WP1 (seller lookup), WP8 (economy)
 var saa_sites: Node    # stations/saa_sites.gd; WP6 (places Anon's row, the cider press and stand on the farm)
+var wagon_wheel: Node  # wagon_wheel/wagon_wheel.gd (Applejack's apple wagon breaks a wheel; a favour Anon fixes with the spare)
 var _ai_cache: Dictionary = {}   # pony id -> {"at": msec, "keys": {context keys}, "caps": [], "lines": []}
 
 func _init() -> void:
@@ -71,6 +73,10 @@ func setup(host: Node) -> void:
 	if saa_sites == null:
 		saa_sites = SAA_SITES.new(); saa_sites.name = "SweetAppleAcresSites"; add_child(saa_sites)
 	saa_sites.hub = self
+	# Applejack's wagon wheel (after asks and the calendar, whose favours and seasons it uses).
+	if wagon_wheel == null:
+		wagon_wheel = WAGON_WHEEL.new(); wagon_wheel.name = "WagonWheel"; add_child(wagon_wheel)
+	wagon_wheel.hub = self
 	# The pony economy (WP8): restock costs, daily income and trades, [sell]/[buy].
 	market.bind(context()); market.game = game; market.facts = facts; market.gifts = gifts
 	market.belongings = belongings; market.stations = stations; market.ledger = LEDGER

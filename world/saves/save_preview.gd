@@ -15,6 +15,7 @@ extends RefCounted
 const SIZE := Vector2i(480, 270)
 const QUALITY := 0.82
 const CATALOGUE := preload("res://world/saves/save_catalogue.gd")
+const RT := preload("res://world/perf/render_thread.gd")
 
 
 ## An asynchronous GPU readback in flight: requested on the main thread, awaited on a worker.
@@ -62,6 +63,26 @@ static func grab(viewport: Viewport) -> Image:
 ## (then grab() is the fallback).
 static func request(viewport: Viewport) -> Pending:
 	if not available(viewport): return null
+	if RT.active():
+		# Trial render_thread: the request and its callback run on the render thread; Pending is
+		# mutex-guarded, so finishing it there is safe.
+		if not RT.readback_ok(viewport): return null
+		var rid := viewport.get_texture().get_rid()
+		var waiting := Pending.new()
+		RenderingServer.call_on_render_thread(func() -> void:
+			var rd := RenderingServer.get_rendering_device()
+			var texture := RenderingServer.texture_get_rd_texture(rid) if rd != null else RID()
+			if not texture.is_valid() or not rd.texture_is_valid(texture):
+				waiting.finish(null); return
+			var format: RDTextureFormat = rd.texture_get_format(texture)
+			if format == null:
+				waiting.finish(null); return
+			var w := int(format.width)
+			var h := int(format.height)
+			var error: Error = rd.texture_get_data_async(texture, 0, func(data: PackedByteArray) -> void:
+				waiting.finish(Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, data) if data.size() == w * h * 4 else null))
+			if error != OK: waiting.finish(null))
+		return waiting
 	var device := RenderingServer.get_rendering_device()
 	if device == null or not device.has_method("texture_get_data_async"): return null
 	var texture := RenderingServer.texture_get_rd_texture(viewport.get_texture().get_rid())

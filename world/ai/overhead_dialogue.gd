@@ -115,7 +115,7 @@ static func _cradled(actor: Node3D) -> bool:
 	return carry is RefCounted and carry.get("cradle_goal") == true
 
 ## Bridal carried, the caption is where all of her words go (the carry controls sit in the corner
-## instead, player/cradle_controls.gd): it keeps more of her lines before rolling them away.
+## instead, world/ui/control_card.gd): it keeps more of her lines before rolling them away.
 const CRADLED_CAPTION_LINES := 5
 func _cradle_caption(cradled: bool) -> void:
 	if is_instance_valid(fallback_label): fallback_label.max_lines = CRADLED_CAPTION_LINES if cradled else CAPTION.MAX_LINES

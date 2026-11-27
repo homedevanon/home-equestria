@@ -65,9 +65,47 @@ static func _load() -> void:
 		_books.append(book)
 		_by_id[book.id] = book
 
+## What the shelves hold: the personal library when there is one, else the house library.
 static func books() -> Array:
 	_load()
-	return _books
+	if not _books.is_empty() or not HOUSE_LIBRARY: return _books
+	_load_house()
+	return _house
+
+# --- the house library (thread 43711408, 2026-11-19) ------------------------------------------
+## A personal library is never shipped (its stories are their authors' work), so every player's
+## install had none: books() was empty, each shelf slot was built hidden with no collision and out
+## of the "shelf_books" group, and nothing on any bookcase could be outlined, taken or read, on
+## desktop or in VR, with mods on or off. The game now carries a few books written for it
+## (res://world/books/house_library.json, ids from HOUSE_FIRST_ID up). They stock the shelves only
+## when there is no personal library, so a personal library keeps its shelves exactly as before;
+## their item ids resolve either way, so a house book in a briefcase stays a readable book.
+## Rollback: HOUSE_LIBRARY = false (players get decorative shelves again).
+const HOUSE_LIBRARY := true
+const HOUSE_FILE := "res://world/books/house_library.json"
+const HOUSE_FIRST_ID := 1900000001
+static var _house: Array = []
+static var _house_by_id := {}
+static var _house_texts := {}
+static var _house_loaded := false
+
+static func _load_house() -> void:
+	if _house_loaded: return
+	_house_loaded = true
+	if not HOUSE_LIBRARY or not FileAccess.file_exists(HOUSE_FILE): return
+	var doc: Variant = JSON.parse_string(FileAccess.get_file_as_string(HOUSE_FILE))
+	if not doc is Dictionary: push_warning("[books] %s is not valid JSON" % HOUSE_FILE); return
+	for entry: Variant in (doc as Dictionary).get("books", []):
+		if not entry is Dictionary or not (entry as Dictionary).has("id"): continue
+		var row: Dictionary = (entry as Dictionary).duplicate()
+		var id := int(row.id)
+		if id < HOUSE_FIRST_ID or _house_by_id.has(id): continue
+		row.id = id
+		row["house"] = true
+		_house_texts[id] = {"id": id, "chapters": row.get("chapters", [])}
+		row.erase("chapters")
+		_house.append(row)
+		_house_by_id[id] = row
 
 static func item_id(id: int) -> String: return "book:%d" % id
 
@@ -78,12 +116,15 @@ static func id_of(item: String) -> int:
 static func book(which: Variant) -> Dictionary:
 	_load()
 	var id: int = id_of(which) if which is String else int(which)
-	return _by_id.get(id, {})
+	if _by_id.has(id) or not HOUSE_LIBRARY or id < HOUSE_FIRST_ID: return _by_id.get(id, {})
+	_load_house()
+	return _house_by_id.get(id, {})
 
 ## The book's chapters: {"chapters": [{"title", "paragraphs"}], ...}. Cached, a few at a time.
 static func text(id: int) -> Dictionary:
 	if _texts.has(id): return _texts[id]
 	var meta := book(id)
+	if bool(meta.get("house", false)): return _house_texts.get(id, {})
 	var path := DIR + str(meta.get("text", "text/%d.json" % id))
 	var doc: Variant = JSON.parse_string(FileAccess.get_file_as_string(path)) if FileAccess.file_exists(path) else null
 	if not doc is Dictionary: return {}

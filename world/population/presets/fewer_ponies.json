@@ -1,0 +1,13 @@
+{
+	"version": 1,
+	"name": "Fewer ponies (faster)",
+	"base": "default",
+	"only": [
+		"twilight_sparkle", "rainbow_dash", "rarity", "pinkie_pie", "applejack", "fluttershy",
+		"spike", "celestia", "luna",
+		"apple_bloom", "sweetie_belle", "scootaloo", "big_mcintosh",
+		"derpy_hooves", "dinky_doo", "lyra_heartstrings", "sweetie_drops", "cheerilee", "mayor_mare",
+		"zecora", "trixie", "starlight_glimmer", "vinyl_scratch", "octavia_melody", "drwhooves",
+		"diamond_tiara", "silver_spoon"
+	]
+}

@@ -18,8 +18,12 @@ static func apply(pony:Node)->void:
 			# Inside an exported pack the hair scene has no file time, so the staleness check
 			# rejected every cached anchor and rebuilt at runtime (2026-09-29: a release build
 			# crashed on Twilight's tail). Exports trust the shipped cache.
-			var fresh:bool=OS.has_feature("editor") and int(candidate.get_meta("source_mtime",-1))!=FileAccess.get_modified_time(pony.identity.hair_scene)
-			if candidate.get_meta("anchor_version",-1)==VERSION and candidate.get_meta("source","")==pony.identity.hair_scene and not fresh:derived=candidate
+			# In a source run with any mod pack mounted every res:// file time reads 0 (2026-11-23):
+			# 0 is "unknown", not "changed". Counting it as changed rebuilt every Mane 6 tail at run
+			# time and threw away the lighter tails of a hair pack.
+			var stamp:=FileAccess.get_modified_time(pony.identity.hair_scene)
+			var stale:bool=OS.has_feature("editor") and stamp>0 and int(candidate.get_meta("source_mtime",-1))!=stamp
+			if candidate.get_meta("anchor_version",-1)==VERSION and candidate.get_meta("source","")==pony.identity.hair_scene and not stale:derived=candidate
 		if derived==null:derived=build(mi,pony.hair_skeleton,pony.pivot.global_basis*Vector3.BACK)
 		derived.set_meta("anchor_version",VERSION)
 		derived.set_meta("source",pony.identity.hair_scene)

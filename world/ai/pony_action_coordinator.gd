@@ -6,10 +6,23 @@ const AWARENESS := preload("res://world/ai/pony_awareness.gd")
 const PLACES := preload("res://world/navigation/place_directory.gd")
 const BITS := preload("res://world/ai/bit_payments.gd")
 const MECHANICS := preload("res://world/mechanics/mechanics.gd")
+const SHUTDOWN := preload("res://world/shutdown_waits.gd")
 ## Model-requested trips whose failure she tells Anon about (dev 2026-10-15: Dash's balloon walk
 ## failed silently while she kept saying "come on").
 const TOLD_MOVES := ["go_to", "lead", "follow", "go_home", "go_to_bed", "approach"]
 const FAILURE_NOTICE_S := 60.0
+## Showing Anon the way (thread 43717688 / 43723287, 2026-11-16..18: "she tells me to follow her" and
+## then nothing was said again): she says so when they get there, and calls him on when she has been
+## waiting for him a while. Each is one generated line (one model request). Rollback: LEAD_TALK = false.
+const LEAD_TALK := true
+## Waiting this long for him before she calls out; at most one call per lead per CALL_GAP_S.
+const LEAD_WAIT_CALL_S := 10.0
+const LEAD_CALL_GAP_S := 45.0
+const LEAD_CALLS_MAX := 2
+## A lead or walk to a whole region she already stands in goes nowhere (Zecora asked about something in
+## the Everfree had only "Everfree Forest" to name: its centre, 220 m off, then a stop in the trees).
+## It fails at once with a reason she tells Anon, instead. Rollback: REGION_HERE_FAILS = false.
+const REGION_HERE_FAILS := true
 const CALL_RANGE := 24.0
 const CALL_TIMEOUT := 90.0
 ## Who may give Anon a house of his own ([give_house]): the town's mayor and the princess. The
@@ -21,7 +34,8 @@ var executors: Dictionary = {}
 var awareness := AWARENESS.new()
 var _call_serial := 0
 var _calls: Dictionary = {}
-var _ai_moves: Dictionary = {} # "pony/action id" -> true for movement the model asked for
+var _ai_moves: Dictionary = {} # "pony/action id" -> the place id ("" when none) of movement the model asked for
+var _lead_calls: Dictionary = {} # "pony/action id" -> [msec of her last "this way" call while waiting, calls made]
 var _told_at: Dictionary = {} # pony -> msec of her last failure notice; a retried failing trip is no request loop
 
 func register_actor(id: String, actor: Node3D) -> void:
@@ -43,7 +57,10 @@ func context(id: String, targets: Dictionary) -> Dictionary:
 		capabilities = capabilities.filter(func(type: String) -> bool: return not runtime.blocks_action(id, type))
 	var story := _arrival_story()
 	if story != null and story.can_teleport_to_ponyville(id, executor.actor): capabilities.append("teleport_to_ponyville")
-	if story != null and id in HOUSE_GRANTERS and story.has_method("can_grant_home") and story.can_grant_home(): capabilities.append("give_house")
+	# Asking again moves his home (arrival_story.gd can_offer_home; thread fix 2026-11-19).
+	if story != null and id in HOUSE_GRANTERS and (story.can_offer_home() if story.has_method("can_offer_home") else story.has_method("can_grant_home") and story.can_grant_home()): capabilities.append("give_house")
+	# She moves home into the house she and Anon both stand in or at (pony_population.gd move_target).
+	if _move_target(id) != null: capabilities.append("move_house")
 	# Her own purse ([pay_player], bit_payments.gd): offered only while she holds bits.
 	var game := _game()
 	var purse: int = BITS.balance(game.get("world_context"), id) if game != null and is_instance_valid(game.get("world_context")) else 0
@@ -99,10 +116,28 @@ func commit(id: String, actions: Array, targets: Dictionary, turn: int) -> Strin
 			if str(action.get("type", "")) not in TOLD_MOVES: continue
 			# Always logged: a model trip and where it was meant to go, so a failed walk can be traced.
 			print("[ai] %s moves: %s %s" % [id, action.type, str(action.get("location_id", action.get("target_id", "")))])
-			_ai_moves[id + "/" + str(action.get("id", ""))] = true
+			_ai_moves[id + "/" + str(action.get("id", ""))] = str(action.get("location_id", ""))
 			if _ai_moves.size() > 64: _ai_moves.erase(_ai_moves.keys()[0])
-		executors[id].submit(allowed, targets, turn, true)
+		var refused: Array = []
+		for action: Dictionary in allowed:
+			var inside := _region_here(id, action)
+			if not inside.is_empty(): refused.append([action, inside])
+		for row: Array in refused:
+			allowed.erase(row[0])
+			executors[id]._report(row[0], "failed", "You're already in %s, with no single spot to show there. Name a listed place, or say you don't know where it is" % row[1])
+		if not allowed.is_empty(): executors[id].submit(allowed, targets, turn, true)
 	return ""
+
+## The region's name when a model go_to/lead names a whole region she already stands in, else "".
+func _region_here(id: String, action: Dictionary) -> String:
+	if not REGION_HERE_FAILS or str(action.get("type", "")) not in ["go_to", "lead"]: return ""
+	var place := str(action.get("location_id", ""))
+	if not place.begins_with("region:") or not executors.has(id) or not is_instance_valid(executors[id].actor): return ""
+	var region := WorldLayout.region(place.trim_prefix("region:"))
+	# A region with a homestead in town (Sweet Apple Acres) means that homestead, and one with an
+	# authored spawn (Ponyville's plaza) means that spot: both are real places to walk to.
+	if region.is_empty() or PLACES.REGION_HOMESTEADS.has(str(region.id)) or region.has("spawn"): return ""
+	return str(region.get("name", region.id)) if WorldLayout.distance_to(region, executors[id].actor.global_position) <= 0.0 else ""
 
 ## Labels for free-form place names in model tags (place_directory.gd match_name).
 func _place_labels() -> Dictionary:
@@ -142,11 +177,53 @@ func dispatch_house(id: String, action: Dictionary) -> void:
 	var executor: Node = executors.get(id)
 	if not is_instance_valid(executor): return
 	var story := _arrival_story()
+	if story != null and id in HOUSE_GRANTERS and story.has_method("request_home"):
+		# Game facts decide the house (arrival_story.gd request_home; thread fix 2026-11-19).
+		var result: Dictionary = story.request_home(id, str(action.get("house_id", "")))
+		match str(result.get("status", "")):
+			"given":
+				var given: Node3D = result.house
+				executor._report(action, "completed", "%s is Anon's home for good now. It's saved and on his map" % given.label())
+			"permit":
+				var hint := ""
+				if not str(result.get("offer", "")).is_empty(): hint = "; it becomes his when he reaches %s" % result.offer
+				elif not str(result.get("nearest", "")).is_empty(): hint = "; nearest empty one: %s" % result.nearest
+				else: hint = "; no Ponyville house stands empty right now"
+				executor._report(action, "accepted", "It isn't his yet. He can pick any empty house, and it's his once you two stand at it or he claims it at the EMPTY HOUSE sign on its door" + hint)
+			_: executor._report(action, "failed", str(result.get("reason", "No house was given")))
+		return
 	var house: Node3D = story.grant_home(id, str(action.get("house_id", ""))) if story != null and id in HOUSE_GRANTERS and story.has_method("grant_home") else null
 	if house == null:
-		executor._report(action, "failed", "No house was given: Anon already has a home, or no free Ponyville house is loaded nearby")
+		executor._report(action, "failed", "No house was given because Anon already has a home or no free Ponyville house is loaded nearby")
 		return
-	executor._report(action, "completed", "%s is now Anon's own home for good: saved, marked on his map, and ponies can go there" % house.label())
+	executor._report(action, "completed", "%s is now Anon's permanent home. It's saved, marked on his map, and ponies can visit" % house.label())
+
+## The house she would move her household into with [move_house] now, or null: she and Anon both
+## stand in or at it (pony_population.gd move_target decides which houses may be moved into).
+func _move_target(id: String) -> Node3D:
+	var game := _game()
+	var executor: Node = executors.get(id)
+	if game == null or not is_instance_valid(executor) or not is_instance_valid(executor.actor) or not executor.actor.is_inside_tree(): return null
+	var population: Variant = game.get("population")
+	var player: Variant = game.get("player")
+	if not population is Node or not is_instance_valid(population) or not (population as Node).has_method("move_target") or not player is Node3D or not is_instance_valid(player): return null
+	var camera: Node3D = game.call("_find_camera", player) if game.has_method("_find_camera") else player as Node3D
+	if camera == null: return null
+	var feet := Vector3(camera.global_position.x, executor.actor.global_position.y, camera.global_position.z)
+	return (population as Node).call("move_target", id, executor.actor.global_position, feet) as Node3D
+
+## [move_house]: her household moves into the house she and Anon stand in, recorded as his choice.
+func dispatch_move_house(id: String, action: Dictionary) -> void:
+	var executor: Node = executors.get(id)
+	if not is_instance_valid(executor): return
+	var house := _move_target(id)
+	var game := _game()
+	if house == null or game == null:
+		executor._report(action, "failed", "You can only move into an empty house (or your own home), and you and Anon both need to be standing inside it")
+		return
+	var why := str(game.population.call("move_household", id, house))
+	if not why.is_empty(): executor._report(action, "failed", why); return
+	executor._report(action, "completed", "You live at %s with your household now" % house.label())
 
 func dispatch_arrival(id: String, action: Dictionary) -> void:
 	var executor: Node = executors.get(id)
@@ -198,10 +275,14 @@ func dispatch_pony(id: String, action: Dictionary, targets: Dictionary, turn: in
 func _on_actor_outcome(event: Dictionary, recipient: String) -> void:
 	var key := recipient + "/" + str(event.get("id", ""))
 	if _ai_moves.has(key) and str(event.get("status", "")) in ["completed", "failed", "cancelled"]:
-		_ai_moves.erase(key)
+		var place := str(_ai_moves[key])
+		_ai_moves.erase(key); _lead_calls.erase(key)
 		print("[ai] %s %s %s: %s" % [recipient, event.get("type", ""), event.status, event.get("reason", "")])
 		var lost := str(event.status) == "cancelled" and "walking range" in str(event.get("reason", ""))
 		if str(event.status) == "failed" or lost: _tell_player(recipient, event, lost)
+		elif LEAD_TALK and str(event.status) == "completed" and str(event.get("type", "")) == "lead": _tell_arrival(recipient, event, place)
+	elif LEAD_TALK and _ai_moves.has(key) and str(event.get("type", "")) == "lead" and str(event.get("reason", "")).begins_with("Waiting for follower"):
+		_call_on_later(recipient, event, key)
 	if not _calls.has(key): return
 	var row: Dictionary = _calls[key]
 	var issuer: Node = (row.issuer as WeakRef).get_ref()
@@ -218,12 +299,51 @@ func _tell_player(id: String, event: Dictionary, lost: bool) -> void:
 	_told_at[id] = Time.get_ticks_msec()
 	var actor: Node3D = executor.actor
 	var why := str(event.get("reason", ""))
-	var purpose := "You were showing Anon the way, but he stopped following and wandered off. Call out to him in a few words; you can show him again if he comes back and asks." if lost and str(event.get("type", "")) == "lead" \
-		else "You were following Anon, but he went too far ahead and you lost him. Call out to him in a few words; if you still want to go along, use [follow: player]." if lost \
-		else "You tried to %s but could not: %s. Tell Anon in a few words that you could not get there this way; never claim you arrived. You may ask him to lead the way ([follow: player]) or suggest somewhere else." % [str(event.get("type", "")).replace("_", " "), why]
+	var purpose := "Anon wandered off while you were showing him the way. Call out to him briefly. If he comes back and asks, you can lead him again." if lost and str(event.get("type", "")) == "lead" \
+		else "Anon got too far ahead while you were following him, and you lost him. Call out to him briefly. Use [follow: player] if you still want to tag along." if lost \
+		else "You tried to %s, but couldn't: %s. Briefly tell Anon you can't get there that way, and don't pretend you arrived. You can suggest going somewhere else, or ask him to lead with [follow: player]." % [str(event.get("type", "")).replace("_", " "), why]
 	var started := Time.get_ticks_msec()
 	director.queue_generated_intent(id, purpose, "move-failed:%s:%s" % [id, str(event.get("id", ""))],
 		func() -> bool: return is_instance_valid(actor) and actor.is_inside_tree() and Time.get_ticks_msec() - started < FAILURE_NOTICE_S * 1000.0, Callable(), true)
+
+## There, with Anon: she says so (one generated line while he can hear her, stale after FAILURE_NOTICE_S).
+func _tell_arrival(id: String, event: Dictionary, place: String) -> void:
+	var director: Node = get_tree().get_first_node_in_group("conversation_director") if is_inside_tree() else null
+	var executor: Node = executors.get(id)
+	if director == null or not director.has_method("queue_generated_intent") or not is_instance_valid(executor): return
+	var actor: Node3D = executor.actor
+	var found: Dictionary = PLACES.find(get_tree(), place) if not place.is_empty() and is_inside_tree() else {}
+	var label := str(found.get("label", "the place")) if not found.is_empty() else "the place"
+	var short := "as close as" in str(event.get("reason", ""))
+	var purpose := ("The path goes no closer to %s. In a few words, tell Anon this is as near as you can lead him and where it is from here." if short \
+		else "You just led Anon to %s. Let him know in a few words that you're both here now.") % label
+	var started := Time.get_ticks_msec()
+	director.queue_generated_intent(id, purpose, "lead-arrived:%s:%s" % [id, str(event.get("id", ""))],
+		func() -> bool: return is_instance_valid(actor) and actor.is_inside_tree() and Time.get_ticks_msec() - started < FAILURE_NOTICE_S * 1000.0, Callable(), true)
+
+## At most LEAD_CALLS_MAX calls per lead, LEAD_CALL_GAP_S apart (an idle player costs no endless requests).
+func _may_call(key: String) -> bool:
+	var row: Array = _lead_calls.get(key, [-1000000, 0])
+	return int(row[1]) < LEAD_CALLS_MAX and Time.get_ticks_msec() - int(row[0]) >= LEAD_CALL_GAP_S * 1000.0
+
+## Waiting for Anon who lags behind: after LEAD_WAIT_CALL_S still waiting, she calls him on (one timer per
+## wait, no per-frame work; at most one call per LEAD_CALL_GAP_S for this lead).
+func _call_on_later(id: String, event: Dictionary, key: String) -> void:
+	if not is_inside_tree() or not _may_call(key): return
+	if not await SHUTDOWN.seconds(self, LEAD_WAIT_CALL_S): return
+	var executor: Node = executors.get(id)
+	if not is_instance_valid(executor) or not _ai_moves.has(key) or str(executor.movement.get("id", "")) != str(event.get("id", "")): return
+	if not bool(executor.get("_waiting_for_follower")): return
+	if not _may_call(key): return
+	var director: Node = get_tree().get_first_node_in_group("conversation_director")
+	if director == null or not director.has_method("queue_generated_intent"): return
+	_lead_calls[key] = [Time.get_ticks_msec(), int((_lead_calls.get(key, [0, 0]) as Array)[1]) + 1]
+	var found: Dictionary = PLACES.find(get_tree(), str(_ai_moves[key]))
+	var actor: Node3D = executor.actor
+	var started := Time.get_ticks_msec()
+	director.queue_generated_intent(id, "While leading Anon to %s, you stopped to wait because he's lagging behind. Call him over in a few words." % str(found.get("label", "the place")),
+		"lead-wait:%s:%d" % [key, started],
+		func() -> bool: return is_instance_valid(actor) and actor.is_inside_tree() and is_instance_valid(executor) and bool(executor.get("_waiting_for_follower")) and Time.get_ticks_msec() - started < 15000, Callable(), true)
 
 func outcomes(id: String) -> String:
 	return executors[id].context_lines() if executors.has(id) and is_instance_valid(executors[id]) else ""

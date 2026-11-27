@@ -64,10 +64,17 @@ func run() -> void:
 		"res://mods/stamped_test/mod.json": JSON.stringify({"id": "stamped_test", "name": "Stamped"}),
 		"res://mods/stamped_test/%s" % LOADER.BUILT: JSON.stringify({"id": "stamped_test", "game_version": "0.0.2"}),
 		"res://icon.png.import": "[remap]"})
+	# A mod the game took in (mod_loader.gd BUILT_IN) is not mounted a second time from a pack.
+	pack(mods_dir.path_join("i_builtin.pck"), {
+		"res://mods/mailbox/mod.json": JSON.stringify({"id": "mailbox", "name": "Mailbox", "version": "0.1.0", "entry": "res://mods/mailbox/main.gd"}),
+		"res://mods/mailbox/main.gd": "extends Node\n"})
 	LOADER.boot([mods_dir], [loose_dir], PackedStringArray(["d_off.pck"]))
 	var files: Array = LOADER.packs.map(func(row: Dictionary) -> String: return row.file)
-	check(files == ["b_merge.pck", "c_broken.pck", "d_off.pck", "dinnerbone.pck", "e_old.pck", "f_current.pck", "g_new.pck", "h_stamped.pck", "loose_override.pck"], "packs in name order, the game's own pack skipped (%s)" % str(files))
+	check(files == ["b_merge.pck", "c_broken.pck", "d_off.pck", "dinnerbone.pck", "e_old.pck", "f_current.pck", "g_new.pck", "h_stamped.pck", "i_builtin.pck", "loose_override.pck"], "packs in name order, the game's own pack skipped (%s)" % str(files))
 	var ids: Array = LOADER.mods.map(func(mod: Dictionary) -> String: return mod.id)
+	var built_in: Array = LOADER.pack_rows().filter(func(row: Dictionary) -> bool: return row.file == "i_builtin.pck")
+	check(built_in.size() == 1 and not bool(built_in[0].mounted) and not bool(built_in[0].switchable) and str(built_in[0].reason).begins_with("Part of the game since"), "a pack of a mod the game has built in stays off, with the reason and no switch")
+	check("mailbox" not in LOADER.active().map(func(mod: Dictionary) -> String: return mod.id), "the built-in mod's pack copy does not run")
 	check("dinnerbone" in ids, "the built Dinnerbone pack is recognised although res://mods/dinnerbone exists in the source")
 	var active: Array = LOADER.active().map(func(mod: Dictionary) -> String: return mod.id)
 	check(active.has("merge_test") and active.has("dinnerbone") and not active.has("broken_test"), "valid mods run, the broken one does not (%s)" % str(active))

@@ -230,6 +230,9 @@ func _camera() -> Node3D:
 ## plays on stage wherever Anon is; `_watched` is kept for the console and labs that pass it.
 func start(_watched := false) -> bool:
 	if not show.is_empty() or game == null: return false
+	# Who lives where (2026-11-24): no show while the player has Trixie not spawned.
+	var population: Variant = game.get("population")
+	if population is Node and is_instance_valid(population) and "config" in population and not (population as Node).get("config").assignments.has(TRIXIE): return false
 	locate_stage()
 	var clock := get_node_or_null("/root/TimeOfDay")
 	var day := int(clock.day) if clock != null else 0
@@ -293,7 +296,7 @@ func own_show_block() -> String:
 	var clock := get_node_or_null("/root/TimeOfDay")
 	if clock != null:
 		var h := float(clock.hours)
-		if h < WINDOW.x or h >= WINDOW.y: return "your shows are only between half past four and seven in the evening"
+		if h < WINDOW.x or h >= WINDOW.y: return "you only perform between half past four and seven in the evening"
 	if _raining(): return "not in this weather"
 	return ""
 
@@ -444,9 +447,9 @@ func _hold(actor: Node3D) -> void:
 		encounters.begin("trixie_show:%d" % int(show.day), {
 			"title": "performing a Great and Powerful magic show", "place": "Schoolhouse stage",
 			"participants": [TRIXIE], "movers": {TRIXIE: [OWNER]}, "hold": true,
-			"knows": {TRIXIE: ["You are putting on one of your magic shows on the schoolhouse stage. Ponies are gathering to watch."]},
-			"commitment": {TRIXIE: "Perform your show with flair; react to the audience; stay on stage until it is over."},
-			"allowed": "You stay on your stage until the show is over, whatever anypony says. If Anon talks to you mid-show, answer in one short in-character line and get on with the show; a request to leave, follow, sit or go somewhere waits until after the show.",
+			"knows": {TRIXIE: ["You're putting on a magic show on the schoolhouse stage, and ponies are gathering around to watch."]},
+			"commitment": {TRIXIE: "Put on a flashy show and play off the crowd. Stay on stage until you are finished."},
+			"allowed": "Stay on stage until the show ends, whatever anypony says. If Anon speaks to you mid-show, give one short in-character reply and keep performing. Any request to leave, follow, sit, or go elsewhere waits until the show is over.",
 			"beats": []})
 	_release_essence()
 

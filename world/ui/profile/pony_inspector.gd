@@ -1,6 +1,7 @@
 extends Node3D
 const BLUE=Color("35b7ff")
 const BITS := preload("res://world/ai/bit_payments.gd")
+const BOND := preload("res://world/relationships/bond_rules.gd")
 var owner_ui:Node
 var store:Node
 var panel:Node3D
@@ -32,12 +33,17 @@ func setup(ui:Node,context:Node):
 	panel=preload("res://world/ui/profile/pony_profile_view.gd").new();add_child(panel)
 	panel.closed.connect(close);panel.back.connect(back)
 	panel.pay.connect(_pay);panel.hire_show.connect(_hire_show)
+	panel.ask_her.connect(_ask_her);panel.end_it.connect(_end_it)
 	pointer=preload("res://world/ui/controller_pointer.gd").new();add_child(pointer);pointer.set_color(BLUE)
 	_material=ShaderMaterial.new();_material.shader=load("res://addons/cel-shader/outline-tinted.gdshader");_material.set_shader_parameter("outline_color",BLUE);_material.set_shader_parameter("outline_width",.006)
 	_hand_material=ShaderMaterial.new();_hand_material.shader=load("res://world/ui/profile/hand_glow.gdshader");_hand_material.set_shader_parameter("outline_color",BLUE);_hand_material.set_shader_parameter("outline_width",.003)
 	_aura=MeshInstance3D.new();var sphere:=SphereMesh.new();sphere.radius=.055;sphere.height=.11;sphere.radial_segments=16;sphere.rings=8;_aura.mesh=sphere
 	var mat:=StandardMaterial3D.new();mat.shading_mode=BaseMaterial3D.SHADING_MODE_UNSHADED;mat.transparency=BaseMaterial3D.TRANSPARENCY_ALPHA;mat.albedo_color=Color(BLUE,.16);mat.emission_enabled=true;mat.emission=BLUE;_aura.material_override=mat;_aura.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF;add_child(_aura);_aura.hide()
 	if is_instance_valid(store) and is_instance_valid(store.impressions):store.impressions.changed.connect(_changed)
+	# The relationship page also follows her record (contract section 5 D).
+	if BOND.DYNAMIC and is_instance_valid(store):
+		var bonds:Variant=store.get("player_bonds")
+		if bonds is Node and is_instance_valid(bonds) and bonds.has_signal("changed") and not bonds.changed.is_connected(_changed):bonds.changed.connect(_changed)
 func toggle():
 	if active:close();return
 	if owner_ui.hand_busy("right"):return
@@ -78,6 +84,8 @@ func _populate():
 
 ## Only gather player-facing relationship facts used by the summary.
 func _facts(id: String) -> Dictionary:
+	var page := page_for(store.player_bonds, id)
+	if not page.is_empty(): return _page_facts(id, page)
 	var identity: Resource = selected.identity
 	var bonds: Node = store.player_bonds
 	var now := Time.get_unix_time_from_system()
@@ -109,10 +117,34 @@ func _facts(id: String) -> Dictionary:
 	if not plan.is_empty():
 		info.plan = str(plan.get("activity", "time together")).replace("_", " ").capitalize()
 		if bool(plan.get("date", false)): info.plan += " — a date"
+	info.memories = _memories(id)
+	# Why the bars moved, or why a gain did not count (pony_impressions.gd change list, 2026-11-19).
+	info.changes = change_lines(store.impressions, id, bool(info.romance_available))
+	info.love_today = love_today_line(store.impressions, id) if bool(info.romance_available) else ""
+	_purse_facts(id, info)
+	return info
+
+## The relationship page (switch on): player_bonds.page(id) as it is, with the memories, purse
+## and show of today's page.
+func _page_facts(id: String, page: Dictionary) -> Dictionary:
+	var info := {"page": page, "memories": _memories(id)}
+	_purse_facts(id, info)
+	return info
+
+## player_bonds.page(id) while the switch is on and the node has it; {} means today's page.
+static func page_for(bonds: Variant, id: String) -> Dictionary:
+	if not BOND.DYNAMIC or not bonds is Node or not is_instance_valid(bonds) or not (bonds as Node).has_method("page"): return {}
+	var page: Variant = (bonds as Node).call("page", id)
+	return page if page is Dictionary else {}
+
+## Her three newest story events with Anon in them.
+func _memories(id: String) -> Array:
 	var memories: Array[String] = []
 	for event: Dictionary in store.events_for(id, 64):
 		if "player" in event.get("subjects", []): memories.append(str(event.text).left(160))
-	info.memories = memories.slice(maxi(0, memories.size() - 3))
+	return memories.slice(maxi(0, memories.size() - 3))
+
+func _purse_facts(id: String, info: Dictionary) -> void:
 	var game: Node = owner_ui.get_parent()
 	info.purse = BITS.balance(store, id)
 	info.player_bits = int(owner_ui.inventory.bits) if owner_ui.get("inventory") != null else 0
@@ -120,7 +152,53 @@ func _facts(id: String) -> Dictionary:
 	if id == "trixie" and show != null:
 		info.show_price = int(show.SHOW_PRICE)
 		info.show_ready = not show.active()
-	return info
+
+## The page's "Ask her": her next turn that answers him carries the one line (player_bonds.ask_flag).
+func _ask_her() -> void:
+	if not is_instance_valid(selected) or not is_instance_valid(store): return
+	var bonds: Variant = store.get("player_bonds")
+	if bonds is Node and is_instance_valid(bonds) and (bonds as Node).has_method("ask_flag"): (bonds as Node).call("ask_flag", str(selected.identity.id))
+	_populate()
+
+## The page's "End it", after its confirmation: ends things at once (player_bonds.end_it).
+func _end_it() -> void:
+	if not is_instance_valid(selected) or not is_instance_valid(store): return
+	var bonds: Variant = store.get("player_bonds")
+	if bonds is Node and is_instance_valid(bonds) and (bonds as Node).has_method("end_it"): (bonds as Node).call("end_it", str(selected.identity.id))
+	_populate()
+
+## The reasons player_bonds.gd love_fact and pony_impressions.gd name, in the profile's words.
+const WHY_WORDS := {"romantic_talk": "romantic talk she welcomed", "kiss": "a kiss she returned", "her_kiss": "she kissed you",
+	"affection": "a hug or a held hoof", "gift": "a gift she accepted", "activity": "something you did together", "date": "a date you kept",
+	"together": "time spent together", "intimacy": "intimacy", "her reply": "how she took your words"}
+
+## Newest first, at most four: "Day 12 · Love +1 · a kiss she returned".
+static func change_lines(impressions: Node, id: String, romance: bool) -> Array:
+	var rows: Variant = impressions.get("changes")
+	var list: Array = (rows as Dictionary).get(id, []) if rows is Dictionary else []
+	var lines: Array = []
+	for i in range(list.size() - 1, -1, -1):
+		var row: Variant = list[i]
+		if not row is Dictionary or lines.size() >= 4: continue
+		var love := int(row.get("love", 0)); var friendship := int(row.get("friendship", 0))
+		if not romance and love != 0 and friendship == 0: continue
+		var moved := PackedStringArray()
+		if love != 0 and romance: moved.append("Love %+d" % love)
+		if friendship != 0: moved.append("Friendship %+d" % friendship)
+		var why := str(WHY_WORDS.get(str(row.get("why", "")), str(row.get("why", ""))))
+		var note := str(row.get("note", ""))
+		lines.append("Day %d · %s%s" % [int(row.get("day", 0)), (" · ".join(moved) + " · ") if not moved.is_empty() else "", why + (" (" + note + ")" if not note.is_empty() else "")])
+	return lines
+
+## "Love today: +3; 5 more can count today", or "" before any love.
+static func love_today_line(impressions: Node, id: String) -> String:
+	if not impressions.has_method("love_room"): return ""
+	var row: Dictionary = impressions.xp_for(id)
+	var today := int(preload("res://world/mechanics/facts.gd").clock().day)
+	var got := int(row.get("love_today", 0)) if int(row.get("love_day", -1)) == today else 0
+	var room := int(impressions.love_room(id))
+	if got == 0 and room == 0: return "Love grows once you are friends."
+	return "Love today: +%d; %s" % [got, ("%d more can count today" % room) if room > 0 else "that is all for today"]
 
 ## Pay buttons: the bits move here (bit_payments.gd); her model is only told afterwards.
 func _pay(amount: int) -> void:

@@ -26,6 +26,18 @@ extends Node3D
 ## Assign sources at runtime (game.gd or the rig scene) via setup().
 
 const CPU_PROFILE := preload("res://tools/crowd_cpu_profile.gd") # Timed only while an F9 trace records.
+## Rollback (2026-11-18): false restores the old frame path. Measured before: 16 µs a frame for
+## _process on desktop, 13.6 of them in _cache_interaction_hands (script profiler, town street,
+## ~470 FPS); motion_hand_marker ran twice a frame (once per hand, from desktop_anon.gd).
+## - Interaction hands: the skeleton signal still runs every update, but only copies the six bone
+##   poses per hand and the skeleton transform (they can only be read then, before the engine
+##   restores the pre-IK pose). The hand samples are worked out from that copy, with the same
+##   maths, the first time interaction_hand()/interaction_forearm() asks after an update; those are
+##   the only readers of _interaction_hands. Nothing asks on most desktop frames.
+## - motion_hand_marker() returns its last result while every input is bit-identical: the body
+##   transform, model_scale, the hand offset, and the animation state (counted per
+##   _apply_desktop_motion pass, the only writer of _motion and _motion_frame_local).
+const FRAME_TRIM := true
 enum BodyMode { FULL, HANDS }
 
 ## A foot has just landed (or, while gliding, a stride's worth of travel
@@ -179,6 +191,9 @@ func _ready() -> void:
 				ids.append(_skeleton.find_bone(prefix+part))
 			if -1 not in ids:
 				_interaction_bones[side]=ids
+				var capture: Array[Transform3D] = []
+				capture.resize(ids.size())
+				_hand_capture[side] = capture
 				var rest_points:Array[Vector3]=[]
 				for bone:int in ids:rest_points.append(_skeleton.get_bone_global_rest(bone).origin)
 				var rest_back:Vector3=-(rest_points[2]-rest_points[3]).cross(rest_points[4]-rest_points[1]).normalized()*(1. if side=="left" else -1.)
@@ -205,6 +220,7 @@ func reset_desktop_pose() -> void:
 	if not is_instance_valid(desktop_pose_driver): return
 	_head_hand_previous.clear()
 	_interaction_hands.clear()
+	_hand_capture_pending = false
 	_last_hip = Vector3.INF
 	for foot: Dictionary in _feet: foot.planted = Vector3.INF
 
@@ -403,6 +419,8 @@ func _measure_forearm_shell(ids:Array[int], back:Vector3)->Vector2:
 ## sleeve, so the forearm strip and buttons move down onto what is visible.
 func refresh_forearm_clearance() -> void:
 	if _skeleton == null: return
+	# A copied pose taken before this change is worked out with the clearance it was taken under.
+	_resolve_interaction_hands()
 	for side: String in _interaction_bones:
 		var ids: Array[int] = []
 		ids.assign(_interaction_bones[side])
@@ -410,11 +428,27 @@ func refresh_forearm_clearance() -> void:
 		_forearm_clearance[side] = _measure_forearm_shell(ids, rest_back)
 
 
+## FRAME_TRIM: per hand, the global poses of its _interaction_bones (same order) copied at the
+## last skeleton update, the skeleton transform then, and whether that copy is not yet worked out.
+var _hand_capture: Dictionary = {}
+var _hand_capture_skeleton := Transform3D()
+var _hand_capture_pending := false
+
 func _cache_interaction_hands() -> void:
 	# Read after skinning modifiers, before Godot restores the pre-IK pose.
 	# Skeleton updates already queued at scene removal can still emit this signal.
 	if not is_inside_tree() or not is_instance_valid(_skeleton) or not _skeleton.is_inside_tree():
 		_interaction_hands.clear()
+		_hand_capture_pending = false
+		return
+	if FRAME_TRIM:
+		_hand_capture_skeleton = _skeleton.global_transform
+		for side in _interaction_bones:
+			var ids: Array = _interaction_bones[side]
+			var poses: Array[Transform3D] = _hand_capture[side]
+			for k in ids.size(): poses[k] = _skeleton.get_bone_global_pose(int(ids[k]))
+		_hand_capture_pending = true
+		interaction_hands_updated.emit()
 		return
 	for side in _interaction_bones:
 		var ids:Array=_interaction_bones[side]
@@ -443,17 +477,51 @@ func _cache_interaction_hands() -> void:
 	interaction_hands_updated.emit()
 
 
+## FRAME_TRIM: the old _cache_interaction_hands maths on the copied poses (to_world is the
+## skeleton transform and poses[k] the global pose of ids[k] at that update). Each update set or
+## erased every side, so only the latest copy decides the result.
+func _resolve_interaction_hands() -> void:
+	if not _hand_capture_pending: return
+	_hand_capture_pending = false
+	var to_world := _hand_capture_skeleton
+	for side in _interaction_bones:
+		var ids:Array=_interaction_bones[side]
+		var poses:Array[Transform3D]=_hand_capture[side]
+		var points:Array[Vector3]=[]
+		for k in ids.size():points.append((to_world*poses[k]).origin)
+		var distal:=poses[0]
+		var tip:Vector3=to_world*(distal*INDEX_CAP[side])
+		var normal:Vector3=(points[4]-points[1]).cross(points[2]-points[3]).normalized()*(1.0 if side=="left" else -1.0)
+		var lower:Transform3D=to_world*poses[5]
+		var along:Vector3=points[1]-points[5]
+		var length:float=along.length()
+		var back:Vector3=lower.basis*Vector3(_forearm_back[side])
+		if not lower.is_finite() or not tip.is_finite() or not normal.is_finite() or not along.is_finite() or length<.05 or length>1.:
+			_interaction_hands.erase(side);continue
+		along/=length
+		back-=along*back.dot(along)
+		if not back.is_finite() or back.length_squared()<.000001:
+			_interaction_hands.erase(side);continue
+		back=back.normalized()
+		var frame:=Transform3D(Basis(along,back.cross(along),back),(points[1]+points[5])*.5)
+		var palm_center: Vector3 = (points[1] + (points[2] + points[3] + points[4]) / 3.0) * 0.5
+		_interaction_hands[side]={"tip":tip,"palm":normal,"palm_center":palm_center,"wrist":points[1],"elbow":points[5],"forearm":frame,"forearm_length":length,"forearm_outer":Vector2(_forearm_clearance[side]).x*length,"forearm_inner":Vector2(_forearm_clearance[side]).y*length}
+
+
 func _exit_tree() -> void:
 	_interaction_hands.clear()
+	_hand_capture_pending = false
 	_head_hand_previous.clear()
 
 
 func interaction_hand(side:String) -> Dictionary:
+	_resolve_interaction_hands()
 	return _interaction_hands.get(side,{}) if body_mode==BodyMode.FULL else {}
 
 
 ## The IK skeleton still runs in gloves-only mode; its forearm anchors remain available.
 func interaction_forearm(side:String) -> Dictionary:
+	_resolve_interaction_hands()
 	var sample:Dictionary=_interaction_hands.get(side,{})
 	if sample.is_empty():return {}
 	return {"forearm":sample.forearm,"forearm_length":sample.forearm_length,"forearm_outer":sample.forearm_outer,"forearm_inner":sample.forearm_inner}
@@ -619,7 +687,16 @@ var _motion_frame_local := Transform3D.IDENTITY
 var _motion_head := Vector3.INF
 var _body_ik: SkeletonModifier3D
 
+## Counts _apply_desktop_motion passes (motion_hand_marker's cache key, FRAME_TRIM).
+var _motion_serial := 0
+var _marker_serial := PackedInt64Array([-1, -1])
+var _marker_at: Array[Transform3D] = [Transform3D(), Transform3D()]
+var _marker_scale := PackedFloat64Array([NAN, NAN])
+var _marker_offset: Array[Transform3D] = [Transform3D(), Transform3D()]
+var _marker_value: Array[Transform3D] = [Transform3D(), Transform3D()]
+
 func _apply_desktop_motion(delta: float, hip_flat: Vector3, yaw_angle: float, body_scale: float) -> void:
+	_motion_serial += 1
 	if _motion_failed or _skeleton == null: return
 	if _motion == null:
 		_motion = MOTION.new(_skeleton)
@@ -688,6 +765,17 @@ func motion_amount() -> float:
 ## marker * hand offset). Null while no animation runs.
 func motion_hand_marker(side: String) -> Variant:
 	if _motion == null or float(_motion.amount) <= 0.0: return null
+	if FRAME_TRIM:
+		var i := 0 if side == "left" else 1
+		var offset := left_hand_offset if side == "left" else right_hand_offset
+		var at := global_transform
+		if _marker_serial[i] == _motion_serial and _marker_at[i] == at and _marker_scale[i] == model_scale and _marker_offset[i] == offset:
+			return _marker_value[i]
+		var target: Transform3D = _motion.target("LeftHand" if side == "left" else "RightHand", at * _motion_frame_local, model_scale)
+		var value := target * offset.affine_inverse()
+		_marker_serial[i] = _motion_serial; _marker_at[i] = at; _marker_scale[i] = model_scale
+		_marker_offset[i] = offset; _marker_value[i] = value
+		return value
 	var bone_target: Transform3D = _motion.target("LeftHand" if side == "left" else "RightHand", global_transform * _motion_frame_local, model_scale)
 	return bone_target * (left_hand_offset if side == "left" else right_hand_offset).affine_inverse()
 

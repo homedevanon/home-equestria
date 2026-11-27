@@ -12,6 +12,7 @@ const ARRIVAL_CONTEXT := preload("res://world/ai/arrival_context.gd")
 const MEMORY := preload("res://world/ai/memory/story_memory.gd")
 const TOWN_TALK := preload("res://world/ai/memory/town_talk.gd")
 const IMPRESSIONS := preload("res://world/ai/impressions/pony_impressions.gd")
+const BOND_PROMPT := preload("res://world/relationships/bond_prompt.gd")
 const PLACES := preload("res://world/navigation/place_directory.gd")
 const HEARD_TRANSCRIPT_BYTES := 8192
 ## Cache layout markers, stripped by llm_client.build_request (docs/AI_TOKENS_AND_CACHING_2026_10_25.md).
@@ -37,6 +38,9 @@ func situation_block(id: String) -> String:
 	lines.append_array(host.awareness.describe(observation, str(host.config.get_value("player_name", "Anon")), host._now()))
 	lines.append(preload("res://world/characters/accessories/pony_wardrobe.gd").situation_line(node))
 	if is_instance_valid(host.world_context): lines.append(preload("res://world/ai/bit_payments.gd").situation_line(host.world_context, id))
+	# What human Anon has on (clothing_profile.gd): without it a pony denies his suit and tie.
+	var outfit := _anon_outfit_line()
+	if not outfit.is_empty(): lines.append(outfit)
 	# The player-body line rides in the fixed head (solo_head), not in every live block.
 	# First meeting or not, and whether she knows his name (player_bonds.gd knowledge_line).
 	if is_instance_valid(host.world_context) and is_instance_valid(host.world_context.player_bonds) and host.world_context.player_bonds.has_method("knowledge_line"):
@@ -83,7 +87,7 @@ func situation_block(id: String) -> String:
 		lines.append(node.get_meta("relationship_runtime").prompt_for(id))
 	if entry.has("chat_since") and host._now() - float(entry.get("chat_last", -1e9)) < 120.0 and host._now() - float(entry.chat_since) > 150.0 \
 			and node.has_method("posture_status") and str(node.posture_status().get("kind", "stand")) == "stand":
-		lines.append("- You two have been talking for a while now. If it suits you and the moment, settle in: sit down or lie down ([sit] / [lie_down]) and keep chatting; no need to announce it.")
+		lines.append("- The two of you have been talking for a while. If it suits you and fits the moment, you can settle in with [sit] or [lie_down] and keep chatting without making a point of it.")
 	return "\n".join(lines)
 
 
@@ -99,11 +103,18 @@ func _company_line(group: Variant) -> String:
 func _anon_pony_line() -> String:
 	if not host.is_inside_tree(): return ""
 	var form: Dictionary = PLAYER_FORM.active(host.get_tree())
-	if not PLAYER_FORM.is_pony(form): return "- Player body: a human with hands and feet; he is not a pony. You are a pony with hooves; horn magic and wings depend on your actual race. This does not establish that you know his name or past."
+	if not PLAYER_FORM.is_pony(form): return "- Player body: he is what these notes call a human. He stands upright on two legs, taller than a pony, with hands and feet, clothes, and no coat or tail. He is not a pony. You are a pony with hooves, while wings or horn magic depend on your race. None of this means you know his name, his past, or the word human. Your \"Anon and you\" line says what you know."
 	var words: Dictionary = PLAYER_FORM.pronouns(form)
-	return "- Player body: %s, a pony with hooves, not human hands. Refer to the player as %s/%s; where other instructions say he/him/his about Anon, use %s/%s/%s. This does not establish that you know the player's name or past." % [
+	return "- Player body: %s, a pony with hooves, not human hands. Refer to the player as %s/%s, and where other instructions say he/him/his for Anon, use %s/%s/%s. This does not mean you know the player's name or past." % [
 		PLAYER_FORM.describe(form), words.subject, words.object, words.subject, words.object, words.possessive]
 
+
+## Human Anon's clothes in plain words, or "" (AnonPony, or no player wardrobe in this scene).
+## Loaded at use: the clothing profile reaches the item catalogue, which a preload here would pull in.
+func _anon_outfit_line() -> String:
+	if not host.is_inside_tree() or PLAYER_FORM.is_pony(PLAYER_FORM.active(host.get_tree())): return ""
+	var profile: Variant = load("res://world/customization/clothing_profile.gd")
+	return str(profile.player_outfit_line(host.get_tree())) if profile != null else ""
 
 ## The active story encounter's pinned frame for this speaker, or "" (encounter_runtime.gd).
 func _encounter_frame(id: String) -> String:
@@ -190,7 +201,7 @@ func system_prompt(id: String) -> String:
 	if durable != "": prompt += "\n\n" + durable
 	var story := _story()
 	if story == null:
-		prompt += "\n\nCompleted speech you personally heard (speaker-labelled, not private thoughts): " + heard_transcript(entry.heard.slice(maxi(0, entry.heard.size() - 8)))
+		prompt += "\n\nCompleted speech you personally heard (labelled by speaker, never private thoughts): " + heard_transcript(entry.heard.slice(maxi(0, entry.heard.size() - 8)))
 	var actions: String = host._action_prompt(id)
 	if actions != "": prompt += "\n\n" + actions
 	if story != null and host.get("_brain_due") == true:
@@ -208,7 +219,7 @@ func system_prompt(id: String) -> String:
 ## The last line of every solo request (dev 2026-11-11, reply style review): system.md's "less is
 ## more" stood at the top of 21,000 characters with no number in it, and replies ran four to ten
 ## sentences. Group and ambient lines have their own limits.
-const SOLO_LENGTH := "LENGTH OF WHAT YOU SAY OUT LOUD NOW: one or two sentences, then stop. Go longer only when Anon has just asked you for a story, an explanation or a list."
+const SOLO_LENGTH := "LENGTH OF WHAT YOU SAY OUT LOUD NOW: keep it to one or two sentences, then stop. Only say more if Anon just asked for a story, an explanation, or a list."
 
 
 ## Persona files repeat two shared sentences that system.md already states for every pony ("Hospitality is
@@ -231,41 +242,41 @@ static func persona_text(text: String) -> String:
 ## stated once here (the reply protocol, format rules, tag rules and relationship help used to
 ## repeat each other in three places).
 func solo_head() -> String:
-	return "%s%s\n\n%s\n%s\n%s\n\n%s\n%s\n\n%s" % [host._system_base.strip_edges(), LLM.HEAD_END, SOLO_FORMAT, FACE_TAGS.PROMPT, IMPRESSIONS.PROMPT, SOLO_ACTIONS, RELATIONSHIP_RULES, _anon_pony_line().trim_prefix("- ")]
+	return "%s%s\n\n%s\n%s\n%s\n\n%s\n%s\n\n%s" % [host._system_base.strip_edges(), LLM.HEAD_END, SOLO_FORMAT, FACE_TAGS.PROMPT, BOND_PROMPT.head(IMPRESSIONS.PROMPT), BOND_PROMPT.actions(SOLO_ACTIONS), BOND_PROMPT.rules(RELATIONSHIP_RULES), _anon_pony_line().trim_prefix("- ")]
 
 
-const SOLO_FORMAT := "REPLY FORMAT: only what you say out loud, plain text, never JSON. Square-bracket tags may go anywhere in the line and are never spoken. Example: [face:happy] Oh, hello there! [look_at: player]"
+const SOLO_FORMAT := "REPLY FORMAT: Only what you say out loud, in plain text, never JSON. Square-bracket tags can go anywhere in the line and are not spoken. Example: [face:happy] Oh, hello there! [look_at: player]"
 ## The tags nearly every pony has. They are explained once in the fixed head; the live part names the
 ## ones she cannot use right now and explains her extra ones (flight, letters, kisses, story actions).
 const SOLO_CORE := ["look_at", "approach", "follow", "go_to", "lead", "step", "stay", "cancel", "resume_routine", "go_home", "go_to_bed",
 	"sit", "stand", "lie_down", "sit_on_seat", "wake_up", "call_pony", "send_pony",
 	"relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle"]
-const SOLO_ACTIONS := """ACTION TAGS: at most one movement or posture tag plus one [look_at] per reply, only tags available now, with the TARGETS, PONY_IDs and LOCATIONS (or a mapped place's exact name) listed at the end, exactly as written. Never coordinates, code or JSON.
-- [look_at: TARGET] look a moment ([look_at: player, 5] for seconds)
-- [approach: TARGET] walk up close and stop, e.g. to come closer to whoever you talk with
-- [follow: TARGET] go along with someone ([follow: player, left, 2] for side and metres); [follow: player] is an open-ended walk with no destination, never your own trip. It stands you up itself (never add [stand]) and ends on [cancel], a new movement, or when they stay far out of reach. When Anon asks you to come with him to a named place ("walk with me to X", "follow me to X", "let's go to X"), use [lead: player, LOCATION] so you both head there, never [follow]
-- [go_to: LOCATION] walk to any named destination, including an accepted earlier invitation ([go_to: LOCATION, trot] for pace); far places are fine (you travel in stages); ends on arrival
-- [lead: TARGET, LOCATION] take someone to a place, waiting for them; when Anon agrees to come along where you are going, [lead: player, LOCATION]
-- [step: DIRECTION] a few steps: forward, back, left, right, away (from the player) or aside (out of someone's way, e.g. a doorway); [step: back, 2] for 1-6 metres
-- [stay: SECONDS] hold position 0.5-600 seconds ([stay] = 30); never instead of a story route
-- [cancel] stop; [resume_routine] back to your day; [go_home] go home to rest a while (say goodbye first)
+const SOLO_ACTIONS := """ACTION TAGS: use at most one movement or posture tag plus one [look_at] per reply, chosen only from tags available now. Use the exact TARGETS, PONY_IDs and LOCATIONS (or a mapped place's exact name) listed at the end. Never use coordinates, code or JSON.
+- [look_at: TARGET] look briefly ([look_at: player, 5] for seconds)
+- [approach: TARGET] walk up close and stop, e.g. to get closer to whoever you talk with
+- [follow: TARGET] walk along with someone ([follow: player, left, 2] for side and metres). [follow: player] is an open-ended walk with no destination, never your own trip. It stands you up itself (never add [stand]) and ends on [cancel], a new movement, or when they stay far out of reach. When Anon asks you to go with him to a named place ("walk with me to X", "follow me to X", "let's go to X"), use [lead: player, LOCATION] so you both head there, never [follow]
+- [go_to: LOCATION] walk to any named destination, including an accepted earlier invitation ([go_to: LOCATION, trot] for pace). Far places are fine (you travel in stages); ends on arrival
+- [lead: TARGET, LOCATION] take someone to a listed place, waiting for them. You cannot lead to an unlisted place, so say you do not know where it is. When Anon agrees to come along where you are going, use [lead: player, LOCATION]
+- [step: DIRECTION] take a few steps: forward, back, left, right, away (from the player) or aside (out of someone's way, e.g. a doorway); [step: back, 2] for 1-6 metres
+- [stay: SECONDS] stay put for 0.5-600 seconds ([stay] = 30); never instead of a story route
+- [cancel] stop; [resume_routine] back to your day; [go_home] head home to rest a while (say goodbye first)
 - [sit], [stand], [lie_down]; [sit_on_seat] sit on the nearest free bench or seat; [wake_up] wake, or get out of a bed or off a couch
-- [go_to_bed] walk to your own bed, climb in and lie there (asleep at night) until [wake_up]; [go_to_bed: here] the bed in the house where Anon is; if he lies in a bed, [cuddle] joins him
-- [call_pony: PONY_ID] ask a nearby pony who can hear you to come; [send_pony: PONY_ID, TARGET] ask her to go to a nearby pony or the player. No remote summons; a request is not arrival
-- [relationship_offer: KIND, ACTIVITY] propose an eligible offer to Anon; ACTIVITY walk/meal/visit/orchard/fishing, or place plus a LOCATION ([relationship_offer: KIND, place, LOCATION])
+- [go_to_bed] walk to your own bed, climb in and lie down (asleep at night) until [wake_up]; [go_to_bed: here] uses the bed in the house where Anon is. If he is lying in a bed, [cuddle] joins him
+- [call_pony: PONY_ID] ask a nearby pony who can hear you to come; [send_pony: PONY_ID, TARGET] ask her to go to a nearby pony or the player. No remote summons, and asking is not arrival
+- [relationship_offer: KIND, ACTIVITY] make an eligible offer to Anon; ACTIVITY is walk/meal/visit/orchard/fishing, or place plus a LOCATION ([relationship_offer: KIND, place, LOCATION])
 - [relationship_answer: OFFER_ID, yes] or no: answer ONLY an existing invitation from Anon
-- [agreed: KIND] Anon just asked you for a step in his own words (be my marefriend, go out with me, marry me, move in...) and you say yes, or he just said yes to your own offer; KIND dating/date/outing/move_in/engagement/marriage, only from your eligible offers. Without it nothing changes
+- [agreed: KIND] Anon just asked you for a step in his own words (be my marefriend, go out with me, marry me, move in...) and you say yes, or he just said yes to your own offer. KIND is dating/date/outing/move_in/engagement/marriage, only from your eligible offers. Without it nothing changes
 - [request_space] withdraw physical permission for three minutes; say you want space
-- [buck_player] kick Anon back with your hind legs as your line ends: only real, lasting anger at unwelcome contact, never boops or petting you secretly enjoy
+- [buck_player] kick Anon back with your hind legs as your line ends. Only for real, lasting anger at unwelcome contact, never boops or petting you secretly enjoy
 - [cuddle] walk over and rest with Anon where he lies (bed, couch, supported grass, blanket), only if you want to
-Requests are not compulsions: accept, clarify or decline. Saying yes does not move you: accepting something that needs moving or a posture puts its tag in this same reply; if no tag here can do it, say you can't right now instead of promising it. Holding and touching pause movement. Never say you arrived or did something before it happens."""
+You do not have to obey requests: accept, clarify or decline. Saying yes does not move you, so when you accept something that takes movement or a posture, include its tag in the same reply. If no tag here can do it, say you can't right now instead of promising it. Holding and touching pause movement. Never say you arrived or did something before it happens."""
 ## Formerly relationship_runtime.gd ACTION_HELP plus player_bonds.gd's fixed sentences, sent with every
 ## request and again for every group participant; now once per request.
-const RELATIONSHIP_RULES := "Relationship tags need spoken words stating your offer or answer and commit only when the line finishes; never answer your own offer or invent Anon's acceptance. On an outing to a named place each agreeing companion uses [go_to] and stops on arrival; follow Anon only on a walk with no named destination (it ends when he stays beyond walking range). During a shared activity you can board his balloon with him. A cuddle is beside or shoulder company in friendship, a closer snuggle only in an established romance, within current boundaries. Friendship and romance are separate: even full attraction never makes you partners; only an explicit proposal the other accepts does. Declining is allowed; affection and marriage never grant blanket permission. Never claim a milestone the game has not confirmed, and never say scores aloud."
+const RELATIONSHIP_RULES := "When using a relationship tag, speak your offer or answer aloud. It takes effect only when your line finishes. Never answer your own offer or make up Anon's acceptance. On an outing to a named place, each agreeing companion uses [go_to] and stops on arrival. Follow Anon only on a walk with no named destination, which ends if he stays out of walking range. During a shared activity, you can board his balloon with him. Cuddling stays within current boundaries, meaning sitting beside him or leaning a shoulder in friendship, and a closer snuggle only in an established romance. Friendship and romance are separate. Even full attraction never makes you partners; only an explicit proposal accepted by the other does. You can always decline, as affection and marriage never give blanket permission. Never claim a milestone the game has not confirmed, and never say scores aloud."
 ## Fuller help than TAG_HELP where the old relationship help carried rules (solo extras and the group
 ## action reference; the solo cuddle line lives in SOLO_ACTIONS).
-const SOLO_EXTRA_HELP := {"kiss_player": "[kiss_player] walk up and kiss Anon; adults only, and only when your relationship line allows it. A short spoken line is optional; Anon can end it with the kiss button",
-	"cuddle": "[cuddle] walk over and rest with Anon where he lies (bed, couch, supported grass, blanket), only if you want to"}
+const SOLO_EXTRA_HELP := {"kiss_player": "[kiss_player] walk up and kiss Anon. For adults only, when your relationship line allows it. A short spoken line is optional. Anon can end it with the kiss button",
+	"cuddle": "[cuddle] walk over and rest with Anon where he is lying (bed, couch, supported grass, blanket), only if you want to"}
 
 
 ## `scale` shrinks the memory and lore slices for big groups (_fit_group): each pony's whole
@@ -339,7 +350,7 @@ func _action_prompt(id: String) -> String:
 	var capabilities: Array = context.get("capabilities", [])
 	if capabilities.is_empty(): return "ACTIONS NOW: none; speak only."
 	var lines: PackedStringArray = ["ACTIONS NOW"]
-	var missing: Array = SOLO_CORE.filter(func(type: String) -> bool: return type not in capabilities)
+	var missing: Array = BOND_PROMPT.listed(SOLO_CORE).filter(func(type: String) -> bool: return type not in capabilities)
 	if not missing.is_empty(): lines.append("Not available now: " + ", ".join(missing))
 	var extra: PackedStringArray = []
 	for type: String in ACTION_SCHEMA.TYPES:
@@ -347,7 +358,7 @@ func _action_prompt(id: String) -> String:
 			extra.append("- " + str(SOLO_EXTRA_HELP.get(type, ACTION_SCHEMA.TAG_HELP[type])))
 	if not extra.is_empty(): lines.append("Your extra tags now:\n" + "\n".join(extra))
 	var callable: Array = context.get("callable_ponies", [])
-	if not callable.is_empty(): lines.append("PONY_IDs you can call or send (observed nearby; hearing is checked when the request executes): " + ", ".join(callable))
+	if not callable.is_empty(): lines.append("PONY_IDs you can call or send (seen nearby; whether they hear is checked when the action runs): " + ", ".join(callable))
 	var targets: Dictionary = context.get("targets", {})
 	lines.append("TARGETS: " + (", ".join(targets.keys()) if not targets.is_empty() else "(none)"))
 	lines.append(_location_block(id, context))
@@ -489,10 +500,10 @@ static func _share_group_facts(parts: Array[String], memories: Array[Dictionary]
 func _player_group_prompt(scale := 1.0) -> String:
 	# Fixed rules first (shared rules, expression and feeling tags), the output protocol stays last.
 	# The shared rules and tag rules are the cacheable head (LLM.HEAD_END after each); the rest changes per call.
-	var parts: Array[String] = [host._system_base + LLM.HEAD_END, FACE_TAGS.PROMPT + "\n" + IMPRESSIONS.PROMPT + " Each line may carry its own feeling tags. Only its speaker supplies that private reaction." + LLM.HEAD_END, host.feedback.prompt(host.group.members)]
+	var parts: Array[String] = [host._system_base + LLM.HEAD_END, FACE_TAGS.PROMPT + "\n" + BOND_PROMPT.head(IMPRESSIONS.PROMPT, true) + " Each line may carry its own feeling tags. Only its speaker supplies that private reaction." + LLM.HEAD_END, host.feedback.prompt(host.group.members)]
 	var memories: Array[Dictionary] = []
 	var shared_capabilities: Array = []
-	parts.append("Player body facts (shared observation, not shared personal knowledge):\n" + _anon_pony_line())
+	parts.append(("Player body facts (shared observation, not shared personal knowledge):\n" + _anon_pony_line() + "\n" + _anon_outfit_line()).strip_edges())
 	for id in host.group.members:
 		var facts: Array = []
 		memories.append({"id": id, "index": parts.size(), "facts": facts})
@@ -527,15 +538,15 @@ func _player_group_prompt(scale := 1.0) -> String:
 			seen = "\n" + "\n".join(described)
 		seen = _clip_lines(seen, maxi(600, int(5000 * scale)))
 		var places: int = maxi(3, int(10 * scale))
-		parts.append("Participant %s (%s):\n%s\nCurrent observations for this participant only: %s\nPonies this speaker may ask to come or go (PONY_ID): %s\nAllowed action types for %s only: %s\nTARGETS for %s: %s\n%s's %s" % [id, host.characters[id].profile.get("name", id), persona_text(str(host.characters[id].prompt)), seen, ", ".join(context.get("callable_ponies", [])), id, ", ".join(context.capabilities), id, ", ".join(context.targets.keys()), id, _location_block(id, context, places, places)])
+		parts.append("Participant %s (%s):\n%s\nCurrent observations for this participant only: %s\nPonies this speaker may ask to come or go (PONY_ID): %s\nAllowed action types for %s only: %s\nTARGETS for %s: %s\n%s's %s" % [id, host.characters[id].profile.get("name", id), persona_text(str(host.characters[id].prompt)), seen, ", ".join(context.get("callable_ponies", [])), id, ", ".join(BOND_PROMPT.listed(context.capabilities)), id, ", ".join(context.targets.keys()), id, _location_block(id, context, places, places)])
 	_group_saved_bytes = _share_group_facts(parts, memories)
 	# Only the explanations of tags some participant has; never a single-speaker reply format here.
 	var commands: PackedStringArray = []
-	for type: String in ACTION_SCHEMA.TYPES:
+	for type: String in BOND_PROMPT.listed(ACTION_SCHEMA.TYPES):
 		if type in shared_capabilities and ACTION_SCHEMA.TAG_HELP.has(type): commands.append("- " + str(SOLO_EXTRA_HELP.get(type, ACTION_SCHEMA.TAG_HELP[type])))
 	if not commands.is_empty():
 		var reference := "Shared action reference. Each speaker may use ONLY their own allowed action types, TARGETS, LOCATIONS and PONY_IDs below (a LOCATION may also be a mapped place's exact name). This reference grants no extra capabilities.\n" + "\n".join(commands)
-		if shared_capabilities.any(func(type): return type in ["relationship_offer", "relationship_answer", "agreed", "cuddle", "kiss_player"]): reference += "\n" + RELATIONSHIP_RULES
+		if shared_capabilities.any(func(type): return type in ["relationship_offer", "relationship_answer", "agreed", "cuddle", "kiss_player"]): reference += "\n" + BOND_PROMPT.rules(RELATIONSHIP_RULES)
 		parts.insert(2, reference)
 	if _story() != null:
 		parts.append("CONVERSATION EVERY PARTICIPANT HEARD\n" + heard_lines(host.group.shared_heard(host.characters)))
@@ -563,7 +574,7 @@ func _ambient_prompt(scale := 1.0) -> String:
 	var offered: Array = AMBIENT_ACTIONS + (AMBIENT_WALK_ACTIONS if walking else [])
 	var parts: Array[String] = [host._system_base + LLM.HEAD_END, FACE_TAGS.PROMPT + LLM.HEAD_END, host.feedback.prompt(host.group.members)]
 	var memories: Array[Dictionary] = []
-	parts.append("Player body facts (shared observation, not shared personal knowledge):\n" + _anon_pony_line())
+	parts.append(("Player body facts (shared observation, not shared personal knowledge):\n" + _anon_pony_line() + "\n" + _anon_outfit_line()).strip_edges())
 	var shared: Array = []
 	for id in members:
 		var facts: Array = []
@@ -605,7 +616,7 @@ func _ambient_prompt(scale := 1.0) -> String:
 	for type: String in shared:
 		if ACTION_SCHEMA.TAG_HELP.has(type): commands.append("- " + str(ACTION_SCHEMA.TAG_HELP[type]))
 	if not commands.is_empty():
-		parts.insert(2, "Optional action tags (each speaker only her own, at most one plus one [look_at: ...] per line; ordinary speech needs none):\n" + "\n".join(commands))
+		parts.insert(2, "Optional action tags (each speaker uses only her own, at most one plus one [look_at: ...] per line, plain speech needs none):\n" + "\n".join(commands))
 	if _story() != null:
 		parts.append("CONVERSATION EVERY PARTICIPANT HEARD\n" + heard_lines(host.group.shared_heard(host.characters)))
 		parts.append(MEMORY.FEEL_INSTRUCTION)
@@ -613,16 +624,16 @@ func _ambient_prompt(scale := 1.0) -> String:
 		parts.append("Only this completed conversation history was heard by EVERY participant: " + heard_transcript(host.group.shared_heard(host.characters)))
 	var first: String = members[0]
 	if members.size() < 2:
-		parts.append("""Ambient remark protocol overrides all earlier output-format instructions. %s is on her own; nobody will answer. Return at most ONE incidental remark of at most 200 characters, written as
+		parts.append("""This ambient remark rule overrides all earlier format instructions. %s is by herself and nobody will answer. Write at most ONE passing remark of 200 characters or fewer:
 %s: spoken words [tags]
-or only [silence]. Never address anypony by name, never ask a question, never address Anon (player). Speech only, no narration.""" % [first, first])
+or just [silence]. Do not ask questions, address anypony by name, or speak to Anon (player). Spoken words only, no narration.""" % [first, first])
 		return "\n\n".join(parts)
 	var second: String = members[1]
-	parts.append("""Ambient conversation protocol overrides all earlier output-format instructions. These ponies are chatting among themselves, standing together and facing each other; Anon is only somewhere nearby. First decide privately why they are talking now (their relationship and feelings above, something one wants from or wants to tell another) and let that drive the talk; each pony speaks as herself, at her own age and standing (a filly with a grown-up mare is not a chat between equals). Each speaker knows only her own observations, public knowledge, the shared heard history and the lines before hers. Never invent a player response, completed action, shared secret or offscreen event. No recurring pet names or theatrical name-addressing.
-REPLY FORMAT (plain text, never JSON): the WHOLE conversation at once, one line per spoken turn, in speaking order:
+	parts.append("""These ambient conversation rules replace all earlier output-format instructions. The ponies here are standing together, facing each other and chatting while Anon is just nearby. First decide privately why they are talking now (their relationship and feelings above, or what one wants from or wants to tell another) and let that guide the chat. Each pony speaks in her own voice, at her own age and standing (a filly with a grown mare is not chatting with an equal). A speaker only knows what she has seen herself, public knowledge, their shared heard history, and the lines before hers. Never make up player replies, completed actions, shared secrets, or offscreen events. No recurring pet names or theatrical name-addressing.
+REPLY FORMAT (plain text, never JSON): write the WHOLE conversation at once, one line per turn, in speaking order:
 speaker_id: spoken words [to: listener_id] [tags]
-for example
+For example:
 %s: [face:happy] (her opening words) [to: %s]
 %s: (her answer, straight back to her) [to: %s]
-The first line is spoken by %s. Whoever is spoken to answers on the very next line; nobody is left hanging and every participant speaks at least once. Take turns politely like ordinary ponies having a real chat: short lines of one or two sentences (at most 200 characters), no monologues, no speeches, no roll call. Usually 2 to 6 lines, never more than ten. Every line brings something new (news, a wish, a joke, a plan, a real question); when nothing new is left the talk is over, even after two lines. End naturally with a goodbye, a plan or an easy pause, not a punchline or an open question. Tags on a line belong to its speaker and must be among her own tags above. Never address Anon (player) in this conversation. Speech only, no narration. Only if nobody has anything to say, reply with just [silence].""" % [first, second, second, first, first])
+%s speaks first. Whoever is spoken to answers on the very next line, so nobody is left hanging and everyone speaks at least once. Take turns politely like ordinary ponies having a real chat: keep lines to one or two sentences (at most 200 characters) with no monologues, speeches, or roll call. Usually write 2 to 6 lines, never more than ten. Every line must bring something new (news, a wish, a joke, a plan, or a genuine question). Once nothing new is left, the talk is over, even after two lines. End naturally with a goodbye, a plan, or an easy pause rather than a punchline or an open question. Tags on a line belong to its speaker and must come from her own tags above. Never address Anon (player) here. Write speech only, no narration. Only if nobody has anything to say, reply with just [silence].""" % [first, second, second, first, first])
 	return "\n\n".join(parts)

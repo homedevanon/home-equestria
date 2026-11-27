@@ -1,18 +1,22 @@
 extends RefCounted
 ## Observed experiences only. These weights never change romance or consent gates.
+const RULES := preload("res://world/relationships/romance_rules.gd")
 const PROFILES := {
-	"pinkie_pie": {"familiarity": 2.5, "values": "You readily welcome new friends and warm to meaningful conversation and shared fun. Friendship is not romantic consent."},
-	"fluttershy": {"familiarity": 0.8, "values": "You warm patiently to gentle, considerate company, quiet walks and visits. Pressure does not build trust."},
-	"rainbow_dash": {"familiarity": 1.0, "values": "Shared activities and keeping your word matter more than flattering talk. Reliability earns your trust."},
-	"twilight_sparkle": {"familiarity": 1.1, "values": "Curiosity, thoughtful conversation and real practical help build your friendship."},
-	"applejack": {"familiarity": 1.0, "values": "Consistent company, honest follow-through and real practical help build your friendship."},
-	"rarity": {"familiarity": 1.1, "values": "Thoughtful consideration, meaningful generosity and time together build your friendship. Repeated gifts do not buy romance."},
-	"spike": {"familiarity": 1.6, "values": "Being treated like a grown-up dragon, sharing a snack (gems especially) and having fun together build your friendship. You are a kid: friendship only, never romance."},
+	"pinkie_pie": {"familiarity": 2.5, "values": "You make friends easily and warm to good talks and shared fun. Friendship isn't consent to romance."},
+	"fluttershy": {"familiarity": 0.8, "values": "You warm slowly to quiet walks and gentle, thoughtful visits. Being pushed won't make you trust someone."},
+	"rainbow_dash": {"familiarity": 1.0, "values": "You don't care much for flattery. Doing things together and keeping promises is what wins your trust."},
+	"twilight_sparkle": {"familiarity": 1.1, "values": "Good talks, shared curiosity and real, practical help bring you closer as friends."},
+	"applejack": {"familiarity": 1.0, "values": "You warm to someone who stays around, keeps their word and gives practical help."},
+	"rarity": {"familiarity": 1.1, "values": "Time together builds your friendship, along with thoughtfulness and genuine generosity. Endless gifts won't buy romance."},
+	"spike": {"familiarity": 1.6, "values": "You like someone who treats you like a grown-up dragon, has fun with you and shares snacks, especially gems. You're a kid, so it's friendship only, never romance."},
 }
 
 static func gains(id: String, kind: String, previous: int = 0) -> Dictionary:
 	var familiarity: float = 2.0 if kind == "conversation" else 8.0
-	var trust: float = 0.5 if kind in ["conversation", "gift"] else 5.0
+	# A conversation was 0.5 trust: Friend (trust 10) took twenty separate chats, and love waits for
+	# Friend, so it was the slowest step of all (THREAD_FIX_RELATIONSHIP 2026-11-19: a dev world had a
+	# pony at familiarity 100 and trust 12 after 28 chats). Now ten chats; gifts stay at 0.5.
+	var trust: float = (1.0 if RULES.FACTS else 0.5) if kind == "conversation" else (0.5 if kind == "gift" else 5.0)
 	var profile: Dictionary = PROFILES.get(id, {})
 	familiarity *= float(profile.get("familiarity", 1.0))
 	match id:

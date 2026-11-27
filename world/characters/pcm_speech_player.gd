@@ -2,6 +2,11 @@ extends Node
 ## Plays a spoken line that is still arriving (world/ai/pcm_utterance.gd) through the speaker's own
 ## 3D voice player, and reads its mouth shapes as it goes. Playback starts once about 200 ms of
 ## sound is here; if the server falls behind, it pauses and takes up again where it stopped.
+## A server that renders about as fast as the line is spoken (a voice model sharing the graphics
+## card with the game) sends sound in bursts of one to two seconds, and a 200 ms head start ran
+## dry at every burst: 20 and more stops in one line (dev 2026-11-13, "audio skipping"). So the
+## head start follows the server's measured pace, and a line that still runs dry waits for a
+## whole burst before it goes on.
 ## Add as a child of the speaker, then begin(utterance, voice). The speaker reads `time` (what has
 ## been heard, in seconds) and `cues` (LipSync cue list, growing) every frame.
 ## Playback and the heard-time clock are from the breeze-tts-pny mod by nak (MIT), 2026-11-10.
@@ -13,6 +18,16 @@ const LIP_SYNC := preload("res://world/characters/lip_sync_native.gd")
 const RATE := 24000
 const START_FRAMES := 4800 # 200 ms of audio, not 200 ms of waiting
 const STALL_MS := 10000
+## One burst of a server at about speaking pace; the wait after a line ran dry (doubles, to MAX).
+const BURST_FRAMES := RATE * 3 / 2
+const MAX_CUSHION_FRAMES := RATE * 3
+## A server this much faster than speech never runs dry: no extra head start.
+const FAST_PACE := 1.3
+## Line length the head start is sized for; a longer line may pause once.
+const TYPICAL_LINE_S := 8.0
+## Seconds of sound the voice server sends per second, once a line flows (1.0 = speaking pace),
+## averaged over the last lines of all speakers. 0.0 = not measured yet.
+static var server_pace := 0.0
 
 var source: RefCounted
 var voice: AudioStreamPlayer3D
@@ -35,6 +50,9 @@ var _pushed := 0
 var _last_skips := 0
 var _underruns := 0
 var _rebuffering := false
+var _resume_frames := BURST_FRAMES
+var _pace_from_ms := -1
+var _pace_from_frames := 0
 var _drain_ms := -1
 var _last_data_ms := 0
 var _seen := 0
@@ -50,7 +68,7 @@ func _init() -> void:
 
 func begin(utterance: RefCounted, player: AudioStreamPlayer3D) -> void:
 	source = utterance; voice = player; active = true
-	_start_frames = maxi(START_FRAMES, int(utterance.start_frames))
+	_start_frames = maxi(maxi(START_FRAMES, int(utterance.start_frames)), _head_start())
 	_last_data_ms = Time.get_ticks_msec()
 	_origin_usec = Time.get_ticks_usec()
 	_track = LIP_SYNC.new()
@@ -77,7 +95,11 @@ func _process(_delta: float) -> void:
 	if source.cancelled: _fail("PCM speech cancelled"); return
 	if not source.error.is_empty(): _fail("PCM stream failed: " + source.error); return
 	var frames: int = source.pcm.size() / 2
-	if frames != _seen: _seen = frames; _last_data_ms = Time.get_ticks_msec()
+	if frames != _seen:
+		_seen = frames; _last_data_ms = Time.get_ticks_msec()
+		# Pace is read from the first sound seen to the last, without the first burst itself.
+		if _pace_from_ms < 0 and not source.done: _pace_from_ms = _last_data_ms; _pace_from_frames = frames
+	if source.done and _pace_from_ms >= 0: _measure_pace(frames)
 	if not source.done and Time.get_ticks_msec() - _last_data_ms > STALL_MS:
 		_fail("PCM stream stalled"); return
 	if not began:
@@ -94,7 +116,7 @@ func _process(_delta: float) -> void:
 		began = true
 		_log("start", {"request_to_play_ms": Time.get_ticks_msec() - source.request_ms,
 			"output_latency_ms": AudioServer.get_output_latency() * 1000.0,
-			"buffer_ms": frames * 1000.0 / RATE}, true)
+			"buffer_ms": frames * 1000.0 / RATE, "server_pace": snappedf(server_pace, 0.01)}, true)
 		started.emit()
 		return
 	if not voice.playing and not _rebuffering: _fail("PCM playback stopped early"); return
@@ -105,7 +127,8 @@ func _process(_delta: float) -> void:
 		_log("underrun", {"skips": skips - _last_skips}, true)
 	_last_skips = skips
 	if _rebuffering:
-		if frames - _sent < _start_frames and not source.done: return
+		if frames - _sent < _resume_frames and not source.done: return
+		_resume_frames = mini(_resume_frames * 2, MAX_CUSHION_FRAMES)
 		_fill(frames); voice.stream_paused = false; _rebuffering = false
 		_log("resume")
 	_fill(frames)
@@ -128,6 +151,23 @@ func _process(_delta: float) -> void:
 				if _track != null: _track.cancel()
 				_log("finished", {"audio_ms": frames * 1000.0 / RATE}, true)
 				source.release(); finished.emit()
+
+
+## Frames to hold before the line starts, from the server's pace on the lines before: nothing
+## extra for a fast or unmeasured server, else one burst plus what a typical line falls behind.
+static func _head_start() -> int:
+	if server_pace <= 0.0 or server_pace >= FAST_PACE: return 0
+	var behind := TYPICAL_LINE_S * maxf(0.0, 1.0 - server_pace)
+	return mini(BURST_FRAMES + int(behind * RATE), MAX_CUSHION_FRAMES)
+
+
+func _measure_pace(frames: int) -> void:
+	var waited := (Time.get_ticks_msec() - _pace_from_ms) / 1000.0
+	var sound := (frames - _pace_from_frames) / float(RATE)
+	_pace_from_ms = -1
+	if waited < 0.5 or sound <= 0.0: return
+	var pace := sound / waited
+	server_pace = pace if server_pace <= 0.0 else lerpf(server_pace, pace, 0.5)
 
 
 func _fill(frames: int) -> void:

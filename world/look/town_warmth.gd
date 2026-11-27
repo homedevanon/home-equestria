@@ -11,7 +11,8 @@ extends Node3D
 ## Cost: a 0.5 Hz step that re-picks the nearest lit houses; a fixed pool of POOLS decals and
 ## SMOKES particle emitters (SMOKE_PUFFS wisps each), hidden when unused. The roof top of each house
 ## design is measured once from its meshes and cached.
-## Rollback: ENABLED = false (or POOLS = 0 / SMOKES = 0 for one half).
+## Rollback: ENABLED = false (or POOLS = 0 / SMOKES = 0 for one half). Quality keys
+## town_warmth_pools / town_warmth_smokes cap both per tier (today: all of them on every tier).
 
 const ENABLED := true
 const GLOW := preload("res://world/buildings/window_glow/window_glow.gd")
@@ -40,6 +41,8 @@ const POOL_OUT := 1.3
 
 var _pools: Array[Decal] = []
 var _smokes: Array[GPUParticles3D] = []
+## The house each smoke emitter stands on (null when free), same order as _smokes.
+var _smoke_house: Array = []
 var _smoke_material: StandardMaterial3D
 var _timer := 0.0
 var _energy := -1.0
@@ -50,6 +53,19 @@ static var _roof_tops: Dictionary = {}
 
 
 func _ready() -> void:
+	# Look trials of 2026-11-18, each made only when its own argument is given
+	# (--look-foot-shade=on, --look-door-wear=on). They hang here and not in game.gd because the
+	# bundled board_games pack replaces game.gd: a line added there does nothing until the compat
+	# pack is rebuilt.
+	var arguments := OS.get_cmdline_user_args() + OS.get_cmdline_args()
+	for trial: Array in [["--look-foot-shade=on", "res://world/look/foot_shade.gd", "FootShade"], ["--look-door-wear=on", "res://world/look/door_wear.gd", "DoorWear"]]:
+		if not arguments.has(String(trial[0])): continue
+		var script := load(String(trial[1])) as GDScript
+		if script == null: continue
+		var node := script.new() as Node3D
+		if node == null: continue
+		node.name = String(trial[2])
+		add_child(node)
 	if not ENABLED:
 		set_process(false)
 		return
@@ -140,17 +156,23 @@ func _process(delta: float) -> void:
 	if report != _report:
 		_report = report
 		print("[warmth] ", report)
-	_place_pools(lit, energy)
-	_place_smoke(lit, daylight)
+	_place_pools(lit, energy, mini(_pools.size(), int(_quality("town_warmth_pools", POOLS))))
+	_place_smoke(lit, daylight, mini(_smokes.size(), int(_quality("town_warmth_smokes", SMOKES))))
+
+
+## A quality key (autoload/quality.gd AMBIENCE_CONFIG), or `fallback` (today's value) without one.
+func _quality(key: String, fallback: Variant) -> Variant:
+	var quality: Node = get_node_or_null("/root/Quality")
+	return quality.call("get_value", key, fallback) if quality != null else fallback
 
 
 ## One pool per ground-floor window of the nearest lit houses, until the decals run out.
-func _place_pools(lit: Array, energy: float) -> void:
+func _place_pools(lit: Array, energy: float, limit: int) -> void:
 	var used := 0
 	if energy > 0.02:
 		var designs: Dictionary = GLOW._load_panes()
 		for row: Array in lit:
-			if float(row[0]) > POOL_RANGE or used >= _pools.size(): break
+			if float(row[0]) > POOL_RANGE or used >= limit: break
 			var house: Node3D = row[1]
 			var design := house.scene_file_path.get_file().get_basename()
 			if not designs.has(design): continue
@@ -159,7 +181,7 @@ func _place_pools(lit: Array, energy: float) -> void:
 			var metres := maxf(to_world.basis.get_scale().y, 0.001)
 			var floor_y: float = float((data.centre as Array)[1])
 			for pane: Dictionary in data.panes:
-				if used >= _pools.size(): break
+				if used >= limit: break
 				var centre := GLOW._vec(pane.c)
 				if (centre.y - floor_y) * metres > GROUND_FLOOR_M: continue
 				var normal := (to_world.basis * GLOW._vec(pane.n))
@@ -180,7 +202,7 @@ func _place_pools(lit: Array, energy: float) -> void:
 		_pools[i].visible = false
 
 
-func _place_smoke(lit: Array, daylight: float) -> void:
+func _place_smoke(lit: Array, daylight: float, limit: int) -> void:
 	var weather: Node = get_tree().get_first_node_in_group("weather")
 	var gust := 0.0
 	if weather != null and weather.get("params") is Dictionary: gust = float((weather.get("params") as Dictionary).get("gust", 0.0))
@@ -188,14 +210,33 @@ func _place_smoke(lit: Array, daylight: float) -> void:
 	# the sky behind it (it holds the last light and the glow of the town), never a dark blot.
 	var tint := Color(0.46, 0.48, 0.62).lerp(Color(0.93, 0.93, 0.95), daylight)
 	_smoke_material.albedo_color = tint
+	# A column stays on its chimney while its house is still among the nearest lit ones; only a
+	# free emitter goes to a house that just came into the set. They used to follow the distance
+	# order, so walking through town swapped columns between chimneys, and every swap restarted
+	# the emitter with its 12 s of pre-run in one frame (audit 2026-11-20).
+	var wanted: Array = []
+	for i in mini(lit.size(), limit): wanted.append((lit[i] as Array)[1])
+	if _smoke_house.size() != _smokes.size(): _smoke_house.resize(_smokes.size())
+	var holder := {}
+	var free: Array[int] = []
 	for i in _smokes.size():
-		var smoke := _smokes[i]
-		if i >= lit.size():
-			smoke.emitting = false
-			if smoke.visible and not smoke.has_meta("fading"):
-				smoke.set_meta("fading", true)
-			continue
-		var house: Node3D = (lit[i] as Array)[1]
+		var kept: Variant = _smoke_house[i]
+		if is_instance_valid(kept) and wanted.has(kept) and not holder.has(kept): holder[kept] = i
+		else: free.append(i)
+	for house: Variant in wanted:
+		if holder.has(house) or free.is_empty(): continue
+		var index: int = free.pop_back()
+		holder[house] = index
+		_smoke_house[index] = house
+	for i: int in free:
+		var idle := _smokes[i]
+		_smoke_house[i] = null
+		idle.emitting = false
+		if idle.visible and not idle.has_meta("fading"):
+			idle.set_meta("fading", true)
+	for item: Variant in holder:
+		var house: Node3D = item
+		var smoke := _smokes[int(holder[house])]
 		var top := house.global_transform * _roof_top(house)
 		if smoke.global_position.distance_squared_to(top) > 0.25:
 			smoke.global_position = top

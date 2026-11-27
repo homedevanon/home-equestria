@@ -403,6 +403,40 @@ func save() -> bool:
 	if not path.is_empty():
 		if SAVE_FILE.write(path,{"version":1,"clothes":data})!=OK:last_error="Could not save clothing.";return false
 	saved=data.duplicate(true);last_error="";changed.emit();return true
+## What human Anon has on, in plain words for a pony's prompt (dev 2026-11-13: asked "do you like
+## my suit and tie?", a pony answered "you're wearing nothing of the sort": no prompt said what he
+## wears, and ponies are told to deny what is not listed). Chosen colours and patterns are named;
+## the original colours are left unnamed.
+func outfit_text() -> String:
+	var pieces: PackedStringArray = []
+	if is_worn("top"):
+		pieces.append("%s over %s with %s" % [_piece("suit", "suit jacket"), _piece("shirt", "shirt"), _piece("tie", "tie")])
+	else: pieces.append("no jacket, shirt or tie (bare chest)")
+	pieces.append(_piece("pants", "trousers", false) if is_worn("trousers") else "no trousers")
+	if bool(data.get("wing_sandals", false)): pieces.append("winged sandals")
+	elif is_worn("shoes"): pieces.append("%s shoes" % str(SHOE_COLOURS[clampi(int(data.get("shoe_color", 0)), 0, SHOE_COLOURS.size() - 1)]).to_lower())
+	else: pieces.append("bare feet")
+	return ", ".join(pieces)
+
+func _piece(part: String, word: String, article := true) -> String:
+	var choice: Dictionary = data.get(part, {})
+	var colour := int(choice.get("color", -1))
+	var pattern := int(choice.get("pattern", 0))
+	var text := word
+	if pattern > 0 and pattern < PATTERNS.size(): text = "%s %s" % [PATTERNS[pattern], text]
+	if colour >= 0 and colour < (PALETTES[part] as Array).size(): text = "%s %s" % [str(PALETTES[part][colour]).split(":")[0].to_lower(), text]
+	if not article: return text
+	return ("an " if text.left(1) in "aeiou" else "a ") + text
+
+## The line for a pony's Situation block, or "" when the player's clothes cannot be found.
+static func player_outfit_line(tree: SceneTree) -> String:
+	if tree == null: return ""
+	for source: Node in tree.get_nodes_in_group("interaction_hint_sources"):
+		var profile: Variant = source.get("clothing")
+		if profile != null and profile is RefCounted and (profile as RefCounted).has_method("outfit_text"):
+			return "- Anon is visibly wearing %s right now. You can see these, and any remark or question about his clothes refers to them. Never deny or make up an item he has on." % (profile as RefCounted).call("outfit_text")
+	return ""
+
 ## A stand-in Anon made for a moment (couch or bed rest, knockdown) wears what the player wears
 ## (2026-10-28 player report: lying down to sleep showed the stock suit). Finds the profile through
 ## the briefcase that owns this player body.

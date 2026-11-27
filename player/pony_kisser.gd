@@ -26,10 +26,13 @@ var _active: Node
 var _hug_down := false
 var _hug_used := false
 var _hug_absent := 0.0
-## Group hug (player bug board #28): other ponies close by who welcome a hug join the one he
-## hugs (pony_affection.begin checks each one's trust); they all let go with her.
-const GROUP_HUG_REACH := 1.4
+## Group hug (player bug board #28): up to three friends standing within GROUP_HUG_REACH (flat
+## metres) walk in and hug him too, and let go with her (world/relationships/group_hug.gd).
+## _group_hug stays for older callers; the group hug node owns the joiners now.
+const GROUP_HUG_REACH := 2.0
+const GROUP_HUG := preload("res://world/relationships/group_hug.gd")
 var _group_hug: Array[Node] = []
+var _group: Node
 ## She started this kiss (relationship_runtime kiss_player): it holds without his button until it
 ## turns deep; his button press ends it as usual.
 var _her_kiss := false
@@ -306,13 +309,19 @@ func _attempt_hug() -> void:
 	if affection!=null and affection.begin("hug",mouth_world()):
 		_active=affection
 		SOUNDS.play_at(candidate,"prop_contact_cloth")
-		for pony:Node3D in ponies:
-			if pony==candidate or not is_instance_valid(pony) or not pony.is_inside_tree() or not pony.is_visible_in_tree():continue
-			var flat:=pony.global_position-camera.global_position;flat.y=0.0
-			if flat.length()>GROUP_HUG_REACH:continue
-			var joining:Node=pony.get_node_or_null("Affection")
-			if joining!=null and joining.kind.is_empty() and joining.begin("hug",mouth_world()):_group_hug.append(joining)
-		if not _group_hug.is_empty():print("[hug] group hug: %d join %s"%[_group_hug.size(),candidate.name])
+		var joining:int=_hug_group().gather(affection,ponies,camera,GROUP_HUG_REACH)
+		if joining>0:print("[hug] group hug: %d walk in to %s"%[joining,candidate.name])
+
+## The group hug around the pony he hugs (world/relationships/group_hug.gd), made on first use.
+func _hug_group() -> Node:
+	if not is_instance_valid(_group):
+		_group=GROUP_HUG.new();_group.name="GroupHug";add_child(_group)
+	_group.anon_scale=preload("res://player/player_mouth.gd").human_scale(camera)
+	return _group
+
+## A pony's own [cuddle] while he hugs someone standing (relationship_runtime.gd): she joins the hug.
+func join_group_hug(pony: Node3D) -> bool:
+	return is_instance_valid(_active) and _active.kind=="hug" and is_instance_valid(_group) and _hug_group().join(pony)
 
 ## Compatibility entry point for callers of the original AI-kiss implementation.
 func kiss_from_pony(pony: Node3D) -> bool:
@@ -353,6 +362,7 @@ func _end_contact() -> void:
 	for joined:Node in _group_hug:
 		if is_instance_valid(joined) and joined.kind=="hug":joined.end()
 	_group_hug.clear()
+	if is_instance_valid(_group):_group.finish()
 	_active=null;_her_kiss=false;_cradle_locked=false;_cradle_short=0.0;_cradle_time=0.0
 	if is_instance_valid(body) and body.has_meta("kiss_hold"):body.remove_meta("kiss_hold")
 	_kiss_near(false)

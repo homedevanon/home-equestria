@@ -27,7 +27,7 @@ const LOCAL_TIMEOUT := 300.0
 ## failure kinds only: never prompts, replies, headers or keys.
 const STATUS_PATH := "user://ai/llm_status.json"
 const STATUS_ROWS := 24
-const EMPTY_CUE := "(No new words were said. Continue naturally, or reply [silence].)"
+const EMPTY_CUE := "(Nobody spoke. Keep going naturally, or just reply [silence].)"
 ## Put in front of a sent transcript that opens with her own line (the Messages API wants a user
 ## message first). Before 2026-11-03 those opening lines were dropped instead.
 const EARLIER_CUE := "(Earlier conversation.)"
@@ -217,7 +217,7 @@ func build_request(system: String, messages: Array, limits: Dictionary = {}) -> 
 	if limits.has("output_tokens"): generation_budget = output_budget
 	elif provider != "anthropic" and not structured and not limits.get("output_recovery", false) and not generation_overrides.has("max_tokens"):
 		generation_budget = output_budget + SPEECH_REASONING_ROOM
-	notes.append("OUTPUT BUDGET: at most %d tokens including tags. Finish every sentence and tag inside that budget. Prefer a shorter complete answer; omit optional private thoughts and unchanged feelings before sacrificing spoken words." % output_budget)
+	notes.append("OUTPUT BUDGET: %d tokens max, including tags. Finish every sentence and tag within this limit, keeping your answer shorter so it doesn't get cut off. Drop optional thoughts and unchanged feelings before cutting dialogue." % output_budget)
 	if live_mode: live += "\n" + "\n".join(notes)
 	else: system += "\n" + "\n".join(notes)
 	if structured and messages.size() > 1:

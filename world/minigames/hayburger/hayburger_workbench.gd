@@ -39,6 +39,7 @@ var stations: Dictionary = {}
 var confirm_action := ""
 var _confirm_until_ms := 0
 var _bell_dome: MeshInstance3D
+var _bin: StaticBody3D
 const INGREDIENT_NAMES: Dictionary = {"bun":"bottom bun", "lid":"top bun", "raw":"raw hay patty", "patty":"grilled hay patty", "cheese":"cheese", "tomato":"tomato", "lettuce":"lettuce"}
 
 func setup(host: Node) -> void:
@@ -61,6 +62,7 @@ func setup(host: Node) -> void:
 	# that misses lands in it instead of falling through.
 	var bin_body: StaticBody3D = StaticBody3D.new(); bin_body.name = "ScrapsBin"
 	bin_body.collision_layer = 1; bin_body.collision_mask = 0; add_child(bin_body)
+	_bin = bin_body
 	for offset: Vector3 in [Vector3(-.23,-.30,0), Vector3(.23,-.30,0), Vector3(0,-.30,-.23), Vector3(0,-.30,.23)]:
 		var wall: Vector3 = Vector3(.035,.60,.48) if offset.x != 0 else Vector3(.48,.60,.035)
 		_box(self, wall, BIN + offset, Color("7a5a3c")); _shape(bin_body, wall, BIN + offset)
@@ -312,9 +314,11 @@ func release(side: String, intentional: bool = true) -> bool:
 		var event := "prop_harvest_deposit" if _in_bin(at) else "prop_grill" if kind == "raw" and _over(at,GRILL,Vector2(.65,.34),.32) else "prop_serve"
 		SFX.play_event(self, event, {"intensity": .65}, item.global_position)
 		_remove(item)
-	elif role == "burger" and not intentional:
+	elif role == "burger" and (not intentional or side == "desktop"):
 		# The stack is the tray's burger: dropped by a lost hand, Q or the chat box taking the mouse,
-		# it goes back on the build board instead of falling somewhere out of reach.
+		# it goes back on the build board instead of falling somewhere out of reach. On desktop also
+		# when a click set it down where nothing took it (2026-11-20: loose, it could end out of
+		# reach, and the tray takes no new bun while it holds one).
 		item.transform = Transform3D(Basis.IDENTITY, PREP); item.collision_layer = 2
 	else:
 		item.freeze = false; item.collision_layer = 2; item.linear_velocity = Vector3.ZERO; item.angular_velocity = Vector3.ZERO
@@ -350,6 +354,14 @@ func reachable(point: Vector3, reach: float = .23) -> Node3D:
 		if not get_world_3d().direct_space_state.intersect_ray(query).is_empty(): continue
 		nearest = child; best = distance
 	return nearest
+
+## True for the scraps bin's own body (its walls and floor).
+func is_bin(collider: Variant) -> bool:
+	return is_instance_valid(_bin) and collider == _bin
+
+## Where food let go into the scraps bin ends up, in world space: inside it, clear of its floor.
+func bin_drop_point() -> Vector3:
+	return to_global(BIN + Vector3(0, -.45, 0))
 
 ## From the bin's floor (where desktop clicks land) up to .55 over its rim (where VR hands let go).
 func _in_bin(point: Vector3) -> bool:

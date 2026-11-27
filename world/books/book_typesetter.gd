@@ -9,6 +9,7 @@ extends Node
 
 signal page_ready(book_id: int, n: int)
 const LIBRARY := preload("res://world/books/book_library.gd")
+const RT := preload("res://world/perf/render_thread.gd")
 ## The page's shape (open_book.gd W:H) at a resolution sharp at reading distance in a headset.
 const PAGE_PX := Vector2i(932, 1080)
 ## Settings > Reading size is in pixels of a 900 px tall page; scale it to this one.
@@ -166,7 +167,8 @@ func _render(book: int, n: int) -> void:
 		_header.text = str(_meta.get("title", "")) if n % 2 == 0 else str(_doc.chapters[at.x].get("title", ""))
 		_footer.text = str(n)
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-	await RenderingServer.frame_post_draw
+	if RT.active(): await RT.drawn(get_tree())
+	else: await RenderingServer.frame_post_draw
 	var image := viewport.get_texture().get_image()
 	if image == null: return
 	image.generate_mipmaps()
@@ -261,6 +263,8 @@ func _build_title(colours: Dictionary) -> void:
 	credit.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	credit.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 	credit.add_theme_color_override("font_color", colours.soft)
+	# House books (book_library.gd HOUSE_LIBRARY) were written for the game and carry their own line.
+	if _meta.has("credit"): credit.text = str(_meta.credit); return
 	credit.text = "Written by %s. All rights belong to the author; cover art as shown on the story's page.\nRead, favourite and thank the author at\n%s\n%s words · rated %s · %s" % [
 		str(_meta.get("author", "")), str(_meta.get("url", "")), _thousands(int(_meta.get("words", 0))),
 		str(_meta.get("rating", "")).capitalize(), str(_meta.get("source", ""))]

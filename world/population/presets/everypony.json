@@ -1,0 +1,17 @@
+{
+	"version": 1,
+	"name": "Everypony",
+	"base": "default",
+	"homes": {
+		"dr_fauna": "ponyville",
+		"fiddly_twang": "appleloosa",
+		"photo_finish": "canterlot",
+		"sea_swirl": "ponyville",
+		"shimmy_shake": "ponyville",
+		"silver_spanner": "ponyville",
+		"somnambula": "canterlot",
+		"tempest_shadow": "canterlot",
+		"twist": "ponyville"
+	},
+	"rest": "ponyville"
+}

@@ -16,7 +16,9 @@ static func make_room(inventory: Node) -> bool:
 	var store: RefCounted = inventory.get("inventory")
 	if store == null: return false
 	var loans: Dictionary = store.get("loans")
-	if loans.size() < int(inventory.MAX_LOOSE): return true
+	# Things placed at home have their own cap (inventory_store.gd out_count, MAX_PLACED).
+	var out: int = int(store.call("out_count")) if store.has_method("out_count") else loans.size()
+	if out < int(inventory.MAX_LOOSE): return true
 	var camera: Variant = inventory.get("camera")
 	var head: Vector3 = (camera as Camera3D).global_position if camera is Camera3D and is_instance_valid(camera) else Vector3.INF
 	var bodies: Dictionary = inventory.get("loose")

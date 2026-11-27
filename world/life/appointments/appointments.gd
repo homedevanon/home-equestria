@@ -45,6 +45,9 @@ const NEAR_PLACE_M := 40.0
 ## meet_time.gd SOONEST_HOURS (20 min), or a pony close by was refused as "already passed".
 const COME_SPEED := 2.5
 const COME_MIN_HOURS := 0.35
+## Rollback switch (THREAD_FIX_RELATIONSHIP 2026-11-19): true counts a meeting as met when she and
+## Anon are together within SEEN_M of the place in its window, waiting or not; false needs "waiting".
+const MEET_BY_FACTS := true
 
 var game: Node
 ## /root/TimeOfDay, or a test double with `day: int` and `hours: float`.
@@ -126,7 +129,7 @@ func cancel(pony: String, source: String, reason := "") -> bool:
 	history.append(("cancelled (%s)%s" % [_source_kind(source), (": " + reason) if not reason.is_empty() else ""]).left(120))
 	while history.size() > HISTORY: history.pop_front()
 	row.history = history
-	_record(pony, "appointment", "Your meeting with Anon at %s on day %d at %s is called off%s." % [row.place_label, int(row.day), MEET_TIME.clock_text(float(row.hour)), (": " + reason.left(80)) if not reason.is_empty() else ""], "appt:%s:cancel" % row.id)
+	_record(pony, "appointment", "Your meeting with Anon at %s on day %d at %s was canceled%s." % [row.place_label, int(row.day), MEET_TIME.clock_text(float(row.hour)), (": " + reason.left(80)) if not reason.is_empty() else ""], "appt:%s:cancel" % row.id)
 	_resolve(row, "cancelled")
 	if int(row.day) == _card_day(): _refresh_day(pony)
 	return true
@@ -193,7 +196,7 @@ func prompt_note(pony: String) -> String:
 			text = "- You are at %s to meet Anon as agreed for %s (now %s)." % [open.place_label, at, MEET_TIME.clock_text(_hours())]
 		else:
 			var note := str(open.get("note", ""))
-			text = "- You agreed to meet Anon at %s %s at %s%s. [meet: ...] moves it, [meet_cancel] calls it off." % [open.place_label, MEET_TIME.day_words(int(open.day), _day()), at, (" (" + note + ")") if not note.is_empty() else ""]
+			text = "- You agreed to meet Anon at %s %s at %s%s. [meet: ...] moves it, [meet_cancel] cancels it." % [open.place_label, MEET_TIME.day_words(int(open.day), _day()), at, (" (" + note + ")") if not note.is_empty() else ""]
 	else:
 		var newest := {}
 		for r: Dictionary in rows.values():
@@ -305,7 +308,11 @@ func tick() -> void:
 		if player.is_finite() and there.is_finite() and _flat(player, there) < SEEN_M and not bool(r.player_seen):
 			r.player_seen = true
 			_changed()
-		if str(r.status) == "waiting" and actor != null and player.is_finite() and _flat(player, actor.global_position) < MEET_M:
+		# Met is what happened: both of them at the place, together. Her day step marking her "waiting"
+		# is not needed (THREAD_FIX_RELATIONSHIP 2026-11-19: he found her there, or they walked over
+		# together, and it lapsed as "missed each other"). Rollback: MEET_BY_FACTS = false.
+		var at_place: bool = str(r.status) == "waiting" or (MEET_BY_FACTS and actor != null and there.is_finite() and _flat(actor.global_position, there) < SEEN_M)
+		if at_place and actor != null and player.is_finite() and _flat(player, actor.global_position) < MEET_M:
 			_met(r)
 			continue
 		if now <= float(r.wait_until): continue
@@ -314,13 +321,13 @@ func tick() -> void:
 		if (str(r.status) == "waiting" or jumped) and not bool(r.player_seen) and _known(r): _stood_up(r)
 		elif (str(r.status) == "waiting" or jumped) and not bool(r.player_seen):
 			# Her reply naming this meeting had not reached him: no blame (letter_post.gd meeting_known).
-			_record(pony, "appointment_missed", "Anon never came to %s on day %d at %s; your letter about it may not have reached him in time." % [r.place_label, int(r.day), MEET_TIME.clock_text(hour)], "appt:%s:unread" % id)
+			_record(pony, "appointment_missed", "Anon didn't show up at %s on day %d at %s. Your letter might not have reached him in time." % [r.place_label, int(r.day), MEET_TIME.clock_text(hour)], "appt:%s:unread" % id)
 			_resolve(r, "lapsed")
 		elif bool(r.player_seen):
-			_record(pony, "appointment_missed", "Anon came by %s around the time you agreed (day %d, %s), but you two missed each other." % [r.place_label, int(r.day), MEET_TIME.clock_text(hour)], "appt:%s:missed" % id)
+			_record(pony, "appointment_missed", "Anon came by %s around your agreed time (day %d, %s), but you missed each other." % [r.place_label, int(r.day), MEET_TIME.clock_text(hour)], "appt:%s:missed" % id)
 			_resolve(r, "lapsed")
 		else:
-			_record(pony, "appointment_lapsed", "You could not make it to meet Anon at %s on day %d at %s as agreed." % [r.place_label, int(r.day), MEET_TIME.clock_text(hour)], "appt:%s:lapsed" % id)
+			_record(pony, "appointment_lapsed", "You missed your planned meeting with Anon at %s on day %d at %s." % [r.place_label, int(r.day), MEET_TIME.clock_text(hour)], "appt:%s:lapsed" % id)
 			_resolve(r, "lapsed")
 	_greet_pending()
 	if randf() < .02: _prune(rows)
@@ -334,11 +341,11 @@ func _met(r: Dictionary) -> void:
 	var letter_note := ""
 	if why.is_empty(): why = "you agreed by letter" if by_letter else "you agreed when you talked"
 	elif by_letter: letter_note = "; you arranged it in your letters, so you got his letter"
-	var text := "[Observed situation, not player speech] Anon has come to meet you at %s as you two agreed (%s)%s. Greet him and start what you planned. One or two short sentences." % [r.place_label, why, letter_note]
+	var text := "[Observed situation, not player speech] Anon is here at %s to meet you, like you agreed (%s)%s. Say hello and get started on your plans in a short sentence or two." % [r.place_label, why, letter_note]
 	_greet[pony] = {"text": text, "until": Time.get_ticks_msec() * .001 + GREET_RETRY_S}
 	var bonds := _bonds()
 	if bonds != null and bonds.has_method("kept_appointment"): bonds.kept_appointment(pony, str(r.id))
-	_record(pony, "appointment_met", "Anon came to meet you at %s on day %d at %s, as you two agreed." % [r.place_label, int(r.day), MEET_TIME.clock_text(float(r.hour))], "appt:%s:met" % r.id)
+	_record(pony, "appointment_met", "Anon met you at %s on day %d at %s, just like you two planned." % [r.place_label, int(r.day), MEET_TIME.clock_text(float(r.hour))], "appt:%s:met" % r.id)
 	_resolve(r, "met")
 	_greet_pending()
 

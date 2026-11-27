@@ -230,8 +230,17 @@ func _update_status() -> void:
 		var text := "%.2f km" % (distance / 1000) if distance >= 1000 else "%d m" % roundi(distance)
 		status.text = "%s · X %.1f  Z %.1f · %s straight-line" % [str(_selected.name)+(" · "+str(_selected.tracking) if _selected.has("tracking") else ""), _selected.position.x, _selected.position.y, text]
 	else:
-		var nearest := WorldLayout.nearest(Vector3(p.x, 0, p.y))
-		status.text = "%s · X %.0f  Z %.0f" % [nearest.get("name", "Equestria"), p.x, p.y]
+		# Performance overhaul 2026-11-21: the nearest place (a walk over every region's footprint,
+		# about 70 us, ten times a second) is looked up again only after a metre of travel; the
+		# name can change at most a metre late. Rollback: NEAREST_REUSE = false.
+		if not NEAREST_REUSE or _nearest_name.is_empty() or p.distance_squared_to(_nearest_at) > 1.0:
+			_nearest_name = str(WorldLayout.nearest(Vector3(p.x, 0, p.y)).get("name", "Equestria"))
+			_nearest_at = p
+		status.text = "%s · X %.0f  Z %.0f" % [_nearest_name, p.x, p.y]
+
+const NEAREST_REUSE := true
+var _nearest_name := ""
+var _nearest_at := Vector2.INF
 
 func _input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo: return

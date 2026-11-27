@@ -7,24 +7,24 @@ extends RefCounted
 ## firm (dev 2026-10-28): Anon cannot cut one off, his words wait for its end, and a newer line
 ## replaces one she never got to say.
 
-const SITUATION := "[Observed situation, not player speech] You are performing your magic show on the schoolhouse stage in front of a crowd of ponies%s. "
+const SITUATION := "[Observed situation, not player speech] You are on the schoolhouse stage, putting on your magic show for a crowd of ponies%s. "
 const PURPOSE := {
-	"speech_open": "The spotlights find you alone on your stage before the show. Open your speech to the crowd: introduce yourself as The Great and Powerful Trixie with full showmare flair and welcome Ponyville to your show. Two sentences.",
-	"speech_promise": "Go on with your opening speech: promise the crowd wonders they have never seen, and dare any doubters out there to keep watching. End by announcing the first trick: %s. Two or three sentences.",
-	"interlude": "The crowd is applauding your last trick (%s). Soak it up and take a bow, then build anticipation for what comes next: %s. Two short sentences.",
-	"cards": "You levitate a whole deck of cards into rings, stars and shapes above the stage. Boast about it to the crowd. One short sentence.",
-	"pick_card": "You float one card from your deck to %s in the audience to look at, to make it reappear from your hat. Address them. One short sentence.",
-	"doves": "You make doves burst out of your magician's hat. Present the trick grandly. One short sentence.",
-	"rings": "You levitate your linking rings around yourself and link them in mid-air. One short boastful sentence.",
-	"vanish": "You step into your magic box to vanish. Build suspense. One short sentence.",
-	"vanish_reveal": "You have just reappeared behind the audience after vanishing from the box. Gloat. One short sentence.",
-	"cannon_ask": "You have wheeled out your cannon and ask Anon, who is watching, to be fired out of it as your human cannonball: he only has to walk up to the cannon. One or two short sentences.",
-	"cannon_declined": "Anon did not come up to be your human cannonball. Shrug it off theatrically. One short sentence.",
-	"cannon_fire": "Anon climbed into your cannon. Count down and light the fuse. One short sentence.",
-	"cannon_land": "Anon just flew out of your cannon over the crowd and landed in a hay pile. One short sentence.",
-	"finale": "Your grand finale is starting. Proclaim it. One short sentence.",
-	"mishap": "Something went wrong: %s. React as Trixie: embarrassed but recovering your pride. One short sentence.",
-	"closing": "The show is over. Take your bow verbally and thank your adoring audience in your own boastful way. One short sentence.",
+	"speech_open": "Alone on stage as the spotlights hit you, kick off your show in two sentences. Introduce yourself as The Great and Powerful Trixie with full showmare flair and welcome Ponyville.",
+	"speech_promise": "Keep going with your opening speech in two or three sentences. Promise the crowd wonders they have never seen before, dare any doubters to keep watching, and finish by announcing your first trick, %s.",
+	"interlude": "The crowd is cheering for your last trick (%s). Take a bow and soak it in, then tease what you have coming up next (%s) in two short sentences.",
+	"cards": "You float a full deck of cards into spinning rings and stars above the stage. Brag about it to the crowd in one short sentence.",
+	"pick_card": "Float a card from your deck out to %s in the crowd to look at before you pull it from your hat. Speak to them in one short sentence.",
+	"doves": "Doves burst from your magician's hat. Present the trick grandly in one short sentence.",
+	"rings": "Your linking rings float around you and lock together in mid-air. Boast about it in one short sentence.",
+	"vanish": "You step into your magic box to vanish. Build suspense in one short line.",
+	"vanish_reveal": "After vanishing from the box, you reappear right behind the audience. Gloat in one short sentence.",
+	"cannon_ask": "You've wheeled out your cannon and Anon is watching. Ask him to be your human cannonball; he just needs to walk up to the cannon. One or two short sentences.",
+	"cannon_declined": "Anon didn't come up to be your human cannonball. Brush it off with flair in one short sentence.",
+	"cannon_fire": "Anon is in your cannon. Count down as you light the fuse. One short sentence.",
+	"cannon_land": "Your cannon just shot Anon over the crowd into a hay pile. React in one short sentence.",
+	"finale": "Your grand finale is starting. Announce it in one short sentence.",
+	"mishap": "A mishap on stage, %s. React in one short sentence as Trixie, embarrassed yet saving your pride.",
+	"closing": "The show is over. Verbally take a bow and thank your adoring fans in your usual boastful way. One short sentence.",
 }
 
 var runtime: Node

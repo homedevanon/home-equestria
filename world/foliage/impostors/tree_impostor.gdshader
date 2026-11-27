@@ -56,7 +56,10 @@ void vertex() {
 	vec2 toward = to_eye.xz;
 	toward = dot(toward, toward) > 1e-8 ? normalize(toward) : vec2(0.0, 1.0);
 	// Frame k was baked from azimuth k * TAU / frames in tree space (x = sin, z = cos).
-	float f = fract(atan(dot(to_eye, tree_x), dot(to_eye, tree_z)) / TAU) * frames;
+	// atan(0, 0) is undefined (NaN on some drivers): straight above the root, frame 0 stands in.
+	vec2 azimuth = vec2(dot(to_eye, tree_x), dot(to_eye, tree_z));
+	if (dot(azimuth, azimuth) <= 1e-8) azimuth = vec2(0.0, 1.0);
+	float f = fract(atan(azimuth.x, azimuth.y) / TAU) * frames;
 	float k0 = floor(f);
 	frame_mix = f - k0;
 	cells = vec4(cell_of(k0), cell_of(mod(k0 + 1.0, frames)));
@@ -72,10 +75,15 @@ void vertex() {
 }
 
 void fragment() {
+	// Screen derivatives before the dither discard: it removes single pixels of a 2x2 quad, and
+	// derivatives taken after that are undefined in Vulkan (AMD report 2026-11-12). UV is linear
+	// over the quad, so the values are the ones taken after the discard where that was defined.
+	vec2 uv_dx = dFdx(UV);
+	vec2 uv_dy = dFdy(UV);
 	if (impostor_dither(FRAGCOORD.xy) >= fade_t) { discard; }
 	vec2 atlas_px = vec2(textureSize(albedo_atlas, 0));
-	vec2 dx = dFdx(UV) * atlas_px / grid;
-	vec2 dy = dFdy(UV) * atlas_px / grid;
+	vec2 dx = uv_dx * atlas_px / grid;
+	vec2 dy = uv_dy * atlas_px / grid;
 	float lod = clamp(0.5 * log2(max(max(dot(dx, dx), dot(dy, dy)), 1e-8)), 0.0, max_lod);
 	vec2 uv0 = (cells.xy + UV) / grid;
 	vec2 uv1 = (cells.zw + UV) / grid;
@@ -87,12 +95,12 @@ void fragment() {
 	vec2 twig_dx = vec2(0.0);
 	vec2 twig_dy = vec2(0.0);
 	bool growing = vegetation_spring_active(spring_tree);
-	if (season_leaf_drop > 0.001 || growing) { twig_dx = dFdx(twig_q); twig_dy = dFdy(twig_q); }
+	if (season_leaf_drop > 0.001 || growing) { twig_dx = uv_dx * twig_cells; twig_dy = uv_dy * twig_cells; }
 	if (packed.a > 0.5 && (season_leaf_drop > 0.001 || season_blossom > 0.001)) {
 		vec2 patch_cell = floor(UV * thin_cells) + vec2(tree_seed, 0.0);
 		float patch_hash = vegetation_cell_hash(vec3(patch_cell, 0.0), 1.0);
 		kept = vegetation_patch_kept(vegetation_leaf_kept(patch_hash, 1.0, season_local.x, evergreen, blossom_tree), patch_hash, season_local.x, evergreen);
-		if (LOOK_SPRING <= 0.0) bloom = vegetation_blossom_on(fract(patch_hash * 16.0));
+		if (!vegetation_spring_on()) bloom = vegetation_blossom_on(fract(patch_hash * 16.0));
 	}
 	// Spring: the whole crown buds, flowers and leafs out together (vegetation_spring_far).
 	float bloom_kind = 0.0;
@@ -102,7 +110,10 @@ void fragment() {
 		bloom_kind = far.y;
 	}
 	vec3 n = packed.rgb * 2.0 - 1.0;
-	vec3 world_n = normalize(tree_x * n.x + vec3(0.0, n.y, 0.0) + tree_z * n.z);
+	// A texel blended toward an empty one can unpack to a zero normal, and normalize() of a zero
+	// vector is undefined (NaN, drawn black, on some drivers). Such a texel points up instead.
+	vec3 raw_n = tree_x * n.x + vec3(0.0, n.y, 0.0) + tree_z * n.z;
+	vec3 world_n = dot(raw_n, raw_n) > 1e-8 ? normalize(raw_n) : vec3(0.0, 1.0, 0.0);
 	NORMAL = normalize((VIEW_MATRIX * vec4(world_n, 0.0)).xyz);
 	ALPHA_SCISSOR_THRESHOLD = alpha_cutoff;
 	if (kept < 0.5) {

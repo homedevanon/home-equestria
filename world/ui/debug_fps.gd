@@ -4,6 +4,7 @@ extends Node
 ## Player builds (world/dev_tools.gd) show only the FPS number: F10 toggles it, no F9 trace.
 enum DisplayMode { FULL, FPS, OFF }
 const DEV := preload("res://world/dev_tools.gd")
+const RT := preload("res://world/perf/render_thread.gd")
 var display_mode := DisplayMode.FULL if DEV.enabled() else DisplayMode.FPS
 ## Existing capture tools can still hide the display with enabled=false.
 var enabled: bool:
@@ -20,6 +21,12 @@ var _clock:=0.0
 var _write_clock:=0.0
 var _last:=0
 var _profile:Node
+## Trial render_thread: each RenderingServer getter waits for the draw in progress there, so the
+## adapter name is read once and the render times at most once a second.
+var _rt_adapter:=""
+var _rt_gpu_ms:=0.0
+var _rt_cpu_ms:=0.0
+var _rt_read_ms:=-1000000
 
 func setup(head:Camera3D,xr:bool)->void:
 	camera=head;stereo=xr
@@ -61,12 +68,19 @@ func _refresh()->void:
 	for value in samples:mean+=value
 	mean/=maxi(samples.size(),1)
 	var vp:=get_viewport().get_viewport_rid()
+	var rt:=RT.active()
+	if rt:
+		if _rt_adapter.is_empty():_rt_adapter=RenderingServer.get_video_adapter_name()
+		if Time.get_ticks_msec()-_rt_read_ms>=1000:
+			_rt_read_ms=Time.get_ticks_msec()
+			_rt_gpu_ms=RenderingServer.viewport_get_measured_render_time_gpu(vp)
+			_rt_cpu_ms=RenderingServer.viewport_get_measured_render_time_cpu(vp)
 	summary={"time":Time.get_datetime_string_from_system(true),"pid":OS.get_process_id(),
-		"gpu":RenderingServer.get_video_adapter_name(),"xr":stereo,
+		"gpu":_rt_adapter if rt else RenderingServer.get_video_adapter_name(),"xr":stereo,
 		"fps":Engine.get_frames_per_second(),"frame_ms":mean,
 		"p95_ms":sorted[mini(sorted.size()-1,int(sorted.size()*.95))] if not sorted.is_empty() else 0.0,
-		"gpu_ms":RenderingServer.viewport_get_measured_render_time_gpu(vp),
-		"render_cpu_ms":RenderingServer.viewport_get_measured_render_time_cpu(vp),
+		"gpu_ms":_rt_gpu_ms if rt else RenderingServer.viewport_get_measured_render_time_gpu(vp),
+		"render_cpu_ms":_rt_cpu_ms if rt else RenderingServer.viewport_get_measured_render_time_cpu(vp),
 		"physics_ms":Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS)*1000.0,
 		"process_ms":Performance.get_monitor(Performance.TIME_PROCESS)*1000.0,
 		"draw_calls":int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),

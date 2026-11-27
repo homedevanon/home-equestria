@@ -139,6 +139,20 @@ const LOOK_CLOUD_SHADOW_STRENGTH := 0.42
 var _cloud_shadow_written := -1.0
 var _daylight_written := -1.0
 
+## Ground bounce, trial (dev 2026-11-18): sunlit ground throws light back up onto walls that face
+## away from the sun, in the ground's colour (green in summer, pale blue-white on snow). A weak
+## third directional light, unshadowed and without specular, stands in for what a bounce-light
+## (GI) system would give, so it works in VR and on every quality tier. Off unless the game is
+## started with the user argument --look-ground-bounce=on. Rollback: start without the argument.
+static var look_ground_bounce: bool = "--look-ground-bounce=on" in OS.get_cmdline_user_args() or "--look-ground-bounce=on" in OS.get_cmdline_args()
+## Share of the sun's energy at that moment (which already holds daylight, weather and season).
+const LOOK_BOUNCE_ENERGY := 0.22
+## Colour of sunlit grass, and of sunlit snow, as the bounce carries it.
+const LOOK_BOUNCE_GRASS := Color(0.55, 0.78, 0.38)
+const LOOK_BOUNCE_SNOW := Color(0.80, 0.88, 1.0)
+## How far below the horizon the bounce comes from: down part against a level part of 1.
+const LOOK_BOUNCE_RISE := 0.45
+
 ## 1 at the heart of the blue hour (sun a little under the horizon), 0 by day and in full night.
 static func twilight_amount(elevation: float) -> float:
 	return smoothstep(-0.50, -0.20, elevation) * (1.0 - smoothstep(-0.10, 0.10, elevation))
@@ -162,6 +176,8 @@ const LAMP_FULL_BELOW := 0.08
 
 var sun: DirectionalLight3D
 var moon: DirectionalLight3D
+## The ground-bounce light (look_ground_bounce), made on first use.
+var _bounce: DirectionalLight3D
 var _sky_material: ShaderMaterial
 var _grassy_clouds: GrassyFieldsClouds
 ## time_changed fires every frame, but 130 lamps do not need rewriting that
@@ -259,6 +275,8 @@ func begin_luna_dream() -> void:
 	for light: Light3D in [sun, moon]:
 		if is_instance_valid(light):
 			_dream_state.lights.append([light, light.visible]); light.visible = false
+	# The dream has its own flat light; _apply_time shows the bounce again after the dream.
+	if is_instance_valid(_bounce): _bounce.visible = false
 	var dream := environment.duplicate() as Environment
 	dream.background_mode = Environment.BG_COLOR; dream.background_color = Color.BLACK
 	dream.fog_enabled = false; dream.volumetric_fog_enabled = false
@@ -853,6 +871,7 @@ func _apply_time() -> void:
 		sun.shadow_enabled = sun.shadow_opacity > 0.0 and Quality.get_value("shadows_enabled", true)
 		# Shafts are strongest at low sun; this is the god-ray dial.
 		sun.light_volumetric_fog_energy = lerpf(2.2, 6.0, golden) * float(_profile.get("sun_mul", 1.0))
+	if look_ground_bounce: _apply_ground_bounce(sun_dir)
 
 	if moon != null:
 		var moon_dir := TimeOfDay.moon_direction()
@@ -970,6 +989,41 @@ func _apply_time() -> void:
 	RenderingServer.global_shader_parameter_set("interior_light", inside)
 	_apply_grade(daylight, golden)
 	if is_instance_valid(debug_lighting): debug_lighting.apply_time(environment, daylight)
+
+
+## Ground bounce (look_ground_bounce): a weak light from below the horizon on the side away from
+## the sun, in the ground's colour times the sun's, at a share of the sun's energy.
+func _apply_ground_bounce(sun_dir: Vector3) -> void:
+	if sun == null: return
+	if not is_instance_valid(_bounce):
+		_bounce = DirectionalLight3D.new()
+		_bounce.name = "GroundBounce"
+		_bounce.shadow_enabled = false
+		_bounce.light_specular = 0.0
+		_bounce.light_volumetric_fog_energy = 0.0
+		# Kept out of SDFGI: on a tier that has it, bounce light would be counted twice.
+		_bounce.light_bake_mode = Light3D.BAKE_DISABLED
+		# The sky shader indexes directional lights by their order among the visible ones (see the
+		# sun's LIGHT0 note in _apply_time). A light-only light stays out of the sky's list, and
+		# adding it after Sun and Moon keeps them first in any case.
+		_bounce.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY
+		# Deferred: the first call comes from _ready, while the shared parent is still setting up
+		# its children and refuses add_child.
+		sun.get_parent().add_child.call_deferred(_bounce)
+	var level := Vector3(sun_dir.x, 0.0, sun_dir.z)
+	if level.length() < 0.05:
+		# Sun straight overhead: no side to bounce to.
+		_bounce.visible = false
+		return
+	var toward := (-level.normalized() + Vector3.DOWN * LOOK_BOUNCE_RISE).normalized()
+	_bounce.look_at_from_position(Vector3.ZERO, -toward, Vector3.UP)
+	var snow := 0.0
+	if is_instance_valid(_season_node) and _season_node.has_method("snow_cover"):
+		snow = float(_season_node.call("snow_cover"))
+	var ground := LOOK_BOUNCE_GRASS.lerp(LOOK_BOUNCE_SNOW, clampf(snow, 0.0, 1.0))
+	_bounce.light_color = Color(ground.r * sun.light_color.r, ground.g * sun.light_color.g, ground.b * sun.light_color.b)
+	_bounce.light_energy = sun.light_energy * LOOK_BOUNCE_ENERGY
+	_bounce.visible = _bounce.light_energy > 0.001
 
 
 ## Storybook colour grade (world/sky/color_grade.gd); video/color_grade turns it off.

@@ -13,6 +13,10 @@ var holder: Node:
 	set(value): holder=value;_wake()
 var target:=0.0:
 	set(value): target=value;_wake()
+## True when the settled leaf wakes (any input that may move it: target, holder, a passage request,
+## the close timer), false when it settles again and stops ticking (_sleep_if_settled). Emitted only
+## on those changes, never per tick (golden_oak/entrance_occluder.gd, 2026-11-25).
+signal motion_changed(moving: bool)
 var angle_offset:=0.0
 var _sound: AudioStreamPlayer3D
 var _sound_cooldown:=0.0
@@ -546,9 +550,12 @@ func _sleep_if_settled() -> void:
 	if _visitors.is_empty() and not is_instance_valid(holder) and not _close_after_passage and _close_delay<=0.0 \
 			and _sound_cooldown<=0.0 and _opening_ponies.is_empty() and is_equal_approx(target,opening_angle()):
 		set_physics_process(false)
+		motion_changed.emit(false)
 
 func _wake() -> void:
-	if not is_physics_processing():set_physics_process(true)
+	if not is_physics_processing():
+		set_physics_process(true)
+		motion_changed.emit(true)
 
 ## Ignoring the obstruction query alone still lets AnimatableBody shove a pony's capsule.
 ## Pairwise exceptions permit real clipping without changing any world/pony collision layer.

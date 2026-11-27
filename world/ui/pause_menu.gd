@@ -188,7 +188,7 @@ func _describe_here() -> void:
 	var seasons: Node = get_tree().get_first_node_in_group("season_state")
 	var season_index: int = int(seasons.call("season_index")) if seasons != null else preload("res://world/seasons/season_state.gd").index_for(int(TimeOfDay.day), int(Settings.season_days()))
 	var season: String = SEASON_NAMES[season_index % SEASON_NAMES.size()]
-	_when.text = "Day %d · %02d:%02d · %s" % [int(TimeOfDay.day) + 1, int(hours), int((hours - int(hours)) * 60.0), season]
+	_when.text = "Day %d · %02d:%02d · %s" % [TimeOfDay.day_number(), int(hours), int((hours - int(hours)) * 60.0), season]
 	_where.text = str(saves.place_now()) if saves != null and saves.has_method("place_now") else ""
 	_where.visible = not _where.text.is_empty()
 	# Small windows: a smaller logo keeps every button on screen.

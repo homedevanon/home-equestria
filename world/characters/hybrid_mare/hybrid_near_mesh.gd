@@ -57,6 +57,22 @@ const META := &"near_mesh"
 const HIDDEN := &"near_hidden"
 const INK := &"near_ink"
 const CUSTOM_FORMATS := 0x1FFE000  # ARRAY_FORMAT_CUSTOM0..3 format bits
+## Perf 2026-11-21 (draws lane): meshes with blend shapes merge too, each with meshes of the same
+## blend shapes only (in practice the face-sculpt Head alone: its 8 surfaces drew 16 draws a close
+## pony, 32 inside the ink range, about half of all her draws, since the sculpted head arrived).
+## The merged mesh keeps the shapes; face_sculpt.gd writes its weights to it like to the rig Head
+## (it joins that script's mesh list, no per-frame copy) and its lid colour and freckle uniforms
+## reach the merged material (it joins the lid material list). Rollback: false.
+const MERGE_BLEND_SHAPES := true
+## The live switch (tools set it for A/B and parity); starts at the constant.
+static var merge_blend_shapes := MERGE_BLEND_SHAPES
+## Perf 2026-11-21 (draws lane): every Skin of a skeleton gets its own merged meshes. Before, only
+## the Skin most rig meshes shared merged, so a body whose MareBody and dock wear the body-shape
+## Skin while the mark patches wear the import's drew MareBody and dock on their own (2 draws each,
+## 4 inside the ink range). Rollback: false (only the commonest Skin merges, as before).
+const GROUP_BY_SKIN := false
+static var group_by_skin := GROUP_BY_SKIN
+const LID_UNIFORMS := ["eyelid_color", "eyelid_weights", "eyelid_rest_from_pose", "freckle_color", "freckle_spots"]
 
 static var enabled := _enabled_from_args()
 static var cache: Dictionary = {}     # key -> plan {"groups": [...]} (no groups = nothing to merge)
@@ -204,7 +220,8 @@ static func _gather(pony: Node) -> Dictionary:
 		for vname in variants:
 			for mi in variants[vname]:
 				if not seen.has(mi):
-					seen[mi] = _candidate(pony, mi, skeleton, skin)
+					var own: Skin = (mi as MeshInstance3D).skin
+					seen[mi] = _candidate(pony, mi, skeleton, own if group_by_skin and own != null else skin)
 				var info: Dictionary = seen[mi]
 				if info.is_empty():
 					continue
@@ -233,9 +250,13 @@ static func _gather(pony: Node) -> Dictionary:
 				built[vname] = {"outputs": outputs, "sources": sources, "counts": counts}
 			if not worthwhile:
 				continue
-			job.groups.append({"name": "Near%s%s" % [label, "" if index == 0 else str(index)],
-				"skeleton": pony.get_path_to(skeleton), "skin": skin, "ink": group.full[0].ink, "variants": built})
-			index += 1
+			# The face-sculpt group (blend shapes) is named apart, so every other group keeps the name it
+			# had before the face merge (the fixed bounds look margins up by name).
+			var face: bool = not (group.full[0].blend_names as PackedStringArray).is_empty()
+			job.groups.append({"name": ("Near%sFace" % label) if face else "Near%s%s" % [label, "" if index == 0 else str(index)],
+				"skeleton": pony.get_path_to(skeleton), "skin": group.full[0].skin, "ink": group.full[0].ink, "variants": built,
+				"blend_names": group.full[0].blend_names, "blend_mode": group.full[0].blend_mode})
+			if not face: index += 1
 	return job
 
 
@@ -257,8 +278,10 @@ static func _common_skin(variants: Dictionary, skeleton: Skeleton3D) -> Skin:
 ## One rig mesh as a merge source, or {} when it stays apart.
 static func _candidate(pony: Node, mi: MeshInstance3D, skeleton: Skeleton3D, skin: Skin) -> Dictionary:
 	var mesh := mi.mesh as ArrayMesh
-	if mesh == null or mesh.get_blend_shape_count() > 0 or mi.material_override != null:
+	if mesh == null or (mesh.get_blend_shape_count() > 0 and not merge_blend_shapes) or mi.material_override != null:
 		return {}
+	var blend_names := PackedStringArray()
+	for bi in mesh.get_blend_shape_count(): blend_names.append(String(mesh.get_blend_shape_name(bi)))
 	if mi.skin != skin or mi.get_node_or_null(mi.skeleton) != skeleton:
 		return {}
 	if not (skeleton.global_transform.affine_inverse() * mi.global_transform).is_equal_approx(Transform3D.IDENTITY):
@@ -284,6 +307,11 @@ static func _candidate(pony: Node, mi: MeshInstance3D, skeleton: Skeleton3D, ski
 	var settings := [mi.layers, mi.cast_shadow, mi.gi_mode, mi.visibility_range_begin, mi.visibility_range_end,
 		mi.visibility_range_begin_margin, mi.visibility_range_end_margin, mi.visibility_range_fade_mode,
 		mi.extra_cull_margin, mi.lod_bias, mi.transparency, mi.ignore_occlusion_culling, _ink_eligible(mi)]
+	if group_by_skin:
+		settings.append(skin.get_instance_id())
+	# Only meshes with the same blend shapes share a merged mesh (none with none, as before).
+	if not blend_names.is_empty():
+		settings.append([int(mesh.blend_shape_mode), blend_names])
 	# Mesh data (GPU readback, once per identity). The stored form ("_surfaces", the saved-resource
 	# layout) gives the exact normal/tangent bytes and the LOD index buffers
 	# (RenderingServer.mesh_get_surface returns a "lods" array that contains itself in 4.5).
@@ -294,8 +322,30 @@ static func _candidate(pony: Node, mi: MeshInstance3D, skeleton: Skeleton3D, ski
 		s["arrays"] = SOURCES.arrays(mesh, s.si)
 		s["lods"] = _lods(raw)
 		s["normals"] = _normal_stream(raw)
+		if not blend_names.is_empty():
+			s["blend"] = mesh.surface_get_blend_shape_arrays(s.si)
+			s["blend_normals"] = _blend_normal_streams(raw, blend_names.size())
 	return {"mi": mi, "path": pony.get_path_to(mi), "surfaces": surfaces, "counts": counts,
-		"ink": _ink_eligible(mi), "group_key": var_to_str(settings)}
+		"ink": _ink_eligible(mi), "group_key": var_to_str(settings), "skin": skin,
+		"blend_names": blend_names, "blend_mode": int(mesh.blend_shape_mode)}
+
+
+## The stored normal/tangent bytes of each blend shape of one surface (the engine keeps every shape
+## as a vertex buffer of the surface's own layout, positions first), or [] when they do not fit.
+static func _blend_normal_streams(raw: Dictionary, shapes: int) -> Array:
+	var data: PackedByteArray = raw.get("blend_shape_data", PackedByteArray())
+	var format := int(raw.get("format", 0))
+	var count := int(raw.get("vertex_count", 0))
+	if shapes == 0 or count == 0 or data.is_empty() or (format & Mesh.ARRAY_FORMAT_NORMAL) == 0 or data.size() % shapes != 0:
+		return []
+	var segment := data.size() / shapes
+	var offset := RenderingServer.mesh_surface_get_format_offset(format & 0x7, count, Mesh.ARRAY_NORMAL)
+	if offset <= 0 or offset >= segment:
+		return []
+	var out := []
+	for i in shapes:
+		out.append(data.slice(i * segment + offset, (i + 1) * segment))
+	return out
 
 
 ## hybrid_mare._exclude_world_ink's rule: the mesh gets the world-ink mask when its first
@@ -444,7 +494,8 @@ static func _outputs(infos: Array) -> Array:
 				outputs.append(out)
 			out.eight = out.eight or (s.format & Mesh.ARRAY_FLAG_USE_8_BONE_WEIGHTS) != 0
 			out.parts.append({"arrays": s.arrays, "lods": s.lods, "normals": s.normals,
-				"eight": (s.format & Mesh.ARRAY_FLAG_USE_8_BONE_WEIGHTS) != 0, "entry": out.entries.size()})
+				"eight": (s.format & Mesh.ARRAY_FLAG_USE_8_BONE_WEIGHTS) != 0, "entry": out.entries.size(),
+				"blend": s.get("blend", []), "blend_normals": s.get("blend_normals", [])})
 			out.entries.append([info.path, s.si])
 	return outputs
 
@@ -464,6 +515,8 @@ static func _concatenate(out: Dictionary) -> void:
 	# Palette surfaces keep what their shaders read (the cel shaders read no tangent or colour);
 	# copy surfaces keep every array of their (shared) layout.
 	var slots := [Mesh.ARRAY_VERTEX, Mesh.ARRAY_NORMAL, Mesh.ARRAY_TEX_UV]
+	# The occlusion shader reads COLOR.rg (the head's upper-lid skin, lid_color.gdshaderinc).
+	var colors: bool = out.kind == "occlusion" and merge_blend_shapes
 	if not palette:
 		slots = [Mesh.ARRAY_VERTEX, Mesh.ARRAY_NORMAL, Mesh.ARRAY_TANGENT, Mesh.ARRAY_COLOR, Mesh.ARRAY_TEX_UV,
 			Mesh.ARRAY_TEX_UV2, Mesh.ARRAY_CUSTOM0, Mesh.ARRAY_CUSTOM1, Mesh.ARRAY_CUSTOM2, Mesh.ARRAY_CUSTOM3]
@@ -479,6 +532,18 @@ static func _concatenate(out: Dictionary) -> void:
 	var normal_stride := 0
 	var offsets := PackedInt32Array()
 	var total := 0
+	var vertex_colors := PackedColorArray()
+	# Blend shapes (every part of a blend group has the same shapes): per shape, its parts' offsets
+	# in order, and their stored normal bytes (exact only when every part has them).
+	var shapes: int = (out.parts[0].blend as Array).size()
+	var blend_vertices: Array = []
+	var blend_normals: Array = []
+	var blend_tangents: Array = []
+	var blend_bytes: Array = []
+	var exact_blend := shapes > 0
+	for b in shapes:
+		blend_vertices.append(PackedVector3Array()); blend_normals.append(PackedVector3Array())
+		blend_tangents.append(PackedFloat32Array()); blend_bytes.append(PackedByteArray())
 	for part in out.parts:
 		var src: Array = part.arrays
 		var count: int = (src[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
@@ -490,6 +555,43 @@ static func _concatenate(out: Dictionary) -> void:
 				arrays[slot] = src[slot].duplicate()
 			else:
 				arrays[slot].append_array(src[slot])
+		if colors:
+			if src[Mesh.ARRAY_COLOR] is PackedColorArray and (src[Mesh.ARRAY_COLOR] as PackedColorArray).size() == count:
+				vertex_colors.append_array(src[Mesh.ARRAY_COLOR])
+			else:
+				# What the shader reads where a mesh has no colours (the engine's default, white).
+				var white := PackedColorArray(); white.resize(count); white.fill(Color.WHITE)
+				vertex_colors.append_array(white)
+		var part_blend: Array = part.blend
+		var part_bytes: Array = part.blend_normals
+		if part_blend.size() != shapes or part_bytes.size() != shapes:
+			exact_blend = false
+		for b in shapes:
+			if b >= part_blend.size():
+				continue
+			# Every shape stream at exactly this part's vertex count; a missing one is the base
+			# surface's own (shapes are stored absolute), so the merged arrays always line up.
+			var shape: Array = part_blend[b]
+			var shape_vertices: Variant = shape[Mesh.ARRAY_VERTEX] if shape.size() > Mesh.ARRAY_VERTEX else null
+			var shape_normals: Variant = shape[Mesh.ARRAY_NORMAL] if shape.size() > Mesh.ARRAY_NORMAL else null
+			var shape_tangents: Variant = shape[Mesh.ARRAY_TANGENT] if shape.size() > Mesh.ARRAY_TANGENT else null
+			if not (shape_vertices is PackedVector3Array and (shape_vertices as PackedVector3Array).size() == count):
+				shape_vertices = src[Mesh.ARRAY_VERTEX]
+				exact_blend = false
+			if not (shape_normals is PackedVector3Array and (shape_normals as PackedVector3Array).size() == count):
+				shape_normals = src[Mesh.ARRAY_NORMAL]  # the stored shape bytes still go back below
+			blend_vertices[b] = _joined(blend_vertices[b], shape_vertices)
+			blend_normals[b] = _joined(blend_normals[b], shape_normals)
+			if shape_tangents is PackedFloat32Array and (shape_tangents as PackedFloat32Array).size() == count * 4:
+				blend_tangents[b] = _joined(blend_tangents[b], shape_tangents)
+			elif src[Mesh.ARRAY_TANGENT] is PackedFloat32Array and (src[Mesh.ARRAY_TANGENT] as PackedFloat32Array).size() == count * 4:
+				blend_tangents[b] = _joined(blend_tangents[b], src[Mesh.ARRAY_TANGENT])
+			else:
+				var flat := PackedFloat32Array(); flat.resize(count * 4)
+				for v in count: flat[v * 4] = 1.0; flat[v * 4 + 3] = 1.0
+				blend_tangents[b] = _joined(blend_tangents[b], flat)
+			if b < part_bytes.size():
+				blend_bytes[b] = _joined(blend_bytes[b], part_bytes[b])
 		# Bones and weights at the output stride (8 when any part has 8; the extra weights are 0).
 		var src_bones: PackedInt32Array = src[Mesh.ARRAY_BONES]
 		var src_weights: PackedFloat32Array = src[Mesh.ARRAY_WEIGHTS]
@@ -542,11 +644,31 @@ static func _concatenate(out: Dictionary) -> void:
 			flags |= Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT
 	else:
 		flags |= out.layout & CUSTOM_FORMATS
+	if colors:
+		arrays[Mesh.ARRAY_COLOR] = vertex_colors
+	var blend_arrays: Array = []
+	for b in shapes:
+		var shape: Array = []
+		shape.resize(Mesh.ARRAY_MAX)
+		shape[Mesh.ARRAY_VERTEX] = blend_vertices[b]
+		if arrays[Mesh.ARRAY_NORMAL] != null: shape[Mesh.ARRAY_NORMAL] = blend_normals[b]
+		if arrays[Mesh.ARRAY_TANGENT] != null: shape[Mesh.ARRAY_TANGENT] = blend_tangents[b]
+		blend_arrays.append(shape)
+	out["blend"] = blend_arrays
+	out["blend_bytes"] = blend_bytes if exact_blend else []
 	out["arrays"] = arrays
 	out["flags"] = flags
 	out["normals"] = normals if exact_normals else PackedByteArray()
 	out["lods"] = _merge_lods(out.parts, offsets)
 	out.erase("parts")  # source arrays are no longer needed
+
+
+## `head` with `tail` appended. Packed arrays held in an Array are copies when read, so the joined
+## one is returned and stored back.
+static func _joined(head: Variant, tail: Variant) -> Variant:
+	var out: Variant = head
+	out.append_array(tail)
+	return out
 
 
 ## Merged LOD levels: at each merged edge length E every part contributes its coarsest level
@@ -607,15 +729,34 @@ static func _assemble(job: Dictionary) -> Dictionary:
 			var v: Dictionary = group.variants[vname]
 			var mesh := ArrayMesh.new()
 			mesh.resource_name = "near_%s_%s_%s" % [job.key, group.name, vname]
+			var blend_names: PackedStringArray = group.get("blend_names", PackedStringArray())
+			if not blend_names.is_empty():
+				mesh.blend_shape_mode = int(group.blend_mode) as Mesh.BlendShapeMode
+				for shape_name in blend_names: mesh.add_blend_shape(StringName(shape_name))
 			var outputs := []
 			for out in v.outputs:
-				mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, out.arrays, [], out.lods, out.flags)
+				var blend: Array = out.get("blend", [])
+				mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, out.arrays, blend, out.lods, out.flags)
+				if mesh.get_surface_count() != outputs.size() + 1:
+					var shape_sizes := []
+					for shape: Array in blend.slice(0, 1):
+						for slot in [Mesh.ARRAY_VERTEX, Mesh.ARRAY_NORMAL, Mesh.ARRAY_TANGENT]:
+							shape_sizes.append(shape[slot].size() if shape[slot] != null else -1)
+					push_warning("Near mesh: %s surface %d failed (vertices %d, first shape %s); keeping its rig meshes" % [
+						mesh.resource_name, outputs.size(), (out.arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size(), str(shape_sizes)])
+					break
 				outputs.append({"kind": out.kind, "class": out["class"], "entries": out.entries})
 				out.erase("arrays")
+				out.erase("blend")
+			if outputs.size() != v.outputs.size():
+				variants.clear()
+				break
 			_restore_normals(mesh, v.outputs)
 			variants[vname] = {"mesh": mesh, "outputs": outputs, "sources": v.sources, "counts": v.counts}
+		if variants.is_empty():
+			continue
 		plan.groups.append({"name": group.name, "skeleton": group.skeleton, "skin": group.skin, "ink": group.ink,
-			"variants": variants})
+			"variants": variants, "blend_names": group.get("blend_names", PackedStringArray())})
 	return plan
 
 
@@ -641,6 +782,25 @@ static func _restore_normals(mesh: ArrayMesh, outputs: Array) -> void:
 		data.append_array(normals)
 		raw.vertex_data = data
 		changed = true
+		# Blend shapes: each shape is a vertex buffer of the same layout; its normal bytes too.
+		var blend: Array = outputs[i].get("blend_bytes", [])
+		var shape_data: PackedByteArray = raw.get("blend_shape_data", PackedByteArray())
+		if blend.is_empty() or shape_data.is_empty():
+			continue
+		var segment := shape_data.size() / blend.size()
+		var shape_offset := RenderingServer.mesh_surface_get_format_offset(format & 0x7, count, Mesh.ARRAY_NORMAL)
+		var rebuilt := PackedByteArray()
+		var fits := shape_data.size() % blend.size() == 0
+		for b in blend.size():
+			if not fits or segment != shape_offset + (blend[b] as PackedByteArray).size():
+				fits = false
+				break
+			rebuilt.append_array(shape_data.slice(b * segment, b * segment + shape_offset))
+			rebuilt.append_array(blend[b])
+		if fits:
+			raw.blend_shape_data = rebuilt
+		else:
+			push_warning("Near mesh: %s surface %d blend shape layout differs; keeping re-encoded shape normals" % [mesh.resource_name, i])
 	if changed:
 		mesh.set("_surfaces", stored)
 
@@ -697,7 +857,9 @@ static func attach(pony: Node, plan: Dictionary, lod: bool) -> Dictionary:
 		mi.skin = group.skin
 		mi.skeleton = mi.get_path_to(skeleton)
 		var entry := {"mi": mi, "group": group, "built": built, "variant": ""}
+		entry["bounds_margin"] = _bounds_margin(pony, mi, skeleton)
 		_show_variant(entry, "lod" if lod and built.has("lod") else "full")
+		_mirror_face(pony, entry)
 		# Every variant's rig meshes hide; the meta keeps whether each was shown.
 		for vname in built:
 			for source in built[vname].sources:
@@ -714,6 +876,7 @@ static func attach(pony: Node, plan: Dictionary, lod: bool) -> Dictionary:
 ## `hold_root` stay hidden for the far mesh swap (meta far_hidden) instead of showing.
 static func detach(state: Dictionary, hold := false, hold_root: Node = null) -> void:
 	for entry in state.get("groups", []):
+		_unmirror_face(entry)
 		var mi: MeshInstance3D = entry.mi
 		if is_instance_valid(mi):
 			if mi.get_parent() != null:
@@ -731,6 +894,55 @@ static func detach(state: Dictionary, hold := false, hold_root: Node = null) -> 
 		else:
 			source.visible = true
 	state.clear()
+
+
+## The head's face sculpt (openpony face_sculpt.gd), or null.
+static func _face_sculpt(pony: Node) -> Object:
+	var head: Variant = pony.get("head")
+	if not (head is Node) or not is_instance_valid(head):
+		return null
+	var sculpt: Variant = (head as Node).get("face_sculpt")
+	return sculpt as Object if sculpt is Object else null
+
+
+## A merged mesh with blend shapes takes the rig mesh's current weights, and the face sculpt writes
+## to it from now on like to the rig Head (its mesh list); its lid materials join the sculpt's lid
+## list, so lid colour, weights, projection and freckles reach them on every write. No frame work.
+static func _mirror_face(pony: Node, entry: Dictionary) -> void:
+	var names: PackedStringArray = entry.group.get("blend_names", PackedStringArray())
+	if names.is_empty():
+		return
+	var mi: MeshInstance3D = entry.mi
+	var rig := (entry.built.full.sources as Array)[0] as MeshInstance3D
+	for i in names.size():
+		mi.set_blend_shape_value(i, rig.get_blend_shape_value(i))
+	var sculpt := _face_sculpt(pony)
+	if sculpt == null:
+		return
+	var meshes: Variant = sculpt.get("_meshes")
+	var lids: Variant = sculpt.get("_lid_materials")
+	if meshes is Array and (meshes as Array).has(rig) and not (meshes as Array).has(mi):
+		(meshes as Array).append(mi)
+	if lids is Array:
+		for vname in entry.built:
+			for material: Material in entry.built[vname].materials:
+				if material is ShaderMaterial and material.has_meta(&"near_lid") and not (lids as Array).has(material):
+					(lids as Array).append(material)
+	entry["sculpt"] = sculpt
+
+
+static func _unmirror_face(entry: Dictionary) -> void:
+	var sculpt: Object = entry.get("sculpt")
+	if sculpt == null:
+		return
+	var meshes: Variant = sculpt.get("_meshes")
+	if meshes is Array: (meshes as Array).erase(entry.mi)
+	var lids: Variant = sculpt.get("_lid_materials")
+	if lids is Array:
+		for vname in entry.built:
+			for material: Material in entry.built[vname].materials:
+				(lids as Array).erase(material)
+	entry.erase("sculpt")
 
 
 ## Swap the hair's merged mesh between its full and LOD1 variants.
@@ -754,9 +966,48 @@ static func _show_variant(entry: Dictionary, vname: String) -> void:
 	entry.variant = vname
 	var mi: MeshInstance3D = entry.mi
 	mi.mesh = entry.group.variants[vname].mesh
+	if FIXED_BOUNDS and entry.has("bounds_margin") and mi.mesh != null:
+		var grow: Array = BOUNDS_GROW.get(String(mi.name), BOUNDS_GROW_OTHER)
+		var per_metre := float(entry.bounds_margin)
+		var below: Vector3 = grow[0]
+		var above: Vector3 = grow[1]
+		var box := mi.mesh.get_aabb()
+		mi.custom_aabb = AABB(box.position - below * per_metre, box.size + (below + above) * per_metre)
 	var materials: Array = entry.built[vname].materials
 	for i in materials.size():
 		mi.set_surface_override_material(i, materials[i])
+
+
+## Fixed bounds (perf overhaul 2026-11-21, lane skeletons). A skinned instance without its own box
+## has the render server rebuild its bounds from every bone's box after each rig update
+## (`mesh_get_aabb`, about 0.1 ms per step with 33 ponies close). Each merged mesh gets its rest
+## bounds grown by a margin in her own (unscaled) metres that covers the poses measured by
+## tools/profile/pony_bounds_check.gd: the body rig's meshes move about their own rest, the head
+## and hair rigs follow the neck (grazing, lying, rearing). Culling and shadow casting use the
+## slightly larger box. Rollback: FIXED_BOUNDS = false.
+## Off: the margins cover the game's own poses only, and poses that mods write (dances, pegasus
+## ride, tail patch) or flight tricks have no simple flag to fall back on yet.
+const FIXED_BOUNDS := false
+## Measured 2026-11-21 (tools/profile/pony_bounds_check.gd over all 135 pony scenes: stand, walk,
+## trot, gallop, wings spread, rearing, buck, held, thrown, sit, lie, sleep, stand up; and the bench
+## world's dressed 33-pony winter crowd) plus 0.15 m: [below (-x, -y, -z), above (+x, +y, +z)] in
+## metres of her model frame, per merged mesh group.
+const BOUNDS_GROW := {
+	"NearBody": [Vector3(0.50, 0.95, 0.45), Vector3(0.45, 0.25, 0.30)],
+	"NearHead": [Vector3(0.35, 1.00, 0.30), Vector3(0.25, 0.25, 1.40)],
+	"NearHead1": [Vector3(0.50, 0.90, 0.15), Vector3(0.40, 0.20, 1.20)],
+	"NearHair": [Vector3(0.85, 0.80, 0.70), Vector3(0.70, 0.40, 0.70)],
+}
+## Any other merged group (draws' new face mesh, anything later): the largest of each side above.
+const BOUNDS_GROW_OTHER := [Vector3(0.85, 1.00, 0.70), Vector3(0.70, 0.40, 1.40)]
+
+
+## Mesh units per metre of the pony's model frame (her body scale included).
+static func _bounds_margin(pony: Node, mi: MeshInstance3D, _skeleton: Skeleton3D) -> float:
+	var pivot: Variant = pony.get("pivot")
+	if not (pivot is Node3D) or not mi.is_inside_tree(): return 1.0
+	var units := ((pivot as Node3D).global_basis.inverse() * mi.global_basis).get_scale()
+	return 1.0 / maxf(units.x, 0.0001)
 
 
 ## This pony's material for one merged surface; null when its rig materials no longer fit.
@@ -789,6 +1040,21 @@ static func _output_material(pony: Node, out: Dictionary) -> Material:
 		for i in sources.size():
 			snout[i] = 1.0 if bool(_param(sources[i], "native_snout_detail", false)) else 0.0
 		mat.set_shader_parameter("pal_snout", snout)
+		# Entries the face sculpt dresses with lid colour and freckles (its lid material list).
+		var sculpt := _face_sculpt(pony)
+		var lid_list: Variant = sculpt.get("_lid_materials") if sculpt != null else null
+		var lid := PackedFloat32Array(); lid.resize(ENTRIES)
+		var lid_source: ShaderMaterial = null
+		for i in sources.size():
+			if lid_list is Array and (lid_list as Array).has(sources[i]):
+				lid[i] = 1.0
+				if lid_source == null: lid_source = sources[i] as ShaderMaterial
+		mat.set_shader_parameter("pal_lid", lid)
+		if lid_source != null:
+			for uniform: String in LID_UNIFORMS:
+				var value: Variant = lid_source.get_shader_parameter(uniform)
+				if value != null: mat.set_shader_parameter(uniform, value)
+			mat.set_meta(&"near_lid", true)
 	_fill_palette(mat, sources, true)
 	_mark_lip_tone(pony, out, mat)
 	if first.next_pass != null:

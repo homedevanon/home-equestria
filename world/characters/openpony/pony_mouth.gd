@@ -1,5 +1,5 @@
 class_name PonyMouth
-extends SkeletonModifier3D
+extends PonyMouthNative
 ## Mouth shapes for the OpenPony rig, blended on the Bento face bones.
 ##
 ## Base shapes are sampled at start-up from the devkit clips in the mare's
@@ -22,6 +22,10 @@ const TONGUE := ["mFaceTongue"]
 ## Base shapes: source clip, time in seconds (-1 = last frame), bone prefixes.
 ## Picked from tools/probe_openpony_mouth.gd (which bones each clip moves).
 const SHAPES := {
+	"kiss_wrap": {"pose":"res://world/characters/openpony/face_sculpt/kiss_wrap.json"},
+	"kiss_pucker": {"pose":"res://world/characters/openpony/face_sculpt/kiss_pucker.json"},
+	"kiss_open": {"pose":"res://world/characters/openpony/face_sculpt/kiss_open.json"},
+
 	# Authored on the same face bones through Blender MCP for the November 2 sheet.
 	"round": {"pose":"res://world/characters/openpony/face_sculpt/round_mouth.json"},
 	# Speech poses authored through Blender MCP (tools/face_rig/viseme_shapes_mcp.py, dev
@@ -54,6 +58,32 @@ const SHAPES := {
 	"catsmile": {"clip": "mouth_catsmile", "time": -1.0, "bones": MOUTH},
 }
 
+## How far each shape drops her jaw (degrees about mFaceJaw's own X, which swings the chin, lower
+## teeth, lower lip and tongue down together). Dev 2026-11-22: "her jaw isn't actually MOVING. the
+## ponies jaws have to move when they talk, and work their jaw". The authored poses move the lips
+## and teeth only and nothing turned the jaw bone (about 300 head-mesh points weighted to it), so
+## talking and kissing were lips sliding over a still jaw. Shapes not listed leave the jaw alone.
+## Speech only works the jaw a little (dev 2026-11-22, after the first try at 6 to 13 degrees: "she
+## should open her jaw way less while talking"); the big drop is the gasp face below.
+const JAW_OPEN := {"talk": 1.5, "jaw_wide": 1.5, "ao": 1.5, "oo": 0.8, "ss": 0.5, "lift": 0.5,
+	"tongue_up": 1.0, "fv": 0.3, "open": 3.0, "open_soft": 1.5, "open_lips": 2.0,
+	"kiss_open": 10.0, "kiss_wrap": 3.0, "kiss_pucker": 1.5}
+## The gasp face (dev 2026-11-22: "she should have a 'gasp :D' face"): the wide talking mouth (talk
+## and jaw_wide together) with the jaw dropped GASP_JAW degrees, as one shape for the line face
+## (13 degrees first; dev: "the gasp has way too much jaw").
+const GASP_FROM := ["talk", "jaw_wide"]
+const GASP_JAW := 5.0
+## The gasp's tongue lies flat on the floor of her mouth (dev 2026-11-22: "the tongue looks like it's
+## up and not flat on the bottom of the mouth"): mFaceTongueBase turned about its own +X (tips the tip
+## down, about 0.8 mm per degree), lowered along its own -Z and drawn back along its own -Y (metres).
+## 12 degrees and 2 mm put the tip through her chin.
+const GASP_TONGUE_TIP := 6.0
+const GASP_TONGUE_DOWN := 0.0015
+const GASP_TONGUE_BACK := 0.004
+const JAW_BONE := "mFaceJaw"
+## Off: shapes built from now on leave the jaw still, as before 2026-11-22 (comparison stills, rollback).
+static var jaw_drop := true
+
 ## Rhubarb mouth shapes -> base shape weights.
 ##   A closed (M B P)      B slightly open, teeth (most consonants, EE)
 ##   C open (EH AE)        D wide open (AA)        E rounded, slightly open (AO ER)
@@ -84,25 +114,23 @@ const VISEME_YIELD := {"D": 0.3, "E": 1.0, "F": 1.0}
 ## Speech shapes that part the lips. While any is held above SPEECH_OPEN_AT, lip_open_changed
 ## tells the head (hybrid_mare.set_lip_hull_open) to drop the lip-lining hull that otherwise
 ## draws a stray ink line across the open mouth; expressions keep their approved ink.
-const SPEECH_OPEN := ["ss", "oo", "ao", "talk", "jaw_wide", "lift", "tongue_up", "fv"]
+const SPEECH_OPEN := ["gasp", "kiss_open", "kiss_wrap", "kiss_pucker", "ss", "oo", "ao", "talk", "jaw_wide", "lift", "tongue_up", "fv"]
 const SPEECH_OPEN_AT := 0.05
-## Called with true when speech parts the lips and false when they close again.
-var lip_open_changed := Callable()
-var _lip_open := false
+## lip_open_changed (native): called with true when speech parts the lips and false when they
+## close again; _lip_open (native) is the last value sent.
 ## The pursed "oo" lights the dark lip colour toward the coat (viseme review round 3): pursed lips
 ## are lit skin, and at full lip colour the rolled-out lips framed the small opening as a dark box
 ## with bars. Per shape, the share of the lip-to-coat blend at full weight; lip_tone_changed gets
 ## the summed blend in LIP_TONE_STEP steps (0 = the approved lip colour, as in every expression).
-const LIP_TONE := {"oo": 0.65}
+const LIP_TONE := {"oo": 0.65, "kiss_open": 0.40, "kiss_wrap": 0.60, "kiss_pucker": 0.55}
 const LIP_TONE_STEP := 0.05
-var lip_tone_changed := Callable()
-var _lip_tone := 0.0
+## lip_tone_changed and _lip_tone: native, as above.
 
 ## Weight easing time scale in seconds (Rhubarb cues are 50-200 ms long). Weights approach their
 ## targets exponentially: rising with a time constant of blend_time / OPEN_RATE (about 40 ms to
 ## 90%), falling with blend_time / CLOSE_RATE (about 75 ms to 90%), so mouths open crisply and
 ## close softly instead of flapping at one linear rate.
-@export var blend_time := 0.06
+## blend_time (native, 0.06).
 const OPEN_RATE := 3.4
 const CLOSE_RATE := 1.8
 ## A weight this close to its target snaps onto it (the mix cache then stops rebuilding).
@@ -110,11 +138,23 @@ const SETTLE := 0.004
 
 var current_viseme := "X"
 
+## Native pony step (lane face, 2026-11-21, captures/perf_2026-11-21/port_face.md): the hot state
+## lives in the native base PonyMouthNative (face_modifiers_native.cpp) as properties with these
+## same names: rate_divisor and rate_phase (PonyCrowd NEAR mares: full run every
+## `rate_divisor`-th physics tick, cached writes between), blend_time, _targets and _weights
+## (name -> weight; read them whole and assign them whole: an item set on the returned Dictionary
+## is a copy's), the mix cache (_mix_bones, _mix_rotations, _mix_offsets, _mix_valid,
+## _mix_influence) and the lip callbacks with their last values. NATIVE_STEP runs the modifier
+## pass, the easing and the retarget in C++ (native_step, native_advance_weights,
+## native_retarget), bit for bit; false (rollback) keeps the GDScript bodies below. The user
+## argument --native-face turns it on for a test run. Only this script itself takes the native
+## modifier pass; a subclass keeps the GDScript one.
+const NATIVE_STEP := true  # rollback switch: false keeps the GDScript bodies (parity: port_face.md)
+static var _native_on: bool = NATIVE_STEP or OS.get_cmdline_user_args().has("--native-face")
+const SCRIPT_PATH := "res://world/characters/openpony/pony_mouth.gd"
+
 var _shapes := {}      # name -> {bone_idx: {"q": Quaternion, "p": Vector3}}
 var _bones: Array[int] = []
-## PonyCrowd NEAR mares: full run every `rate_divisor`-th physics tick, cached writes between.
-var rate_divisor := 1
-var rate_phase := 0
 ## The last full run's writes, in bone order (re-applied on the skipped ticks).
 var _written_bones := PackedInt32Array()
 var _written_rotations: Array[Quaternion] = []
@@ -122,8 +162,6 @@ var _written_positions := PackedVector3Array()
 ## [bone names, rests, source clips] -> [shapes, bones]. Every head of a model samples the same
 ## shapes from the same shared clip library; build() did it again for each spawned pony.
 static var _built := {}
-var _weights := {}     # name -> current weight
-var _targets := {}     # name -> target weight (visemes + expressions)
 var _viseme_targets := {}
 var _expression := {}
 
@@ -149,6 +187,7 @@ func build(player: AnimationPlayer) -> int:
 		# Shared, never edited: build() replaces _shapes instead of clearing it.
 		_shapes = _built[key][0]
 		_bones.assign(_built[key][1])
+		_native_bind()
 		return _shapes.size()
 	_shapes = {}
 	var bones := {}
@@ -211,9 +250,45 @@ func build(player: AnimationPlayer) -> int:
 			for idx in deltas: bones[idx] = true
 		if not deltas.is_empty():
 			_shapes[shape_name] = deltas
+	# The gasp: its source shapes summed (rotations composed, offsets added), before their jaw drops.
+	var gasp := {}
+	for source: String in GASP_FROM:
+		for idx: int in (_shapes.get(source, {}) as Dictionary):
+			var from: Dictionary = _shapes[source][idx]
+			var into: Dictionary = gasp.get(idx, {"q": Quaternion.IDENTITY, "p": Vector3.ZERO})
+			gasp[idx] = {"q": (into["q"] as Quaternion) * (from["q"] as Quaternion), "p": (into["p"] as Vector3) + (from["p"] as Vector3)}
+	# The jaw drop of each speaking or kissing shape, on top of what the shape itself moves.
+	var jaw := skel.find_bone(JAW_BONE)
+	if not gasp.is_empty():
+		if jaw >= 0 and jaw_drop:
+			var d: Dictionary = gasp.get(jaw, {"q": Quaternion.IDENTITY, "p": Vector3.ZERO})
+			gasp[jaw] = {"q": (d["q"] as Quaternion) * Quaternion(Vector3.RIGHT, deg_to_rad(GASP_JAW)), "p": d["p"]}
+		var tongue := skel.find_bone("mFaceTongueBase")
+		if tongue >= 0:
+			var t: Dictionary = gasp.get(tongue, {"q": Quaternion.IDENTITY, "p": Vector3.ZERO})
+			gasp[tongue] = {"q": (t["q"] as Quaternion) * Quaternion(Vector3.RIGHT, deg_to_rad(GASP_TONGUE_TIP)),
+				"p": (t["p"] as Vector3) + Vector3(0.0, -GASP_TONGUE_BACK, -GASP_TONGUE_DOWN)}
+		for idx: int in gasp: bones[idx] = true
+		_shapes["gasp"] = gasp
+	if jaw >= 0 and jaw_drop:
+		for shape_name: String in JAW_OPEN:
+			if not _shapes.has(shape_name): continue
+			var deltas: Dictionary = _shapes[shape_name]
+			var d: Dictionary = deltas.get(jaw, {"q": Quaternion.IDENTITY, "p": Vector3.ZERO})
+			d["q"] = (d["q"] as Quaternion) * Quaternion(Vector3.RIGHT, deg_to_rad(float(JAW_OPEN[shape_name])))
+			deltas[jaw] = d
+			bones[jaw] = true
 	_bones.assign(bones.keys())
 	_built[key] = [_shapes, _bones.duplicate()]
+	_native_bind()
 	return _shapes.size()
+
+
+## The native step's copy of the shapes, bones and constants (once per build()).
+func _native_bind() -> void:
+	native_bind(_shapes, PackedInt32Array(_bones),
+		PackedFloat64Array([OPEN_RATE, CLOSE_RATE, SETTLE, SPEECH_OPEN_AT, LIP_TONE_STEP]), SPEECH_OPEN, LIP_TONE,
+		(get_script() as Script).resource_path == SCRIPT_PATH)
 
 
 func shape_names() -> PackedStringArray:
@@ -247,6 +322,24 @@ func set_expression(shape_name: String, weight: float, blend := -1.0) -> void:
 	_retarget(blend)
 
 
+## An already animated set of pose weights. Apply its channels together so a closing
+## shape can yield exactly as much weight as the next one takes. Other weights keep easing.
+func set_posed_expression(pose: Dictionary) -> void:
+	for key: String in pose:
+		if float(pose[key]) > 0.0: _expression[key] = pose[key]
+		else: _expression.erase(key)
+	_retarget(-1.0)
+	var targets := _targets
+	var weights := _weights
+	for key: String in pose:
+		var value := float(targets.get(key, 0.0))
+		if value > 0.0: weights[key] = value
+		else: weights.erase(key)
+	_weights = weights
+	_mix_valid = false
+	_update_lip_open()
+
+
 func clear(blend := -1.0) -> void:
 	_expression.clear()
 	set_viseme("X", blend)
@@ -257,26 +350,32 @@ func weight_of(shape_name: String) -> float:
 
 
 func _retarget(blend: float) -> void:
-	_targets = {}
-	for k in _viseme_targets:
-		_targets[k] = _viseme_targets[k]
 	var expression_scale := 1.0 - float(VISEME_YIELD.get(current_viseme, 0.0))
+	if _native_on:
+		native_retarget(_viseme_targets, _expression, expression_scale, blend)
+		return
+	var targets := {}
+	for k in _viseme_targets:
+		targets[k] = _viseme_targets[k]
 	for k in _expression:
-		_targets[k] = minf(_targets.get(k, 0.0) + _expression[k] * expression_scale, 1.0)
+		targets[k] = minf(targets.get(k, 0.0) + _expression[k] * expression_scale, 1.0)
+	_targets = targets
 	if blend == 0.0:
 		_mix_valid = false
-		_weights = _targets.duplicate()
-		for k in _weights.keys():
-			if _weights[k] <= 0.0:
-				_weights.erase(k)
+		var weights := targets.duplicate()
+		for k in weights.keys():
+			if weights[k] <= 0.0:
+				weights.erase(k)
+		_weights = weights
 		_update_lip_open()
 
 
 func _update_lip_open() -> void:
+	var weights := _weights
 	if lip_tone_changed.is_valid():
 		var tone := 0.0
 		for shape: String in LIP_TONE:
-			tone += float(_weights.get(shape, 0.0)) * float(LIP_TONE[shape])
+			tone += float(weights.get(shape, 0.0)) * float(LIP_TONE[shape])
 		tone = snappedf(minf(tone, 1.0), LIP_TONE_STEP)
 		if tone != _lip_tone:
 			_lip_tone = tone
@@ -285,7 +384,7 @@ func _update_lip_open() -> void:
 		return
 	var open := false
 	for shape: String in SPEECH_OPEN:
-		if float(_weights.get(shape, 0.0)) > SPEECH_OPEN_AT:
+		if float(weights.get(shape, 0.0)) > SPEECH_OPEN_AT:
 			open = true
 			break
 	if open != _lip_open:
@@ -296,24 +395,28 @@ func _update_lip_open() -> void:
 ## Ease the weights toward their targets over `delta` seconds (see blend_time). Returns whether
 ## any weight moved. Public so review tools replay speech with the mouth's own easing.
 func advance_weights(delta: float) -> bool:
+	if _native_on: return native_advance_weights(delta)
 	var rise := 1.0 if blend_time <= 0.0 else 1.0 - exp(-delta * OPEN_RATE / blend_time)
 	var fall := 1.0 if blend_time <= 0.0 else 1.0 - exp(-delta * CLOSE_RATE / blend_time)
 	var changed := false
-	for k in _targets:
-		var before: float = _weights.get(k, 0.0)
-		var target: float = _targets[k]
+	var weights := _weights
+	var targets := _targets
+	for k in targets:
+		var before: float = weights.get(k, 0.0)
+		var target: float = targets[k]
 		var w := before + (target - before) * (rise if target > before else fall)
 		if absf(target - w) < SETTLE: w = target
-		if w != before or not _weights.has(k): changed = true
-		_weights[k] = w
-	for k in _weights.keys():
-		if not _targets.has(k):
-			var w: float = _weights[k] * (1.0 - fall)
+		if w != before or not weights.has(k): changed = true
+		weights[k] = w
+	for k in weights.keys():
+		if not targets.has(k):
+			var w: float = weights[k] * (1.0 - fall)
 			changed = true
 			if w < SETTLE:
-				_weights.erase(k)
+				weights.erase(k)
 			else:
-				_weights[k] = w
+				weights[k] = w
+	_weights = weights
 	return changed
 
 
@@ -337,14 +440,18 @@ func _unprofiled_process_modification() -> void:
 		return
 	if changed or not _mix_valid or influence != _mix_influence or not MIX_CACHE:
 		_build_mix()
-	var count := _mix_bones.size()
-	_written_bones = _mix_bones
+	var mix_bones := _mix_bones
+	var mix_rotations := _mix_rotations
+	var mix_offsets := _mix_offsets
+	var count := mix_bones.size()
+	_written_bones = mix_bones
 	_written_rotations.resize(count)
 	_written_positions.resize(count)
 	for k in count:
-		var idx := _mix_bones[k]
-		var q := (skel.get_bone_pose_rotation(idx) * _mix_rotations[k]).normalized()
-		var p := skel.get_bone_pose_position(idx) + _mix_offsets[k]
+		var idx := mix_bones[k]
+		var mix_rotation: Quaternion = mix_rotations[k]
+		var q := (skel.get_bone_pose_rotation(idx) * mix_rotation).normalized()
+		var p := skel.get_bone_pose_position(idx) + mix_offsets[k]
 		skel.set_bone_pose_rotation(idx, q)
 		skel.set_bone_pose_position(idx, p)
 		_written_rotations[k] = q
@@ -357,25 +464,22 @@ func _unprofiled_process_modification() -> void:
 ## smile, so it is rebuilt only when a weight or the influence changes. Applied as one rotation
 ## and one offset on the bone's own pose: the same product as before, multiplied in another
 ## grouping (float rounding only). Rollback: MIX_CACHE = false.
+## The cache (_mix_bones, _mix_rotations, _mix_offsets, _mix_valid, _mix_influence) is native.
 const MIX_CACHE := true
-var _mix_bones := PackedInt32Array()
-var _mix_rotations: Array[Quaternion] = []
-var _mix_offsets := PackedVector3Array()
-var _mix_valid := false
-var _mix_influence := 1.0
 
 func _build_mix() -> void:
-	_mix_bones = PackedInt32Array()
-	_mix_rotations.clear()
-	_mix_offsets = PackedVector3Array()
+	var mix_bones := PackedInt32Array()
+	var mix_rotations: Array[Quaternion] = []
+	var mix_offsets := PackedVector3Array()
 	_mix_influence = influence
 	_mix_valid = true
+	var weights := _weights
 	for idx in _bones:
 		var q := Quaternion.IDENTITY
 		var p := Vector3.ZERO
 		var touched := false
-		for shape_name in _weights:
-			var w: float = _weights[shape_name] * influence
+		for shape_name in weights:
+			var w: float = weights[shape_name] * influence
 			if w <= 0.0001:
 				continue
 			var d: Variant = _shapes[shape_name].get(idx)  # no default: `{}` allocated per miss
@@ -385,9 +489,12 @@ func _build_mix() -> void:
 			p += (d["p"] as Vector3) * w
 			touched = true
 		if touched:
-			_mix_bones.append(idx)
-			_mix_rotations.append(q)
-			_mix_offsets.append(p)
+			mix_bones.append(idx)
+			mix_rotations.append(q)
+			mix_offsets.append(p)
+	_mix_bones = mix_bones
+	_mix_rotations = mix_rotations
+	_mix_offsets = mix_offsets
 
 
 ## Left/right symmetric copy of a clip-sampled shape (the devkit clips are lopsided): each
@@ -446,5 +553,5 @@ static func _matches(bone: String, prefixes: Array) -> bool:
 
 func _process_modification() -> void:
 	var started := Time.get_ticks_usec() if CROWD_PROFILE.enabled else 0
-	_unprofiled_process_modification()
+	if not (_native_on and native_step(MIX_CACHE)): _unprofiled_process_modification()
 	if CROWD_PROFILE.enabled: CROWD_PROFILE.record("mouth", started)

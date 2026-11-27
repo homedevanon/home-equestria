@@ -30,8 +30,8 @@ const RANGE_M := 10.0
 const DOOR_M := 1.6
 const WORLD_LAYER := 1
 const TEXTS := {
-	"doorway": "Anon had to duck his head under the low doorway; he is tall for pony doors.",
-	"ceiling": "Anon's head nearly bumped the low ceiling; he has to stoop in here.",
+	"doorway": "Anon is tall for pony doors and had to duck under the low doorway.",
+	"ceiling": "Anon nearly bumped his head on the low ceiling and has to stoop.",
 	"branch": "Anon had to duck under a low branch.",
 }
 static var _checked_ms := -100000

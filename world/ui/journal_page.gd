@@ -447,7 +447,7 @@ func _show() -> void:
 	_show_world()
 	_show_chips()
 	var days: Array = _world.get("days", [])
-	_day_label.text = "All days" if _day < 0 else "Day %d" % (_day + 1)
+	_day_label.text = "All days" if _day < 0 else "Day %d" % DATA.day_number(_day)
 	_day_back.disabled = days.is_empty() or _day == days[0]
 	_day_on.disabled = _day < 0
 	_moments_chip.set_pressed_no_signal(_moments)
@@ -795,7 +795,7 @@ func _save_picture() -> void:
 	_save_button.disabled = true; _studio_status.text = "Drawing the picture…"; _studio_status.tooltip_text = ""; _refresh_panel()
 	var spec := _spec(false)
 	var first: Dictionary = _studio_entries[0]
-	var when := "Day %d %s" % [int(first.day) + 1, DATA.clock(int(first.minute)).replace(":", "h")]
+	var when := "Day %d %s" % [DATA.day_number(int(first.day)), DATA.clock(int(first.minute)).replace(":", "h")]
 	var picture := PICTURE.new(); add_child(picture)
 	var images: Array[Image] = await picture.render(spec)
 	picture.queue_free()

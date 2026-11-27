@@ -55,18 +55,18 @@ const BASKET := ["food:red-apple", "food:red-apple", "food:red-apple", "food:red
 	"food:carrot", "food:carrot", "food:carrot", "food:bread-loaf", "food:hayburger", "food:hayburger"]
 ## Factual purposes for AI generation. None is dialogue to recite.
 const LINES := {
-	"found":"You unexpectedly discover an unfamiliar sapient creature alone in the dangerous Everfree. Speak softly and slowly, the way you would to someone frightened; you have just come round a log and found them. React with gentle, startled concern for their immediate wellbeing; find out whether they are okay or hurt. Your bookish curiosity about someone unlike any creature you have met may slip through, but stay kind and address a person, not a specimen. You do not know the word human for their species unless they have told you; body labels in supplied context are not taxonomy you have learned. Let your name follow naturally if it fits, rather than leading with a formal introduction or a memory interview. Do not diagnose injury or amnesia, invent appearance details, or supply their answer.",
-	"settle":"You have sat down a step away from the stranger you just found in the Everfree, so you are not looming over them. Gently tell them your name and where they are: the Everfree Forest, at the edge of Ponyville, and it will be dark soon. Ask, kindly and without pressure, what their name is or how they ended up out here. Then let them answer; do not rush on. Two or three short, warm sentences.",
-	"wolves":"A timberwolf just howled somewhere in the trees. You flinched and your ears went up, but you keep your voice low and calm for the stranger: explain in a hushed way that timberwolves are wolves made of wood and branches that roam this forest at dusk, and that it is no place to be after dark. Do not offer to leave yet. Two short sentences.",
-	"teleport":"A second howl, closer. Gently ask the stranger if they will let you take them somewhere safe: Ponyville, your home at the Golden Oak Library, with a warm guest bed. Tell them you can bring you both there with a teleport spell, that it only tingles for a moment, and ask them to stay close to you. Two or three short, kind sentences. The teleport has not happened yet.",
-	"edge":"You have both just teleported to Ponyville. Invite the newcomer to follow you to your nearby treehouse, Golden Oak Library. One short sentence; speak to them, not about the scene.",
-	"shelter":"You and the newcomer have just teleported inside your treehouse, Golden Oak Library, safe from the forest. Gently tell them they can stay as long as they need: the guest bed downstairs is theirs, and Ponyville is right outside whenever they feel like looking around. Two or three short, warm sentences.",
+	"found":"Coming around a log in the dangerous Everfree, you suddenly find an unfamiliar thinking creature all alone. Speak softly and slowly, as you would to someone scared. You're startled and concerned; ask if they're okay or hurt. You have never met a creature like this, and your bookish curiosity might show, but stay kind and talk to them like a person rather than a specimen. Unless they tell you themselves, you don't know the word \"human\" for what they are, even if the body notes use it. Give your name only if it fits naturally, without starting with a formal introduction or grilling them on their memories. Don't diagnose injuries or amnesia, invent details about how they look, or answer for them.",
+	"settle":"You've sat down a step away from the stranger you just found so you don't loom over them. Gently give your name and explain that they're in the Everfree Forest on the edge of Ponyville, with night falling soon. Ask kindly, without pushing, for their name or how they got here, then wait for an answer. Keep it to two or three short, warm sentences.",
+	"wolves":"A timberwolf just howled in the trees. Your ears shot up and you flinched, but keep your voice low and steady for the stranger. In a hushed tone, explain that timberwolves are wolves of wood and branches that prowl these woods at dusk, and it isn't safe here after dark. Don't offer to leave yet. Two short sentences.",
+	"teleport":"Another howl sounds, closer this time. Gently ask if the stranger will let you take them to a warm guest bed in your home, the Golden Oak Library, safe in Ponyville. Explain that you can teleport the two of you there, that the spell only tingles for a second, and that they should stay close. Keep it to two or three short, kind sentences. You haven't cast the spell yet.",
+	"edge":"You have both just teleported to Ponyville. In one short sentence, invite the newcomer to follow you to your nearby treehouse, Golden Oak Library, without describing the scene.",
+	"shelter":"Your teleport has brought you and the newcomer safely out of the forest into your treehouse, Golden Oak Library. Gently let them know they can stay as long as they need, that the guest bed downstairs is theirs, and that Ponyville is right outside whenever they feel like looking around. Speak in two or three short, warm sentences.",
 	"welcome":"Twilight brought this newcomer from the Everfree. Welcome them to Equestria and explain their safety and the permanent, freely given Ponyville house, with nothing owed. Ask Twilight to escort them home.",
-	"home":"You and the newcomer have reached their freely given home. Welcome them home and explain that it is theirs with nothing owed. Ponies do not lock their homes or use house keys; they can simply come in.",
+	"home":"You've brought the newcomer to their new home. Welcome them and explain that it's theirs for free, with nothing owed. Ponies don't use keys or lock their doors, so they can walk right in.",
 	"done":"The home and furnishing are confirmed. Explain the bed, furniture, welcome food and 50 bits already provided, and leave them free to choose their next activity. Briefly offer one optional outing: the library, paid counter work at Hayburger (8 am–10 pm), the market's produce or general-goods tent, or outfits at Rarity's Boutique. Work is optional; their home is already secure. Do not turn the welcome into a list of chores.",
 }
 const LINES_PONY := {
-	"found":"You unexpectedly discover an unfamiliar pony alone in the dangerous Everfree. React with spontaneous, startled concern for their immediate wellbeing; find out whether they are okay or hurt. Recognize their actual pony species from the supplied body context; this is not an alien or human discovery. Your curiosity stays kind, and any surprise about rare or unusual features must be warranted by their actual supplied body. Let your name follow naturally if it fits, rather than leading with a formal introduction or a memory interview. Do not diagnose injury or amnesia, invent appearance details or shared history, or supply their answer.",
+	"found":"Out of nowhere, you stumble across an unfamiliar pony alone in the dangerous Everfree. You're startled and worried for them right away; ask if they're alright or hurt. They are a pony, not an alien or human, so read their species from the body details you're given. Keep your curiosity kind, and only react with surprise to rare features if those details actually mention them. Don't open with a formal introduction or quiz them about their memory, though you can give your name if it comes up naturally. Don't diagnose injuries or amnesia, make up how they look, invent a shared past, or speak for them.",
 }
 var game: Node
 var data: Dictionary = {}
@@ -239,6 +239,7 @@ func _physics_process(delta: float) -> void:
 	if _reserve_timer <= 0.0:
 		_reserve_timer = 2.0
 		_home_reserved()
+		_permit_tick()
 	if stage() == "done" or game == null or game.get("title_active") == true: return
 	# Twilight belongs to the story until it ends: the population does not spawn her elsewhere.
 	if is_instance_valid(game.get("population")) and not game.population.visiting.has(TWILIGHT): game.population.visiting[TWILIGHT] = true
@@ -849,8 +850,8 @@ func _begin_rescue() -> void:
 	var begun: bool = runtime.begin(RESCUE, {
 		"title": "helping the stranger found in the Everfree", "place": "Everfree Forest, then Golden Oak Library",
 		"participants": [TWILIGHT],
-		"knows": {TWILIGHT: ["You have just met this confused newcomer. Their origin and missing memories are unresolved; do not invent answers or shared history."]},
-		"commitment": {TWILIGHT: "Check the newcomer's safety, introduce yourself, take them out of danger to your treehouse library, and offer its guest bed. Answer interruptions briefly without abandoning them. They may stay in your guest bed as long as they need."},
+		"knows": {TWILIGHT: ["You just met this confused newcomer. Don't make up a shared past, or invent answers about where they came from or what they forgot."]},
+		"commitment": {TWILIGHT: "Make sure the newcomer is safe, introduce yourself, and get them out of danger to your treehouse library. Offer them the guest bed for as long as they need. If something interrupts, answer briefly and do not leave them behind."},
 		"movers": {TWILIGHT: ["arrival"]},
 		"beats": [{"id": "shelter", "speaker": TWILIGHT, "label": "bring the newcomer safely inside Golden Oak and offer shelter"}]})
 	if begun: runtime._sync_presence()
@@ -986,12 +987,130 @@ func _free_house(near: Vector3, only := "") -> Node3D:
 func can_grant_home() -> bool:
 	return _alive() and str(data.get("home", "")) == ""
 
+## Thread fix 2026-11-19 (docs/THREAD_FIX_RESIDENCY_2026_11_19.md; posts 43713804, 43713828,
+## 43716602): his home is decided by where he and the granter actually are, never by a guess. A
+## grant gives an empty Ponyville house at once only when he is in it or at its door (and, to move
+## an existing home, the granter is there with him). Otherwise it is a permit (`home_permit`) he
+## spends by reaching the house she led him to, by standing at an empty house with her, or by
+## claiming one at the board beside its door (world/housing/home_boards.gd). Asking again later
+## gives a permit to move. Rollback: FACT_GRANTS = false (nearest free house, first grant only).
+const FACT_GRANTS := true
+
+## The Mayor or Celestia may offer [give_house]: a first home, or (FACT_GRANTS) a move.
+func can_offer_home() -> bool:
+	return can_grant_home() or (FACT_GRANTS and _alive())
+
+## He may claim `house` at its board now: he holds a permit and it is an empty plot house.
+func can_claim(house: Node3D) -> bool:
+	return FACT_GRANTS and _alive() and data.get("home_permit") is Dictionary and _empty(house)
+
+## The board claim (home_boards.gd): spends the permit on this empty house. "" or why not.
+func claim_home(house: Node3D) -> String:
+	if not data.get("home_permit") is Dictionary: return "Ask the Mayor or Princess Celestia for a house first"
+	if not _empty(house): return "Somepony lives here"
+	_give(house, str((data.home_permit as Dictionary).get("by", "")))
+	return ""
+
+## A grant asked of `by` ([give_house]); `place` is the house she leads him to in the same reply.
+## {"status": "given", "house"} | {"status": "permit", "offer": label or "", "nearest": label or ""}
+## | {"status": "failed", "reason"}.
+func request_home(by: String, place := "") -> Dictionary:
+	if not _alive() or game.get("player") == null: return {"status": "failed", "reason": "Nopony can give a house right now"}
+	var moving := not str(data.get("home", "")).is_empty()
+	var feet := _feet()
+	var here := _population_house(feet)
+	var granter := _granter(by)
+	var together := granter != null and _population_house(granter.global_position) == here
+	if _empty(here) and (not moving or together):
+		_give(here, by)
+		return {"status": "given", "house": here}
+	var offered := _house_by_id(place)
+	data.home_permit = {"by": by, "offer": offered.place_id() if _empty(offered) else "", "day": int(_clock_day())}
+	_save()
+	print("[arrival] home permit from ", by, " (offer ", data.home_permit.offer, ")")
+	var nearest := _nearest_empty(feet)
+	return {"status": "permit", "offer": offered.label() if _empty(offered) else "",
+		"nearest": "%s (%s)" % [nearest.label(), nearest.place_id()] if nearest != null else ""}
+
+## A permit is spent when he reaches the house she led him to, or stands at an empty house together
+## with the pony who gave it (every 2 s with the reservation tick, only while a permit is held).
+func _permit_tick() -> void:
+	var permit: Variant = data.get("home_permit")
+	if not FACT_GRANTS or not permit is Dictionary or game.get("player") == null: return
+	var here := _population_house(_feet())
+	if not _empty(here): return
+	var by := str((permit as Dictionary).get("by", ""))
+	var granter := _granter(by)
+	if here.place_id() == str((permit as Dictionary).get("offer", "")) or (granter != null and _population_house(granter.global_position) == here):
+		_give(here, by)
+
+## Makes `house` his home; a home he had is released in the same frame.
+func _give(house: Node3D, by: String) -> void:
+	var old := _home_house()
+	var moved := old != null and old != house
+	if moved and str(old.get_meta("reserved_for", "")) == "player": old.remove_meta("reserved_for")
+	data.home = house.place_id(); data.home_given_by = by; data.erase("home_permit"); _save()
+	_home_reserved()
+	var before: String = old.place_id() if moved else ""
+	print("[arrival] home ", data.home, " given by ", by, (" (moved from " + before + ")") if moved else "")
+	var population: Node = game.get("population")
+	if population != null and is_instance_valid(population.get("boards")): population.boards.call("refresh_now")
+	var context: Node = game.get("world_context")
+	if context == null or by.is_empty(): return
+	var giver := by.replace("_", " ").capitalize()
+	if moved: context.record("home", "%s let Anon move his Ponyville home to %s; he no longer lives at %s." % [giver, house.label(), old.label()], [by], [by])
+	else: context.record("home", "%s officially gave Anon %s as his own Ponyville home, freely and for good." % [giver, house.label()], [by], [by])
+
+func _empty(house: Node3D) -> bool:
+	var population: Node = game.get("population") if game != null else null
+	return house != null and population != null and population.has_method("empty_plot") and bool(population.empty_plot(house))
+
+func _population_house(point: Vector3) -> Node3D:
+	var population: Node = game.get("population") if game != null else null
+	return population.house_at(point) if population != null and population.has_method("house_at") else HOUSE.at(get_tree(), point)
+
+func _house_by_id(place: String) -> Node3D:
+	if place.is_empty() or not is_inside_tree(): return null
+	for node: Node in get_tree().get_nodes_in_group("house_interiors"):
+		if node is Node3D and node.has_method("place_id") and node.place_id() == place: return node as Node3D
+	return null
+
+func _nearest_empty(near: Vector3) -> Node3D:
+	var best: Node3D = null
+	var gap := INF
+	for node: Node in get_tree().get_nodes_in_group("house_interiors"):
+		if not node is Node3D or not _empty(node as Node3D): continue
+		var distance := (node as Node3D).global_position.distance_to(near)
+		if distance < gap: best = node as Node3D; gap = distance
+	return best
+
+## The granting pony's body, wherever it is (her AI executor, else the population's live list).
+func _granter(by: String) -> Node3D:
+	if by.is_empty(): return null
+	var director: Node = game.get("director")
+	if director != null and director.get("actions") != null:
+		var executor: Variant = director.actions.executors.get(by)
+		if is_instance_valid(executor) and is_instance_valid(executor.actor) and executor.actor.is_inside_tree(): return executor.actor
+	var population: Node = game.get("population")
+	if population != null and "live" in population:
+		var actor: Variant = (population.live as Dictionary).get(by, {}).get("actor")
+		if actor is Node3D and is_instance_valid(actor) and (actor as Node3D).is_inside_tree(): return actor
+	return null
+
+func _clock_day() -> int:
+	var clock := get_node_or_null("/root/TimeOfDay")
+	return int(clock.get("day")) if clock != null else 0
+
 ## A pony's house grant ([give_house], pony_action_coordinator.gd): the vacant house he is in
 ## or beside (else the nearest free one) becomes his through the same saved `home` the welcome
 ## used, so _home_reserved keeps it his on every load: his bed, furnishing, "Your home" on the
 ## map and "Anon's house" in every pony's places. `place` is the house she is leading him to in
 ## the same reply, used when it is a vacant plot. Returns the house, or null when none is given.
 func grant_home(by: String, place := "") -> Node3D:
+	if FACT_GRANTS:
+		# Same contract for older callers: the house when one is given now, else null.
+		var result := request_home(by, place)
+		return result.get("house") as Node3D if str(result.get("status", "")) == "given" else null
 	if not can_grant_home() or game.get("player") == null: return null
 	var house: Node3D = null
 	if not place.is_empty():
@@ -1186,6 +1305,6 @@ func _say(id: String, intent: String, key: String, _actor: Node3D = null, finish
 	var epoch: int = int(context.epoch)
 	var current_stage := stage()
 	var pacing := "Use at most three short spoken sentences or an equivalent brief burst, about 50 words maximum; let the reaction flow naturally rather than completing a checklist." if key == "arrival_found" else "Use at most two short sentences."
-	var purpose := intent + " Speak naturally in character to the listener. " + pacing + " Never give a weather/season report, scene description, stage direction, or recap of prompt metadata. Respect their current species and what you actually know."
+	var purpose := intent + " Speak naturally in character to the listener. " + pacing + " Never report the weather or season, describe the scene, add stage directions, or repeat prompt info. Stick to their current species and what you actually know."
 	director.queue_generated_intent(id,purpose,key,func() -> bool:
 		return _alive() and int(context.epoch) == epoch and stage() == current_stage,finished)

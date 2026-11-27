@@ -16,7 +16,7 @@ const MOON_TOP := Vector3(0.0, 9000.0, 0.0)
 const MOON_RADIUS := 700.0
 const MAX_SECONDS := 300.0
 const LUNA_SCENE := "res://world/characters/princesses/luna.tscn"
-const GREETING := "[Observed situation, not player speech] Anon is asleep, and you have drawn his dream up to you on the moon, where you keep watch over the night. You stand together on the grey dust under the stars. Greet him gently as the princess of dreams: perhaps say where he is, or ask what he dreams of. One or two short sentences; no action tags needed."
+const GREETING := "[Observed situation, not player speech] Anon is asleep, and you have pulled his dream up to the moon, where you watch over the night. The two of you stand on the grey dust under the stars. Give him a gentle greeting as the princess of dreams, maybe telling him where he is or asking what he is dreaming of. One or two short sentences; action tags aren't needed."
 var game: Node
 var active := false
 var _surface_mesh: Node3D

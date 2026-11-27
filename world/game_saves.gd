@@ -62,11 +62,19 @@ static func catalogue()->Array[Dictionary]:
 static func stage(entry:Dictionary)->bool:
 	last_problem=""
 	var opened:=open_save(str(entry.path),str(entry.world_id))
-	if opened.doc.is_empty():return false
+	if opened.doc.is_empty():
+		# The title and pause lists say why (title_screen.gd shows last_problem); 0.3.1 logged nothing.
+		last_problem=str(opened.get("problem",""))
+		if str(opened.message)!="":push_warning("[saves] "+str(opened.message))
+		return false
 	var problem:=scenario_problem(opened.doc)
 	if problem!="":last_problem=problem;push_warning("[saves] %s not loaded: %s"%[str(entry.path).get_file(),problem]);return false
 	# The same journal copy an in-game Load uses (load_save), so both paths restore alike.
 	opened.doc["story_source"]=str(entry.path).get_basename()+".story.db"
+	# What loading had to repair or drop reaches the player after the restore (_restore), as on
+	# the in-game Load path (read()).
+	if not (opened.notes as Array).is_empty():opened.doc["load_notes"]=opened.notes
+	if str(opened.message)!="":push_warning("[saves] "+str(opened.message))
 	pending=opened.doc;requested_world=str(entry.world_id);start_fresh=false
 	return true
 
@@ -114,6 +122,10 @@ var _menu_view:Image
 var _view_holders:Array[int]=[]
 ## The asynchronous screenshot the running save task waits for (cancelled before blocking on it).
 var _preview_pending=null
+## The rubbish bucket's one-time grant (world/inventory/assets/rubbish_bucket_item.gd).
+const BUCKET:=preload("res://world/inventory/assets/rubbish_bucket_item.gd")
+var _bucket_given:=false
+var _bucket_poll:=2.0
 
 func setup(game:Node,folder:String)->void:
 	host=game;directory=folder
@@ -191,6 +203,8 @@ static func _adopt_bought_clothes(doc: Dictionary) -> void:
 ## Parsed JSON -> {verdict, doc, notes}. verdict "" = usable (doc migrated, optional parts
 ## that no longer validate dropped and listed in notes), SAVE_FILE.NEWER = made by a newer
 ## build, anything else = why it cannot be used. An empty slot is usable with doc {}.
+## "repaired" is true when briefcase entries had to be repaired (inventory_store.gd repair_document):
+## open_save then keeps the file as it was in the archive before anything overwrites it.
 static func prepare(raw:Variant,world_id:String)->Dictionary:
 	if not raw is Dictionary:return {"verdict":"not a save document","doc":{},"notes":[]}
 	if raw.get("empty",false):return {"verdict":"","doc":{},"notes":[]}
@@ -198,9 +212,19 @@ static func prepare(raw:Variant,world_id:String)->Dictionary:
 	if format>FORMAT:return {"verdict":SAVE_FILE.NEWER,"doc":{},"notes":[]}
 	var doc:=migrate(raw)
 	if doc.is_empty():return {"verdict":"unknown save format %d"%format,"doc":{},"notes":[]}
+	# Bad briefcase entries no longer reject the whole save (docs/THREAD_FIX_SAVES_2026_11_19.md);
+	# a briefcase whose shape is broken still does (structural, below).
+	var repaired:=false;var fixed_notes:Array[String]=[]
+	if INVENTORY.REPAIR_ON_LOAD and doc.has("inventory") and not INVENTORY.valid_document(doc.inventory):
+		var fixed:Dictionary=INVENTORY.repair_document(doc.inventory)
+		if not (fixed.doc as Dictionary).is_empty():
+			doc.inventory=fixed.doc;repaired=true
+			for line:Variant in fixed.notes:fixed_notes.append(str(line))
 	var notes:=_tolerate(doc,world_id)
-	if not valid(doc,world_id):return {"verdict":"invalid save","doc":{},"notes":[]}
-	return {"verdict":"","doc":doc,"notes":notes}
+	notes.append_array(fixed_notes)
+	var reason:=invalid_reason(doc,world_id)
+	if reason!="":return {"verdict":"invalid save","doc":{},"notes":[],"reason":reason}
+	return {"verdict":"","doc":doc,"notes":notes,"repaired":repaired}
 
 ## Defaults for keys an older or hand-edited document may lack, and drop optional parts an
 ## update made invalid (living world, train, roster, resident rows) rather than the save.
@@ -284,14 +308,102 @@ static func invalid_reason(doc:Variant,world_id:String)->String:
 
 ## {doc, status, message, notes}: doc is the migrated, usable document or {} (empty slot,
 ## missing, newer build, or damaged beyond its .previous copy, which is then kept aside).
+## The same contract as save_file.gd read_checked, with two rules of its own for checkpoints
+## (docs/THREAD_FIX_SAVES_2026_11_19.md): a file that reads as JSON but this version refuses is moved
+## whole into the world's archive under a loadable name ("<name>_not_loaded_<time>.json"), where the
+## Load list shows it and a later version can try it again, instead of being renamed out of sight.
+## A refused file already in the archive stays in it. A file over MAX_BYTES is kept the same way.
+## Only bytes that are not JSON at all are still renamed to `.corrupt-<time>` (older builds renamed
+## every refused checkpoint so; save_catalogue.gd rescue_set_aside brings those back to the archive). A file that needed briefcase repairs is first copied, as it was,
+## to "archive/<name>_before_repair_<time>.json". Adds "problem": short words for the menus.
 static func open_save(path:String,world_id:String)->Dictionary:
-	var checked:Array=[]
-	var loaded:=SAVE_FILE.read_checked(path,MAX_BYTES,func(value:Variant)->String:
-		var prepared:=prepare(value,world_id);checked.append(prepared);return prepared.verdict)
-	var result:={"doc":{},"status":loaded.status,"message":loaded.message,"notes":[]}
-	if loaded.status in ["ok","recovered"]:
-		result.doc=checked[-1].doc;result.notes=checked[-1].notes
+	var result:={"doc":{},"status":"missing","message":"","notes":[],"problem":""}
+	var has_main:=FileAccess.file_exists(path)
+	if not has_main and not FileAccess.file_exists(path+".previous"):return result
+	var name:=path.get_file()
+	var main:Variant=SAVE_FILE.parse(path,MAX_BYTES) if has_main else null
+	# Over the read cap is not damage: a later version may read it, so it is kept like a refused
+	# readable file (archive), never renamed .corrupt.
+	var oversized:=has_main and main==null and _larger_than(path,MAX_BYTES)
+	var keepable:=main!=null or oversized
+	var first:Dictionary=prepare(main,world_id) if main!=null else {"verdict":"too large to read" if oversized else "unreadable","doc":{},"notes":[]}
+	if first.verdict=="":
+		if bool(first.get("repaired",false)):_keep_before_repair(path)
+		result.status="ok";result.doc=first.doc;result.notes=first.notes;return result
+	if first.verdict==SAVE_FILE.NEWER:
+		result.status="newer";result.problem="it was made by a newer version of the game"
+		result.message="%s was made by a newer version of the game; it is kept unchanged."%name;return result
+	var backup:Variant=SAVE_FILE.parse(path+".previous",MAX_BYTES)
+	var second:Dictionary=prepare(backup,world_id) if backup!=null else {"verdict":"unreadable","doc":{},"notes":[]}
+	if second.verdict==SAVE_FILE.NEWER:
+		# Protect both files: setting the primary aside would let the next open miss the newer backup.
+		result.status="newer";result.problem="its previous copy was made by a newer version of the game"
+		result.message="%s's previous copy was made by a newer version of the game; existing files are kept unchanged."%name;return result
+	var why:=str(first.get("reason",first.verdict))
+	var archived:=path.get_base_dir().get_file()=="archive"
+	if second.verdict=="":
+		var kept:=""
+		if has_main:kept=_set_aside_file(path,keepable)
+		# If setting it aside failed, the original evidence stays untouched and so does the save.
+		var repair:Error=ERR_CANT_CREATE if has_main and kept.is_empty() else SAVE_FILE._copy_atomic(ProjectSettings.globalize_path(path+".previous"),ProjectSettings.globalize_path(path))
+		result.status="recovered";result.doc=second.doc;result.notes=second.notes
+		if not has_main:result.message="%s was missing; loaded its previous copy."%name
+		elif not keepable:result.message="%s was damaged (%s); loaded its previous copy. Damaged file kept as %s."%[name,why,kept if not kept.is_empty() else name]
+		else:result.message="%s could not be loaded (%s); loaded its previous copy. The newer copy is kept as %s, to try again after an update."%[name,why,kept if not kept.is_empty() else name]
+		if repair!=OK:result.message+=" Could not restore the current file on disk; its previous copy is kept unchanged."
+		elif bool(second.get("repaired",false)):_keep_before_repair(path)
+		return result
+	result.status="lost"
+	if archived:
+		result.problem="this version cannot read it (%s); it stays in the archive to try again after an update"%why
+		result.message="%s could not be loaded (%s); it stays in the archive unchanged, to try again after an update."%[name,why]
+		return result
+	var corrupt:=""
+	if has_main and not keepable:corrupt=SAVE_FILE.quarantine(path).get_file()
+	var moved:=""
+	if keepable or backup!=null:
+		# A readable checkpoint (or its readable previous copy) goes whole into the archive.
+		var target:=_aside_target(path)
+		if SHELF.move_checkpoint(path,target)=="":moved=target.get_file()
+	elif FileAccess.file_exists(path+".previous"):
+		SAVE_FILE.quarantine(path+".previous")
+	if not moved.is_empty():
+		result.problem="this version cannot read it (%s); it was moved to the archive as %s, to try again after an update"%[why,moved.get_basename()]
+		result.message="%s could not be loaded (%s); it is kept in the archive as %s, to try again after an update."%[name,why,moved]
+	else:
+		var kept:=corrupt if not corrupt.is_empty() else name
+		result.problem="the file is damaged; it is kept as %s"%kept
+		result.message="%s could not be used (%s); kept as %s."%[name,why,kept]
 	return result
+
+static func _larger_than(path:String,limit:int)->bool:
+	var file:=FileAccess.open(path,FileAccess.READ)
+	return file!=null and file.get_length()>limit
+
+## Where a refused checkpoint waits in its world's archive, under a name the Load list shows.
+static func _aside_target(path:String)->String:
+	var folder:=path.get_base_dir()
+	var archive:=folder if folder.get_file()=="archive" else folder.path_join("archive")
+	return archive.path_join("%s_not_loaded_%s_%d.json"%[path.get_file().get_basename(),SAVE_FILE.stamp(),Time.get_ticks_usec()])
+
+## Sets the primary file (only) of a refused checkpoint aside before its previous copy replaces it:
+## not JSON -> `.corrupt-<time>` beside it; readable -> the archive (renamed in place when it already
+## is there). The new file name, "" when it could not be moved.
+static func _set_aside_file(path:String,readable:bool)->String:
+	if not readable:return SAVE_FILE.quarantine(path).get_file()
+	var target:=_aside_target(path)
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target.get_base_dir()))
+	return target.get_file() if DirAccess.rename_absolute(ProjectSettings.globalize_path(path),ProjectSettings.globalize_path(target))==OK else ""
+
+## A checkpoint that needed briefcase repairs is copied as it was into the archive, once per
+## version of the file, before a later save of the same name can overwrite it.
+static func _keep_before_repair(path:String)->void:
+	if not FileAccess.file_exists(path) or path.get_base_dir().get_file()=="archive":return
+	var target:=path.get_base_dir().path_join("archive").path_join("%s_before_repair_%d.json"%[path.get_file().get_basename(),FileAccess.get_modified_time(path)])
+	if FileAccess.file_exists(target):return
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target.get_base_dir()))
+	if SAVE_FILE._copy_atomic(ProjectSettings.globalize_path(path),ProjectSettings.globalize_path(target))==OK:
+		print("[saves] %s needed briefcase repairs; the file as it was is kept as archive/%s"%[path.get_file(),target.get_file()])
 
 func read(path:String)->Dictionary:
 	if not _owned(path):return {}
@@ -651,21 +763,56 @@ func save_to(path:String,label:String,kind:="")->bool:
 	doc.summary.kind=kind if kind in CATALOGUE.KINDS else ("autosave" if path.get_file()=="autosave.json" else "manual")
 	# SQLite stays on the main thread; its detached copy is only published with an accepted
 	# checkpoint. A rejected/newer checkpoint must keep its own journal, too.
-	var journal:=_stage_story(path)
+	# STORY_COPY_ON_WORKER: the copy itself runs on the save worker through a second connection
+	# opened here (story_store.gd copy_source); a stale copy redoes this save the old way.
+	var on_worker:=STORY_COPY_ON_WORKER and not _story_sync_next
+	_story_sync_next=false
+	var journal:=_stage_story_source(path) if on_worker else _stage_story(path)
 	if not journal.ok:message="Could not copy the story journal; previous save preserved.";changed.emit();return false
 	busy=true;_saved_label=label;message="Saving…";changed.emit()
+	_save_path=path;_save_kind=kind
 	var frame:Variant=_preview_frame(false)
 	_preview_pending=frame if frame is RefCounted and not frame is Image else null
-	_task=WorkerThreadPool.add_task(_save_task.bind(path,doc,host.context_world_id,frame,journal.path),false,"Game checkpoint")
+	_task=WorkerThreadPool.add_task(_save_task.bind(path,doc,host.context_world_id,frame,journal.path,journal.get("source",{})),false,"Game checkpoint")
 	return true
+
+## The story journal's copy taken on the save worker instead of here (performance overhaul
+## 2026-11-21, lane services: VACUUM INTO was 7 to 11 ms in the autosave frame). Here only the
+## second connection opens, at the checkpoint moment; _save_task copies through it before writing
+## anything. If the game wrote to the journal in between, the worker writes nothing and _process
+## redoes the save the old way (fresh checkpoint, copy on this thread), so a checkpoint and its
+## journal stay an exact pair. Rollback: STORY_COPY_ON_WORKER = false.
+const STORY_COPY_ON_WORKER:=true
+const STORY_STORE:=preload("res://world/ai/memory/story_store.gd")
+var _story_stale:=false
+var _story_sync_next:=false
+## A stale copy is retried once on the worker after this long (then on this thread).
+const STORY_RETRY_SECONDS:=2.0
+var _story_retried:=false
+var _story_retry_in:=0.0
+var _save_path:=""
+var _save_kind:=""
+
+func _stage_story_source(path:String)->Dictionary:
+	var story:RefCounted=host.world_context.get("story")
+	if story==null or not story.is_open():return {"ok":true,"path":""}
+	var source:Dictionary=story.store.copy_source() if story.store.has_method("copy_source") else {}
+	if source.is_empty():return _stage_story(path)
+	var staged:=path.get_basename()+".story.db.pending-"+Crypto.new().generate_random_bytes(8).hex_encode()
+	return {"ok":true,"path":staged,"source":source}
 
 ## Validation walks every life and context event, so it runs on the worker beside the
 ## write. doc is snapshot()'s private copy; nothing else touches it. Its event and memory
 ## records are shared with the running game, which never edits them, only reads here.
 ## frame: the screenshot to store beside it (Image, a pending readback, false = none, null =
 ## leave the existing picture). The menu header sidecar is rewritten after every good write.
-func _save_task(path:String,doc:Dictionary,world_id:String,frame:Variant=null,journal_path:String="")->void:
+func _save_task(path:String,doc:Dictionary,world_id:String,frame:Variant=null,journal_path:String="",story_source:Dictionary={})->void:
 	_story_error=""
+	_story_stale=false
+	if not story_source.is_empty() and STORY_STORE.copy_from_source(story_source,journal_path)!=0:
+		# Changed since the checkpoint, or not copied: nothing is written; _process redoes it.
+		_story_stale=true
+		return
 	_write_checkpoint(path,doc,world_id,frame,journal_path)
 	if journal_path!="" and FileAccess.file_exists(journal_path):DirAccess.remove_absolute(ProjectSettings.globalize_path(journal_path))
 
@@ -860,6 +1007,7 @@ func _restore(doc:Dictionary)->bool:
 	var inv:RefCounted=host.inventory.inventory
 	if not inv.restore_document(doc.inventory):return false
 	if host.inventory.has_method("restore_drops"): host.inventory.restore_drops()
+	_tell_briefcase(notes)
 	var clothes:RefCounted=host.inventory.clothing
 	clothes.restore(doc.clothes)
 	if not clothes.save():return false
@@ -898,6 +1046,22 @@ func _restore(doc:Dictionary)->bool:
 		pending_cottage_feet = destination
 	message="Game loaded."+(" "+" ".join(notes) if not notes.is_empty() else "");return true
 
+## What loading repaired in the briefcase is written on the briefcase's own panel, where the player
+## sees it the next time it opens (desktop and VR alike; the loading screen hides anything shown
+## now), and in the log.
+func _tell_briefcase(notes:Array)->void:
+	var lines:PackedStringArray=[]
+	for line:Variant in notes:
+		if str(line).begins_with(INVENTORY.NOTE_PREFIX):lines.append(str(line))
+	if lines.is_empty():return
+	var text:=" ".join(lines)
+	print("[saves] loaded with briefcase repairs: ",text)
+	var case:Variant=host.inventory.get("case") if is_instance_valid(host.inventory) else null
+	var ui:Variant=(case as Node).get("ui") if case is Node and is_instance_valid(case) else null
+	if ui is Node and "message" in ui:
+		ui.message=text if text.length()<=110 else text.left(107)+"..."
+		if ui.has_method("refresh"):ui.refresh()
+
 func restore_residents(doc:Dictionary)->void:
 	if is_instance_valid(host.population):
 		if not doc.get("population", {}).is_empty() and "config" in host.population:
@@ -916,10 +1080,40 @@ func restore_residents(doc:Dictionary)->void:
 func _process(delta:float)->void:
 	if _task>=0 and WorkerThreadPool.is_task_completed(_task):
 		WorkerThreadPool.wait_for_task_completion(_task);_task=-1;busy=false;_preview_pending=null
+		if _story_stale:
+			# The journal moved on while its copy was taken (STORY_COPY_ON_WORKER). First time: the
+			# same save again on the worker after STORY_RETRY_SECONDS (a conversation's burst of
+			# lines is usually over by then). Second time in a row: checkpoint and copy together on
+			# this thread, as before 2026-11-21.
+			_story_stale=false
+			if not _story_retried:
+				_story_retried=true
+				_story_retry_in=STORY_RETRY_SECONDS
+				busy=true
+				return
+			_story_retried=false
+			_story_sync_next=true
+			if save_to(_save_path,_saved_label,_save_kind):return
+			_story_sync_next=false
+			_invalid=false;_result=FAILED
+		_story_retried=false
+	if _story_retry_in>0.0 and _task<0:
+		_story_retry_in-=delta
+		if _story_retry_in<=0.0:
+			_story_retry_in=0.0
+			busy=false
+			if not save_to(_save_path,_saved_label,_save_kind):
+				_story_retried=false
+				_invalid=false;_result=FAILED
+				message="Save failed; previous file preserved.";changed.emit()
 		if _invalid:push_warning("[saves] state could not be saved: invalid %s"%_invalid_reason)
 		message=("State could not be saved." if _invalid else (_saved_label+" saved." if _result==OK else ("Not saved: that file is from a newer version of the game." if _result==ERR_ALREADY_EXISTS else "Save failed; previous file preserved.")))+_story_error;changed.emit()
 	# Runs while the pause menu pauses the world (to finish a save); no autosaves then.
 	if get_tree().paused or not ready_to_save or not is_instance_valid(host) or not is_instance_valid(host.inventory):return
+	# Once per world: the rubbish bucket goes into the briefcase (a full case retries).
+	if not _bucket_given and not restoring:
+		_bucket_poll-=delta
+		if _bucket_poll<=0.0:_bucket_poll=2.0;_bucket_given=BUCKET.grant_once(host)
 	_timer+=delta
 	if _timer>=60.0 and not busy and not restoring:
 		_timer=0.0;save_to(directory.path_join("autosave.json"),"Autosave")

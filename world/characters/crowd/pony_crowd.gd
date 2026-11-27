@@ -19,6 +19,26 @@ extends Node
 ## One crowd per SceneTree, created lazily by the first pony (`for_pony`).
 
 const CROWD_PROFILE := preload("res://tools/crowd_cpu_profile.gd")  # timed only under the crowd lab's --profile-cpu
+## Rollback (2026-11-18): false restores the old per-frame view test. Measured before: 24 µs a frame
+## for ~47 ponies (script profiler, town street, ~470 FPS). Same test, same order, same result; the
+## pony position is read through a typed Node3D reference (refreshed with the members in rank()),
+## the six frustum planes are unrolled with the same first-failing-plane exit, and the headset's
+## camera eye and forward are read once per frame instead of once per pony.
+## Off 2026-11-18: script profiler, street, 8 s: 80.9 ms / 3408 calls before, 100.7 ms / 3531 calls with the trim (slower).
+const FRAME_TRIM := false
+## HERO and NEAR ponies of the last ranking (rebuilt by rank(); empty while the tiers are off or
+## there is no camera). Lane mods_engine's patch packs read it instead of measuring every pony.
+var near_members: Array[Node] = []
+## Idle FAR beat (perf overhaul 2026-11-21, lane pony_tick): a settled FAR pony (pony_locomotion.gd
+## far_idle: a settled sit, lie or sleep, paused, or standing with nothing asked of her, not in a
+## conversation) gets IDLE_FAR_FACTOR times the FAR logic and work divisors, with the time since:
+## logic 10 -> 3.3 Hz on High, 5 -> 1.7 Hz on Very Low. Her navigator shares the logic beat, so her
+## slowest reaction to a new order becomes 0.3 s (High) to 0.6 s (Very Low) instead of 0.1 to 0.2 s;
+## the first order, touch, word or posture request puts her back on the normal beat at once.
+## Rollback: false, or `--idle-far-beat off`.
+const IDLE_FAR_BEAT := true
+const IDLE_FAR_FACTOR := 3
+var _idle_far_beat := IDLE_FAR_BEAT
 const GROUP := &"pony_crowd"
 const MEMBERS := &"sim_ponies"
 enum Tier { HERO, NEAR, FAR }
@@ -76,9 +96,41 @@ var _visual_members: Array[Node] = []
 var _visual_pivots: Array[Node3D] = []
 ## Each member's view-test radius (0.1.0 perf pass: read per frame, its scale re-measured per ranking).
 var _visual_radii := PackedFloat32Array()
+## Each member as Node3D (null when it is not one), refreshed with _visual_members in rank().
+var _visual_bodies: Array[Node3D] = []
 const HIDDEN := &"crowd_hidden"
+## Native view test (native pony port 2026-11-21, lane frame): the loop below in C++
+## (FrameOwnersNative.crowd_view_changes, native/pony_solver/src/frame_owners_native.cpp): the same
+## reads, float operations and tests per member; it returns the members to hide or show and
+## _native_view() applies them here in member order. Reached through ClassDB, so this script still
+## parses with a library that lacks the class (it then keeps the loop below).
+## Rollback: NATIVE_VIEW = false. Parity: tools/profile/port_frame_crowd_parity.gd.
+const NATIVE_VIEW := true
+static var _frame_native: Object = ClassDB.instantiate(&"FrameOwnersNative") if ClassDB.class_exists(&"FrameOwnersNative") else null
+
+## The view test through FrameOwnersNative; false (nothing changed) when it declines.
+func _native_view(camera: Camera3D, xr: bool) -> bool:
+	var changes: PackedInt32Array = _frame_native.crowd_view_changes(camera, xr, _visual_members, _visual_pivots, _visual_radii)
+	if changes.size() == 1 and changes[0] < 0: return false
+	for code in changes:
+		var pony: Node = _visual_members[code >> 1]
+		var visual: Node3D = _visual_pivots[code >> 1]
+		if code & 1:
+			pony.set_meta(HIDDEN, true); visual.hide()
+			# Her rigs stop their passes while nothing of her draws (pony_locomotion.gd HIDDEN_RIG_PARK).
+			if pony.has_method(&"set_crowd_hidden"): pony.set_crowd_hidden(true)
+		else:
+			pony.refresh_hidden_clip()
+			pony.remove_meta(HIDDEN)
+			# Rigs back on their passes, with one this frame: she is drawn already posed.
+			if pony.has_method(&"set_crowd_hidden"): pony.set_crowd_hidden(false)
+			visual.show()
+	return true
 
 func _unprofiled_process(_delta: float) -> void:
+	if FRAME_TRIM:
+		_trimmed_process()
+		return
 	var camera := preload("res://world/player_view.gd").camera(self)
 	if camera == null:
 		for pony in _visual_members:
@@ -88,6 +140,7 @@ func _unprofiled_process(_delta: float) -> void:
 				if pony.has_method(&"set_crowd_hidden"): pony.set_crowd_hidden(false)
 		return
 	var xr := preload("res://world/player_view.gd").viewport(self).use_xr
+	if NATIVE_VIEW and _frame_native != null and _native_view(camera, xr): return
 	# Typed on both paths: "[] if xr else ..." is an untyped Array, and assigning it errored every
 	# frame in VR (69k errors per session, stalling the game; 2026-10-15).
 	var planes: Array[Plane] = []
@@ -115,6 +168,62 @@ func _unprofiled_process(_delta: float) -> void:
 			pony.refresh_hidden_clip()
 			pony.remove_meta(HIDDEN)
 			# Rigs back on their passes, with one this frame: she is drawn already posed.
+			if pony.has_method(&"set_crowd_hidden"): pony.set_crowd_hidden(false)
+			visual.show()
+
+
+## FRAME_TRIM path of _unprofiled_process: the same tests in the same order. The camera is not
+## moved by anything the loop calls (refresh_hidden_clip, set_crowd_hidden, show/hide), so its eye
+## and forward read once give the values the old code read per pony. A sphere is culled when any
+## plane has it fully outside (distance > radius); `or` stops at the first such plane in the old
+## order, and a NaN distance culls nothing either way.
+func _trimmed_process() -> void:
+	var camera := preload("res://world/player_view.gd").camera(self)
+	if camera == null:
+		for pony in _visual_members:
+			if is_instance_valid(pony) and pony.has_meta(HIDDEN):
+				pony.refresh_hidden_clip()
+				pony.pivot.show();pony.remove_meta(HIDDEN)
+				if pony.has_method(&"set_crowd_hidden"): pony.set_crowd_hidden(false)
+		return
+	var xr := preload("res://world/player_view.gd").viewport(self).use_xr
+	var planes: Array[Plane] = []
+	if not xr: planes = camera.get_frustum()
+	var unrolled := planes.size() == 6
+	var p0 := Plane(); var p1 := Plane(); var p2 := Plane(); var p3 := Plane(); var p4 := Plane(); var p5 := Plane()
+	if unrolled:
+		p0 = planes[0]; p1 = planes[1]; p2 = planes[2]; p3 = planes[3]; p4 = planes[4]; p5 = planes[5]
+	var eye := Vector3.ZERO
+	var ahead := Vector3.ZERO
+	if xr:
+		var view := camera.global_transform
+		eye = view.origin; ahead = -view.basis.z
+	var typed := _visual_bodies.size() == _visual_members.size()
+	for index in _visual_members.size():
+		var pony: Node = _visual_members[index]
+		if not is_instance_valid(pony) or not pony.is_inside_tree(): continue
+		var body: Node3D = _visual_bodies[index] if typed else null
+		var center: Vector3 = (body.global_position if body != null else pony.global_position) + Vector3.UP * .7
+		var radius: float = _visual_radii[index]
+		var draw := true
+		if xr:
+			# Camera3D's desktop frustum may be narrower than the stereo eye views.
+			# Cull only fully behind the headset; the renderer culls side geometry.
+			draw = (center-eye).dot(ahead) >= -radius
+		elif unrolled:
+			draw = not (p0.distance_to(center) > radius or p1.distance_to(center) > radius or p2.distance_to(center) > radius \
+				or p3.distance_to(center) > radius or p4.distance_to(center) > radius or p5.distance_to(center) > radius)
+		else:
+			for plane: Plane in planes:
+				if plane.distance_to(center) > radius: draw=false; break
+		var visual: Node3D = _visual_pivots[index]
+		if not is_instance_valid(visual): continue
+		if not draw and visual.visible:
+			pony.set_meta(HIDDEN, true); visual.hide()
+			if pony.has_method(&"set_crowd_hidden"): pony.set_crowd_hidden(true)
+		elif draw and pony.has_meta(HIDDEN):
+			pony.refresh_hidden_clip()
+			pony.remove_meta(HIDDEN)
 			if pony.has_method(&"set_crowd_hidden"): pony.set_crowd_hidden(false)
 			visual.show()
 
@@ -164,6 +273,12 @@ func _ready() -> void:
 	if at >= 0 and at + 1 < args.size(): interval = float(args[at + 1])
 	# Runs after the ponies moved this tick, so next tick sees a settled ranking.
 	process_physics_priority = 900
+	at = args.find("--idle-far-beat")
+	if at >= 0 and at + 1 < args.size() and args[at + 1] == "off": _idle_far_beat = false
+	# FAR off-beat skip A/B (pony_locomotion.gd TICK_SKIP).
+	at = args.find("--tick-skip")
+	if at >= 0 and at + 1 < args.size() and args[at + 1] == "off":
+		load("res://world/characters/locomotion/pony_locomotion.gd").tick_skip_enabled = false
 
 
 ## Quality tiers: every pony stays present in every tier (dev 2026-09-29: "all ponies should be
@@ -195,14 +310,17 @@ func rank() -> void:
 	var members := get_tree().get_nodes_in_group(MEMBERS)
 	_visual_members.assign(members)
 	_visual_pivots.clear()
+	_visual_bodies.clear()
 	_visual_radii.resize(members.size())
 	for i in members.size():
 		var pony: Node = members[i]
 		_visual_pivots.append(pony.pivot if "pivot" in pony else null)
+		_visual_bodies.append(pony as Node3D)
 		# The per-frame view test's bounding radius, from her scale at this ranking (0.25 s).
 		_visual_radii[i] = 2.5 * maxf(1.0, pony.global_basis.get_scale().length() / sqrt(3.0)) if pony is Node3D else 2.5
 	var camera: Camera3D = preload("res://world/player_view.gd").camera(self)
 	var counts := {"hero": 0, "near": 0, "far": 0, "pinned": 0, "hidden": 0, "unseen_rest": 0, "resting": 0, "camera": camera != null}
+	near_members.clear()
 	if camera == null or not enabled:
 		for pony in members:
 			pony.hero_divisor = 1
@@ -232,6 +350,7 @@ func rank() -> void:
 			pony.hero_divisor = divisor
 			pony.set_detail_divisor(1)
 			pony.set_sim_tier(Tier.HERO, counts.pinned % divisor)
+			near_members.append(pony)
 			counts.pinned += 1
 			counts.hero += 1
 			continue
@@ -248,7 +367,10 @@ func rank() -> void:
 		var hero_limit := hero_distance + (HERO_MARGIN if pony.sim_tier == Tier.HERO else 0.0)
 		var near_limit := near_distance + (TIER_MARGIN if pony.sim_tier != Tier.FAR else 0.0)
 		if not entry[3] and entry[1] <= hero_limit: counts.hidden += 1
-		if counts.hero < hero_budget and entry[1] <= hero_limit and entry[3]:
+		# crowd_hero_budget caps the HERO places by distance; a pony in an affection scene (kiss, hug)
+		# keeps hers past the cap (held, touched, carried, ridden, flying and spoken-to ponies are
+		# pinned above and always HERO). At the shipped 1000 the cap is never reached.
+		if (counts.hero < hero_budget or pony.has_meta(&"affection_active")) and entry[1] <= hero_limit and entry[3]:
 			var close: bool = entry[1] <= close_distance
 			var divisor := 1 if close else (2 if entry[1] <= MID_DISTANCE else 3)
 			if pony.resting_hold() and not pony.needs_full_rate():
@@ -258,18 +380,23 @@ func rank() -> void:
 			var near_divisor: int = pony.NEAR_DIVISOR if "NEAR_DIVISOR" in pony else 1
 			pony.set_detail_divisor(1 if entry[1] <= MID_DISTANCE else near_divisor, counts.hero % near_divisor)
 			pony.set_sim_tier(Tier.HERO, 0 if close else counts.hero % divisor)
+			near_members.append(pony)
 			counts.hero += 1
 		elif counts.near < near_budget and entry[1] <= near_limit:
 			if pony.posture != null and pony.posture.active(): counts.resting += 1
 			pony.set_detail_divisor(1)
 			pony.set_sim_tier(Tier.NEAR, near_index % 3)
+			near_members.append(pony)
 			near_index += 1
 			counts.near += 1
 		else:
 			if pony.posture != null and pony.posture.active(): counts.resting += 1
 			pony.set_detail_divisor(1)
-			if "far_logic_divisor" in pony: pony.far_logic_divisor = far_divisor
-			if "far_tick_divisor" in pony: pony.far_tick_divisor = far_tick_divisor
+			if pony.has_method(&"set_far_beat"):
+				pony.set_far_beat(far_divisor, far_tick_divisor, IDLE_FAR_FACTOR if _idle_far_beat else 1)
+			else:
+				if "far_logic_divisor" in pony: pony.far_logic_divisor = far_divisor
+				if "far_tick_divisor" in pony: pony.far_tick_divisor = far_tick_divisor
 			# Spread both whole-body and logic beats: reducing this offset modulo just
 			# the logic divisor biases the body phases when the two divisors differ.
 			pony.set_sim_tier(Tier.FAR, counts.far)

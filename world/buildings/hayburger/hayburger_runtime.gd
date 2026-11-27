@@ -318,7 +318,7 @@ func _sync_order_context() -> void:
 			if not director.characters.has(id): continue
 			var actor: Node = director.characters[id].node
 			if not is_instance_valid(actor): continue
-			actor.set_meta("hayburger_order_context", "Your active Hayburger ticket: " + order_speech_intent(order) + " Ingredients: " + ", ".join(order.recipe) + ". You are waiting for this order; it has not been served. If asked to repeat it, use this exact order, not a guess from conversation history.")
+			actor.set_meta("hayburger_order_context", "Your active Hayburger ticket: " + order_speech_intent(order) + " Ingredients: " + ", ".join(order.recipe) + ". You are still waiting for your food. If asked to repeat the order, give this exact one and do not guess from earlier in the chat.")
 			live[id] = actor
 	for id: String in _order_context_actors:
 		var actor: Node = _order_context_actors[id]
@@ -355,7 +355,7 @@ func _sync_order_speech() -> void:
 		_order_speech_key = key; _order_speech_customer = id; _order_speech_director = director
 
 static func order_speech_intent(order: Dictionary) -> String:
-	return "You are ordering the actual customer ticket at Hayburger. Request it naturally in your own words. Ticket name: %s. Required ingredients: %s. Do not change the order, invent extras, or give construction instructions. This is your request to the server, not a quotation to recite." % [str(order.recipe_name),", ".join(order.recipe)]
+	return "Place your Hayburger order with the server in your own words, instead of reciting a list. You want a %s with %s. Stick to that exact order without adding anything or telling them how to put it together." % [str(order.recipe_name),", ".join(order.recipe)]
 
 func can_work() -> bool:
 	if not business_open or not _configured or not is_instance_valid(game) or not is_instance_valid(game.inventory): return false
@@ -472,6 +472,8 @@ func _update_environment() -> void:
 		if customers != null and customers.has_method("set_open"): customers.set_open(open_now)
 		if not open_now: stop_working()
 		if bench != null: bench.refresh()
+	# Doorway resampled for the walk grid once the leaves rest open (hayburger_front.gd).
+	if front.has_method("tend_navigation"): front.tend_navigation()
 	for light: Node3D in _room_lights:
 		if light.visible != business_open: light.visible = business_open
 	var bulb: StandardMaterial3D = room._materials.get("bulb")

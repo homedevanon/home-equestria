@@ -10,6 +10,7 @@ extends Node
 const STYLE := preload("res://world/ui/menu_style.gd")
 const ICON := preload("res://world/ui/menu_icon.gd")
 const DATA := preload("res://world/ui/journal_data.gd")
+const RT := preload("res://world/perf/render_thread.gd")
 const PONY_DATA := preload("res://world/ui/pony_map_data.gd")
 const OVERHEAD := preload("res://world/ai/overhead_dialogue.gd")
 const LOGO := preload("res://world/ui/title/logo.png")
@@ -313,8 +314,14 @@ func render(spec: Dictionary) -> Array[Image]:
 		_page_note.position = Vector2(_width - _side - 60, height - 34); _page_note.size.x = 60
 		_page_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-		for wait in 2:
-			if not await _wait(RenderingServer.frame_post_draw): return [] as Array[Image]
+		if RT.active():
+			# Trial render_thread: frame_post_draw is deferred and can be stale in that mode.
+			for wait in 2:
+				if not await _wait(get_tree().process_frame): return [] as Array[Image]
+			RenderingServer.force_sync()
+		else:
+			for wait in 2:
+				if not await _wait(RenderingServer.frame_post_draw): return [] as Array[Image]
 		images.append(_viewport.get_texture().get_image())
 	return images
 
@@ -447,8 +454,8 @@ func _when(entries: Array, scenes: Array) -> String:
 	if scenes.size() <= 1:
 		var only: Dictionary = scenes[0] if not scenes.is_empty() else {"day": entries[0].day, "start": entries[0].minute, "end": entries[-1].end_minute, "place": entries[0].place}
 		return DATA.scene_line(only)
-	var first := int(entries[0].day) + 1
-	var last := int(entries[-1].day) + 1
+	var first := DATA.day_number(int(entries[0].day))
+	var last := DATA.day_number(int(entries[-1].day))
 	return ("Day %d" % first if first == last else "Days %d–%d" % [first, last]) + " · %d scenes" % scenes.size()
 
 

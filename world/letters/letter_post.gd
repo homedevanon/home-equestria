@@ -46,7 +46,7 @@ const STATIONERY := ["plain", "cream", "floral", "hearts"]
 ## Small things a pony might tuck into a reply; each is checked with item_catalog.gd has().
 const GIFTS := ["food:cupcake", "food:apple-fritter", "food:blueberry-muffin", "food:chocolate-chip-cookie",
 	"food:caramel-apple", "goods:paper-floral", "goods:paper-hearts", "goods:potted-plant"]
-const ASK_AGAIN := "Which place and time did you mean? Write back and tell me, and I'll be there."
+const ASK_AGAIN := "Which time and place did you have in mind? Let me know and I'll be there."
 ## Offers a letter may answer. A yes to an outing, date or touch starts a short real-time plan or
 ## permission (player_bonds.gd answer) that would lapse, as a missed plan, before he reads her reply.
 const LETTER_ANSWERS := ["dating", "move_in", "engagement", "marriage", "break_up"]
@@ -204,6 +204,25 @@ func pony_writes(pony: String, about: String, mood: String) -> String:
 	if courier != null: courier.schedule_drop(id, due)
 	return id
 
+## A note with words already written (a world event's letter, such as Applejack's about her wagon
+## wheel), due now: Derpy brings it at once. `memory` is what the writer remembers of sending it.
+## The new letter's id, or "" when it could not be written.
+func pony_sends(pony: String, text: String, gist: String, memory: String) -> String:
+	var now := _now()
+	var id := STORE.create(_context(), {"kind": "note", "from": pony, "to": "player", "stationery": "plain", "status": "scheduled",
+		"text": text, "written_at": now, "due_at": now, "gist": gist.left(160), "ai": "fallback"})
+	if id.is_empty(): return ""
+	var context := _context()
+	if context != null and context.has_method("record") and not memory.is_empty():
+		context.record("letter_to_anon", memory, [pony], [pony, "player"], "note:" + id)
+	var courier := _courier()
+	if courier != null: courier.schedule_drop(id, now)
+	return id
+
+## Now, in game days (day + hours / 24): the clock every letter time is written in.
+func now() -> float:
+	return _now()
+
 ## The morning a reply to something that arrived at `at` is due: 07:00 next day, or that same
 ## morning when it arrived before 04:00.
 static func due_after(at: float) -> float:
@@ -343,7 +362,7 @@ func build_request(id: String) -> Dictionary:
 	if bonds != null and bonds.has_method("pending"):
 		var pending: Dictionary = bonds.pending(pony)
 		if not pending.is_empty() and str(pending.get("by", "")) == "player" and str(pending.get("kind", "")) in LETTER_ANSWERS:
-			offer = "Anon's open offer to you: %s (%s), id %s; answer with [relationship_answer: %s, yes|no] only if the letter answers it." % [str(pending.kind), str(pending.get("activity", "")), str(pending.id), str(pending.id)]
+			offer = "Anon has an open offer for you: %s (%s), id %s. Only use [relationship_answer: %s, yes|no] if your letter answers it." % [str(pending.kind), str(pending.get("activity", "")), str(pending.id), str(pending.id)]
 	var appointments := _appointments()
 	var at := float(r.sent_at) if float(r.sent_at) >= 0.0 else float(r.written_at)
 	var now := _now()

@@ -6,6 +6,11 @@ const FOLLOW_LOST_DISTANCE := 30.0
 const FOLLOW_LOST_SECONDS := 12.0
 ## A lead waits longer for him than a follow: he may stop to look at something on the way.
 const LEAD_LOST_SECONDS := 30.0
+## Lead pacing (docs/THREAD_FIX_LEAD_2026_11_19.md): she sets off at once and waits only once LEAD_SLACK
+## metres farther from Anon than he keeps; waiting, she walks on when he comes. Rollback: LEAD_PACING = false
+## (the old rule: wait past wait_distance_m, walk on only within 70% of it).
+const LEAD_PACING := true
+const LEAD_SLACK := 4.0
 ## Anon within this many metres walks with her on a model's go_to: she keeps his pace.
 const COMPANION_RANGE := 14.0
 ## A failed go_to/lead tries again: the same point once the grid has sampled more, then open
@@ -35,6 +40,8 @@ var _last_goal := Vector3.INF
 var _last_target := Vector3.INF
 var _follow_heading := Vector3.ZERO
 var _waiting_for_follower := false
+var _wait_gap := 0.0
+var _lead_allow := INF
 var _idle_route_seconds := 0.0
 var _progress := Vector3.INF
 var _retry_wait := 0.0
@@ -96,7 +103,8 @@ func capabilities() -> Array:
 		if str(actor.identity.id) == "rainbow_dash": result.append("sonic_rainboom")
 	if is_instance_valid(navigator) and (_sky_home() != null or _home_house() != null): result.append("go_home")
 	# Her own bed (or her cloud nap); [go_to_bed: here] is checked when it runs (thread report 2026-11-03).
-	if is_instance_valid(navigator) and actor.has_method("request_posture") and (_sky_home() != null or _home_house() != null): result.append("go_to_bed")
+	# Not while she is too big for her own doorway and outside (night_rest.gd door_fits, thread fix "beds").
+	if is_instance_valid(navigator) and actor.has_method("request_posture") and (_sky_home() != null or (_home_house() != null and preload("res://world/life/night_rest.gd").door_fits(_home_house(), actor))): result.append("go_to_bed")
 	if actor.has_method("send_letter"): result.append("send_letter")
 	# Trixie may call her own stage show when Anon has paid for one or her week's rest is over.
 	if actor.get("identity") != null and str(actor.identity.id) == "trixie":
@@ -226,6 +234,9 @@ func submit(actions: Array, targets: Dictionary, turn: int, ai_origin := false) 
 			"give_house":
 				if is_instance_valid(coordinator): coordinator.dispatch_house(character_id, action)
 				else: _report(action, "failed", "House grant coordinator unavailable")
+			"move_house":
+				if is_instance_valid(coordinator) and coordinator.has_method("dispatch_move_house"): coordinator.dispatch_move_house(character_id, action)
+				else: _report(action, "failed", "Moving house is unavailable")
 			"wake_up":
 				var woke := _wake_actor()
 				_report(action, "completed" if woke else "failed", "Awake and getting up" if woke else "Not asleep, in bed or on a couch")
@@ -257,6 +268,7 @@ func submit(actions: Array, targets: Dictionary, turn: int, ai_origin := false) 
 				_follow_route = -1; _follow_route_progress = 0.0
 				_companion_last = Vector3.INF; _companion_velocity = Vector3.ZERO
 				_paused = false; _waiting_for_follower = false; _retry_wait = 0.0
+				_wait_gap = 0.0; _lead_allow = INF
 				navigator.command_owner = action.id
 				if str(navigator.command_owner) != str(action.id):
 					_report(movement, "failed", "Movement ownership refused; existing route retained")
@@ -458,8 +470,26 @@ func _physics_step(delta: float) -> void:
 			_follow_lost_seconds = _follow_lost_seconds + dt if behind and gap > FOLLOW_LOST_DISTANCE and not returning else 0.0
 			if _follow_lost_seconds >= LEAD_LOST_SECONDS:
 				_end_move("cancelled", "Follower left walking range", true); return
-			if behind and (distance > wait_limit or (_waiting_for_follower and distance > wait_limit * .7)):
-				if not _waiting_for_follower: navigator.stay(); _last_goal = Vector3.INF
+			var waits: bool = behind and (distance > wait_limit or (_waiting_for_follower and distance > wait_limit * .7))
+			# Model leads only: story leads (arrival_story.gd) keep their own tuned waits.
+			if LEAD_PACING and bool(movement.get("ai", false)):
+				# She sets off at once, even with him a chat's width away, and stops to wait only once
+				# she is LEAD_SLACK metres farther from him than he keeps (never under the wait distance).
+				# Waiting, she walks on as soon as he is within 85% of the wait distance or plainly
+				# coming (a metre closer than his farthest while she waited). Before, a player standing
+				# 4.2-30 m off held her where she stood for good (threads 43717688 / 43723287).
+				if _waiting_for_follower:
+					_wait_gap = maxf(_wait_gap, gap)
+					waits = behind and gap > wait_limit * .85 and gap >= _wait_gap - 1.0
+					if not waits: _lead_allow = maxf(wait_limit, gap + LEAD_SLACK)
+				else:
+					# Him ahead of her toward the place says nothing about the gap he keeps behind her.
+					if not behind: _lead_allow = wait_limit + LEAD_SLACK
+					elif is_finite(_lead_allow): _lead_allow = maxf(wait_limit, minf(_lead_allow, gap + LEAD_SLACK))
+					else: _lead_allow = maxf(wait_limit, gap) + LEAD_SLACK
+					waits = behind and gap > _lead_allow
+			if waits:
+				if not _waiting_for_follower: navigator.stay(); _last_goal = Vector3.INF; _wait_gap = gap
 				_waiting_for_follower = true
 				_companion_last = Vector3.INF
 				_report(movement, "blocked", "Waiting for follower to catch up")

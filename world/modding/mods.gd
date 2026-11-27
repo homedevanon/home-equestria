@@ -25,6 +25,8 @@ signal player_ready(player: Node)
 
 var game: Node
 var _watchers: Array = []   # [matcher: Variant, callback: Callable]
+## True once a watcher can match a node without a script ("group:", "class:" or a Callable).
+var _watch_plain := false
 
 
 func _ready() -> void:
@@ -88,6 +90,7 @@ func is_active(id: String) -> bool:
 ## "group:<name>", "class:<Godot class>", or a Callable(node) -> bool.
 func on_node(matcher: Variant, callback: Callable) -> void:
 	_watchers.append([matcher, callback])
+	if matcher is Callable or str(matcher).begins_with("group:") or str(matcher).begins_with("class:"): _watch_plain = true
 	for node: Node in get_tree().root.find_children("*", "", true, false):
 		if node.is_node_ready() and matches(node, matcher): callback.call(node)
 
@@ -131,6 +134,10 @@ func _on_node_added(node: Node) -> void:
 		var game_ready := _on_game_ready.bind(node)
 		if not node.ready.is_connected(game_ready): node.ready.connect(game_ready, CONNECT_ONE_SHOT)
 	if _watchers.is_empty(): return
+	# Script-path watchers can only match a node that has a script, and a script is set before a
+	# node enters the tree. Most nodes the game adds have none (meshes, shapes, labels), and each
+	# used to get a bound callable and a ready connection here (audit 2026-11-20).
+	if not _watch_plain and node.get_script() == null: return
 	var check := _check_watchers.bind(node)
 	if not node.ready.is_connected(check): node.ready.connect(check, CONNECT_ONE_SHOT)
 

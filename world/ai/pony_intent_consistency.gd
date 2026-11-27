@@ -15,4 +15,4 @@ static func missing(request: String, speech: String, actions: Array) -> String:
 	for action: Dictionary in actions:
 		if action.get("type") in ["go_to", "lead"] and not str(action.get("location_id", "")).is_empty(): return ""
 		if action.get("type") == "follow" and action.get("target_id") == "player": return ""
-	return "You accepted a trip but supplied no travel action. For a named destination use [go_to: LOCATION]; for an open-ended walk use [follow: player]. Otherwise clarify or decline. Travel already stands up; do not add [stand]."
+	return "You agreed to go along without a travel action. Use [go_to: LOCATION] for a named destination, or [follow: player] for an open-ended walk. Otherwise, clarify or decline. Travel makes you stand up, so skip [stand]."

@@ -39,6 +39,16 @@ var _shown := false
 var _spark := 0.0
 var _hoof := Hoof.IDLE
 var _raise_leg := -1
+## Beat cost (perf overhaul 2026-11-21, lane pony_tick): what her identity says about wings and horn,
+## read once per beat instead of six to eight times through method calls (calls outside a beat, such as
+## spread() and flutter(), read them fresh), and her Affection node kept once found. 45 ponies x 10
+## beats a second. Rollback: BEAT_CACHE = false.
+const BEAT_CACHE := true
+var _in_beat := false
+var _id_read := false
+var _id_wings := false
+var _id_horn := false
+var _affection_node: Node
 
 func setup(owner_mare: Node3D) -> void:
 	mare = owner_mare
@@ -75,11 +85,25 @@ func excited() -> bool:
 func _identity() -> Variant:
 	return mare.get("identity") if is_instance_valid(mare) else null
 
+## The wings and horn answers for her current identity object (BEAT_CACHE).
+func _identity_facts() -> void:
+	if _id_read: return
+	var identity: Variant = _identity()
+	_id_read = true
+	_id_wings = identity != null and identity.has_wings()
+	_id_horn = identity != null and identity.has_method("has_horn") and identity.has_horn()
+
 func _has_wings() -> bool:
+	if _in_beat:
+		_identity_facts()
+		return _id_wings
 	var identity: Variant = _identity()
 	return identity != null and identity.has_wings()
 
 func _has_horn() -> bool:
+	if _in_beat:
+		_identity_facts()
+		return _id_horn
 	var identity: Variant = _identity()
 	return identity != null and identity.has_method("has_horn") and identity.has_horn()
 
@@ -106,7 +130,41 @@ func _process(delta: float) -> void:
 	else:
 		_apply(fmod(_flutter, cycle) < FLUTTER_OPEN)
 
+## Calm beat (native pony port 2026-11-21, lane frame): nearly every beat finds her calm (45 ponies,
+## 10 Hz, 5 us a beat). When nothing of an excitement is left (no time to run, no petting counted,
+## wings not shown by us, no hoof of ours kicked or raised, no flutter) and neither a kiss nor petting
+## on an exciting region reaches her now, the whole beat could only write values they already hold
+## and set _spark to 0: the sleep or flight branch resets what is already reset, and otherwise
+## _petted stays 0, _until stays 0, _apply(false) returns at once (her wings are not shown) and
+## _calm() sets _spark to 0 and the hoof state to IDLE. So that is all this does; anything else runs
+## the whole beat as before. Kiss and petting are tested before the spa mark (they would be masked
+## by it anyway). Rollback: CALM_BEAT = false. Parity: tools/profile/port_frame_excite_parity.gd.
+const CALM_BEAT := true
+
+func _calm_beat() -> bool:
+	if _until != 0.0 or _petted != 0.0 or _shown or _hoof != Hoof.IDLE or _raise_leg != -1 or _flutter >= 0.0: return false
+	if not is_instance_valid(mare): return false
+	var affection: Node = _affection_node if BEAT_CACHE and is_instance_valid(_affection_node) and _affection_node.get_parent() == mare \
+		else mare.get_node_or_null("Affection")
+	if BEAT_CACHE and affection != null: _affection_node = affection
+	if affection != null and str(affection.get("kind")) == "kiss": return false
+	var touch: Variant = mare.get("touch_body")
+	if touch is Node and bool(touch.get("petting")) and str(touch.get("pet_region")) in EXCITING: return false
+	_spark = 0.0
+	return true
+
 func _on_beat() -> void:
+	if CALM_BEAT and _calm_beat(): return
+	if not BEAT_CACHE:
+		_beat_body()
+		return
+	_in_beat = true
+	_id_read = false
+	_beat_body()
+	_in_beat = false
+
+
+func _beat_body() -> void:
 	if _flutter >= 0.0 or not is_instance_valid(mare): return
 	var dt := BEAT
 	if bool(mare.get("sleeping")) or (_has_wings() and _flying() and not _has_horn()):
@@ -115,7 +173,9 @@ func _on_beat() -> void:
 		return
 	# A spa client's care never excites her (SPA_PLAN_2026_10_29.md section 3); her AI tags still can.
 	var spa := mare.has_meta("spa_client")
-	var affection: Node = mare.get_node_or_null("Affection")
+	var affection: Node = _affection_node if BEAT_CACHE and is_instance_valid(_affection_node) and _affection_node.get_parent() == mare \
+		else mare.get_node_or_null("Affection")
+	if BEAT_CACHE and affection != null: _affection_node = affection
 	if not spa and affection != null and str(affection.get("kind")) == "kiss": _until = maxf(_until, KISS_AFTER)
 	var touch: Variant = mare.get("touch_body")
 	var petted: bool = not spa and touch is Node and bool(touch.get("petting")) and str(touch.get("pet_region")) in EXCITING

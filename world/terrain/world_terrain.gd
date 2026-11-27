@@ -31,11 +31,18 @@ var navigation_revision := ""
 ## 0 (High, Ultra, headless fixtures) keeps the whole world resident as before.
 const WINDOW_SLACK := 800.0
 const WINDOW_POLL := 0.5
+const PARALLEL_REGION_LOADS := true
+# Each decoder temporarily holds compressed data and three full-size maps.
+const REGION_LOAD_BATCH := 4
+static var _parallel_loads := PARALLEL_REGION_LOADS and not ("--terrain-regions=serial" in OS.get_cmdline_user_args())
+var _region_version := -1.0
 var window_m := 0.0
 var half_res := false
 var _region_files := {}  # Vector2i location -> "terrain3d_00-01.res"
 var _window_center := Vector2i(1 << 20, 1 << 20)
 var _window_poll := 0.0
+## The last window move, by stage in ms (focus()); empty until the window first moves.
+var window_stats := {}
 signal regions_loaded(locations: Array)
 
 
@@ -229,6 +236,10 @@ func _model_bounds_changed(bounds: AABB) -> void:
 ## The tier's window. Read through Settings: Quality applies the stored preset deferred, after
 ## the world's own _ready has already needed the ground. Headless fixtures keep everything.
 func _tier_window(preset_index: int = -1) -> float:
+	# Lane memory 2026-11-21: fixtures and the picture pairs for a High window pass
+	# --terrain-window=<metres> (0 = whole world); it wins over the tier, headless included.
+	var forced := _forced_window()
+	if forced >= 0.0: return forced
 	if DisplayServer.get_name() == "headless": return 0.0
 	var quality := get_node_or_null("/root/Quality")
 	var settings := get_node_or_null("/root/Settings")
@@ -241,6 +252,12 @@ func _tier_window(preset_index: int = -1) -> float:
 	return float(quality.CONFIG[index].get("terrain_window_m", 0.0))
 
 
+static func _forced_window() -> float:
+	for arg: String in preload("res://world/dev_tools.gd").user_args():
+		if arg.begins_with("--terrain-window="): return maxf(0.0, float(arg.trim_prefix("--terrain-window=")))
+	return -1.0
+
+
 ## Tier changed in-game: a window tier drops the far regions on the next focus; a
 ## whole-world tier loads everything back.
 func _apply_window(preset: int) -> void:
@@ -251,8 +268,9 @@ func _apply_window(preset: int) -> void:
 	if window_m <= 0.0 and terrain.data != null:
 		var missing: Array = []
 		for loc in _region_files:
-			if not terrain.data.has_region(loc): terrain.data.load_region(loc, active_data_dir(), false); missing.append(loc)
+			if not terrain.data.has_region(loc): missing.append(loc)
 		if not missing.is_empty():
+			_load_regions(missing)
 			terrain.data.update_maps(); _apply_overlays(missing); regions_loaded.emit(missing)
 		print("[terrain] whole world resident: %d regions" % terrain.data.get_region_count())
 	_window_poll = 0.0
@@ -278,26 +296,84 @@ func focus(pos: Vector3) -> void:
 	_window_center = center
 	var at := Vector2(pos.x, pos.z)
 	var removed := 0
+	var t0 := Time.get_ticks_usec()
 	for loc in terrain.data.get_region_locations():
 		if _region_distance(loc, at) > window_m + WINDOW_SLACK:
 			terrain.data.remove_regionl(loc, false); removed += 1
 			_forget(loc)
+	# Removal updates the location list immediately. has_region() still consults
+	# the old numeric region IDs until update_maps() rebuilds their index.
+	var resident: Array = terrain.data.get_region_locations()
 	var added: Array = []
 	for loc in _region_files:
-		if _region_distance(loc, at) <= window_m and not terrain.data.has_region(loc):
-			terrain.data.load_region(loc, active_data_dir(), false); added.append(loc)
+		if _region_distance(loc, at) <= window_m and not resident.has(loc):
+			added.append(loc)
 	if added.is_empty() and removed == 0: return
+	_load_regions(added)
+	var t1 := Time.get_ticks_usec()
 	# Deleted regions keep their CPU maps for the editor's save path; the game never saves.
 	var all: Dictionary = terrain.data.get_regions_all()
 	for loc in all.keys():
 		var region: Object = all[loc]
 		if region != null and region.has_method("is_deleted") and region.is_deleted(): all.erase(loc)
 	terrain.data.update_maps()
+	var t2 := Time.get_ticks_usec()
 	if not added.is_empty(): _apply_overlays(added)
+	var t3 := Time.get_ticks_usec()
 	var collision: Object = terrain.get_collision() if terrain.has_method("get_collision") else null
 	if collision != null and collision.has_method("update"): collision.update(true)
+	var t4 := Time.get_ticks_usec()
 	print("[terrain] window at %s: %d regions resident (+%d -%d)" % [center, terrain.data.get_region_count(), added.size(), removed])
 	regions_loaded.emit(added)
+	# Lane memory 2026-11-21: what one window move costs, by stage (read by fixtures).
+	window_stats = {"moves": int(window_stats.get("moves", 0)) + 1, "added": added.size(), "removed": removed,
+		"regions": terrain.data.get_region_count(), "load_ms": (t1 - t0) / 1000.0, "update_maps_ms": (t2 - t1) / 1000.0,
+		"overlays_ms": (t3 - t2) / 1000.0, "collision_ms": (t4 - t3) / 1000.0, "signal_ms": (Time.get_ticks_usec() - t4) / 1000.0}
+
+
+## Decode independent resources on the pool. Terrain3D owns installation, in
+## the same region order as its synchronous load_region() path.
+func _load_regions(locations: Array) -> void:
+	var folder := active_data_dir()
+	if locations.is_empty(): return
+	if not _parallel_loads or locations.size() == 1:
+		for loc: Vector2i in locations: terrain.data.load_region(loc, folder, false)
+		return
+	var first := 0
+	if _region_version < 0.0:
+		# Let this build of Terrain3D establish its region format and size.
+		var loc: Vector2i = locations[0]
+		terrain.data.load_region(loc, folder, false)
+		var seed_region: Object = terrain.data.get_region(loc)
+		if seed_region != null: _region_version = seed_region.get_version()
+		first = 1
+	for start in range(first, locations.size(), REGION_LOAD_BATCH):
+		var count := mini(REGION_LOAD_BATCH, locations.size() - start)
+		var paths := PackedStringArray()
+		var decoded: Array[Resource] = []
+		decoded.resize(count)
+		for i in count:
+			paths.append(folder.path_join(_region_files[locations[start + i]]))
+		var job := -1
+		if count > 1:
+			job = WorkerThreadPool.add_group_task(_decode_region.bind(paths, decoded, 1), count - 1, -1, true, "Terrain region load")
+		_decode_region(0, paths, decoded, 0)
+		if job >= 0: WorkerThreadPool.wait_for_group_task_completion(job)
+		for i in count:
+			var loc: Vector2i = locations[start + i]
+			var region: Resource = decoded[i]
+			if _region_version < 0.0 or region == null or region.get_region_size() != terrain.region_size:
+				terrain.data.load_region(loc, folder, false)
+				continue
+			region.take_over_path(paths[i])
+			region.set_location(loc)
+			region.set_version(_region_version)
+			terrain.data.add_region(region, false)
+
+
+static func _decode_region(index: int, paths: PackedStringArray, decoded: Array[Resource], offset: int) -> void:
+	var i := index + offset
+	decoded[i] = ResourceLoader.load(paths[i], "Terrain3DRegion", ResourceLoader.CACHE_MODE_IGNORE)
 
 
 ## Sculpt heights, authored biome controls, prop contacts and walk-grid columns for regions

@@ -369,7 +369,7 @@ func notebook_lines() -> PackedStringArray:
 		lines.append("- Hired by %s: %s%s%s." % [by, str(row.get("name", id)), when, (", " + place) if not place.is_empty() else ""])
 	for id: String in _order:
 		var owed := owed_hours(id)
-		if owed >= 0.01: lines.append("- %s: %.1f h worked, not paid yet; paid at your next clock-out." % [str(spec(id).get("name", id)).capitalize(), owed])
+		if owed >= 0.01: lines.append("- %s: %.1f hours worked, unpaid until the next time you clock out." % [str(spec(id).get("name", id)).capitalize(), owed])
 	var notes := pay_rows()
 	for index in range(notes.size() - 1, -1, -1):
 		var row: Dictionary = notes[index]

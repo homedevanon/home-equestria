@@ -21,6 +21,7 @@ extends Node
 ##   cards, MultiMeshes, skinned meshes and anything with a short draw distance keep their own.
 
 const HOUSE := preload("res://world/buildings/house_interior.gd")
+const INTERIOR_OCCLUDER := preload("res://world/buildings/interior_occluder.gd")
 const SMALL_CASTER := 1.6
 ## Anything lower than this casts a sliver at most.
 const FLAT_CASTER := 0.4
@@ -323,6 +324,9 @@ func _exit_tree() -> void:
 	for task: int in _mesh_tasks:
 		WorkerThreadPool.wait_for_task_completion(task)
 	_mesh_tasks.clear()
+	if not _rail_job.is_empty():
+		WorkerThreadPool.wait_for_task_completion(int(_rail_job.task))
+		_rail_job = {}
 
 ## Every static town mesh without LODs, once per mesh: copy its surfaces on the main thread,
 ## generate LODs on a worker, then swap the LOD'd copy onto every user (_poll_mesh_lods).
@@ -344,6 +348,9 @@ func _queue_visible_lods() -> void:
 			if mesh.surface_get_primitive_type(s) != Mesh.PRIMITIVE_TRIANGLES or not (RenderingServer.mesh_get_surface(mesh.get_rid(), s).get("lods", []) as Array).is_empty():
 				usable = false; break
 			var arrays := mesh.surface_get_arrays(s)
+			# Empty under the headless renderer (no vertex data kept): nothing to build LODs from.
+			if arrays.size() < Mesh.ARRAY_MAX:
+				usable = false; break
 			triangles += ((arrays[Mesh.ARRAY_INDEX] as PackedInt32Array).size() if arrays[Mesh.ARRAY_INDEX] != null else (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()) / 3
 			surfaces.append(arrays); materials.append(mesh.surface_get_material(s)); names.append(mesh.surface_get_name(s))
 		if not usable or triangles < VISIBLE_LOD_MIN_TRIANGLES: continue
@@ -715,6 +722,7 @@ func _batch_props() -> void:
 	print("[render budget] %d flowerbed boxes merged; %d repeated props drawn as %d batches" % [
 		statistics.flowerbed_boxes, statistics.batched_props, statistics.prop_batches])
 	_merge_stone()
+	_merge_rail()
 
 func _batchable(mi: MeshInstance3D) -> bool:
 	if mi.mesh == null or mi.skin != null or mi.material_override != null or mi.material_overlay != null: return false
@@ -811,6 +819,172 @@ func _merge_stone() -> void:
 	statistics["stone_pieces"] = merged_pieces
 	statistics["stone_meshes"] = meshes
 	print("[render budget] %d stone foundations and ramps drawn as %d meshes" % [merged_pieces, meshes])
+
+## Perf overhaul 2026-11-21 (lane draws, rail granted): the rail track (world/railway/track.scn)
+## draws every chunk's bed, rails, rack, tunnel lining, bridge and lamp meshes and its sleeper
+## MultiMesh on their own: 1,680 meshes and 456 MultiMeshes with 8 materials, about 45 draws at the
+## street. Visual pieces that share a material, shadow setting and draw distance merge per
+## RAIL_CELL square into one mesh (sleepers: one MultiMesh per cell), like MergedStone; the merged
+## range grows by the farthest piece's offset, so nothing stops sooner. Visuals only: the nodes
+## stay where they are, hidden (collision, platforms, station signs and names untouched); a hidden
+## piece lets go of its mesh, so the vertex data is held once, not twice. Pieces with metadata,
+## a script, children, or a range of their own from the tunnel bake still merge only with their
+## exact equals. Load time only. Rollback: MERGE_RAIL = false.
+const MERGE_RAIL := false
+static var merge_rail := MERGE_RAIL
+const RAIL_CELL := 256.0
+const STATIC_MERGE := preload("res://world/buildings/static_mesh_merge.gd")
+
+func _merge_rail() -> void:
+	if not merge_rail or not is_instance_valid(town): return
+	# The game adds RailNetwork beside the zones, a few levels above the town.
+	var network: Node = null
+	var at: Node = town.get_parent()
+	while at != null and network == null:
+		network = at.get_node_or_null("RailNetwork")
+		at = at.get_parent()
+	var track: Node3D = null
+	if network != null:
+		for child: Node in network.get_children():
+			if child is Node3D and child.scene_file_path.ends_with("track.scn"): track = child as Node3D
+	if track == null: return
+	var started := Time.get_ticks_msec()
+	var holder := Node3D.new(); holder.name = "MergedRail"; track.add_child(holder)
+	var to_holder := holder.global_transform.affine_inverse()
+	var groups := {}
+	var sleepers := {}
+	for node: Node in track.find_children("*", "GeometryInstance3D", true, false):
+		var gi := node as GeometryInstance3D
+		if gi.get_child_count() > 0 or gi.get_script() != null or not gi.get_meta_list().is_empty(): continue
+		if not gi.is_visible_in_tree() or gi.visibility_range_begin > 0.0 or gi.transparency > 0.0 or gi.material_overlay != null: continue
+		var xf: Transform3D = to_holder * gi.global_transform
+		if xf.basis.determinant() <= 0.0: continue
+		var centre := (xf * gi.get_aabb()).get_center()
+		var cell := [floori(centre.x / RAIL_CELL), floori(centre.z / RAIL_CELL)]
+		var common := [gi.cast_shadow, gi.layers, gi.gi_mode, gi.visibility_range_end, gi.visibility_range_end_margin, gi.visibility_range_fade_mode]
+		if gi is MultiMeshInstance3D:
+			var mm := (gi as MultiMeshInstance3D).multimesh
+			if mm == null or mm.mesh == null or mm.use_colors or mm.use_custom_data or mm.transform_format != MultiMesh.TRANSFORM_3D: continue
+			if mm.visible_instance_count >= 0 and mm.visible_instance_count != mm.instance_count: continue
+			var key := [mm.mesh, gi.material_override] + common + cell
+			if not sleepers.has(key): sleepers[key] = {"xforms": [], "pieces": [], "points": []}
+			for k: int in mm.instance_count: (sleepers[key].xforms as Array).append(xf * mm.get_instance_transform(k))
+			(sleepers[key].pieces as Array).append(gi)
+			(sleepers[key].points as Array).append_array([xf.origin, centre])
+			continue
+		var mi := gi as MeshInstance3D
+		if mi == null or mi.mesh == null or mi.skin != null or not mi.mesh is ArrayMesh: continue
+		var mesh := mi.mesh as ArrayMesh
+		if mesh.get_blend_shape_count() > 0: continue
+		var parts := []
+		for s: int in mesh.get_surface_count():
+			var material: Material = mi.get_active_material(s)
+			if mesh.surface_get_primitive_type(s) != Mesh.PRIMITIVE_TRIANGLES or (material != null and material.next_pass != null):
+				parts.clear(); break
+			var arrays := mesh.surface_get_arrays(s)
+			if arrays.size() < Mesh.ARRAY_MAX or not arrays[Mesh.ARRAY_VERTEX] is PackedVector3Array:
+				parts.clear(); break
+			parts.append([material, arrays])
+		for part: Array in parts:
+			var key := [part[0]] + common + cell
+			if not groups.has(key): groups[key] = {"material": part[0], "parts": [], "pieces": {}, "points": [], "template": mi}
+			(groups[key].parts as Array).append([part[1], xf, null])
+			(groups[key].pieces as Dictionary)[mi] = true
+			(groups[key].points as Array).append_array([xf.origin, centre])
+	var merged := {}
+	var added := 0
+	var jobs: Array = []
+	for key: Array in groups:
+		var group: Dictionary = groups[key]
+		if (group.pieces as Dictionary).size() < 2: continue
+		group["origin"] = _points_centre(group.points)
+		jobs.append(group)
+	for key: Array in sleepers:
+		var group: Dictionary = sleepers[key]
+		if (group.pieces as Array).size() < 2: continue
+		var first := group.pieces[0] as MultiMeshInstance3D
+		var origin := _points_centre(group.points)
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = first.multimesh.mesh
+		var xforms: Array = group.xforms
+		mm.instance_count = xforms.size()
+		for k: int in xforms.size(): mm.set_instance_transform(k, Transform3D(Basis(), -origin) * (xforms[k] as Transform3D))
+		var view := MultiMeshInstance3D.new(); view.name = "Sleepers_%d" % added; view.multimesh = mm; view.position = origin
+		view.material_override = first.material_override
+		_copy_drawing(first, view, group.points, origin)
+		holder.add_child(view)
+		for gi: GeometryInstance3D in group.pieces: merged[gi] = true
+		added += 1
+	_hide_rail(merged)
+	statistics["rail_pieces"] = merged.size()
+	statistics["rail_meshes"] = added
+	# The vertex joins (about 1.7 million vertices) run on a worker; the meshes swap in when done.
+	if not jobs.is_empty():
+		_rail_job = {"holder": holder, "jobs": jobs, "started": started}
+		_rail_job["task"] = WorkerThreadPool.add_task(_build_rail.bind(jobs), false, "Rail merge")
+	print("[render budget] rail: %d sleeper pieces as %d multimeshes; %d mesh groups building (gathered in %d ms)" % [
+		merged.size(), added, jobs.size(), Time.get_ticks_msec() - started])
+
+var _rail_job := {}
+
+## Worker: each group's pieces as one surface about its origin (pure data, no scene access).
+static func _build_rail(jobs: Array) -> void:
+	for group: Dictionary in jobs:
+		var surface: Array = STATIC_MERGE._build(group.parts)
+		var vertices: PackedVector3Array = surface[Mesh.ARRAY_VERTEX]
+		surface[Mesh.ARRAY_VERTEX] = Transform3D(Basis(), -(group.origin as Vector3)) * vertices
+		group["surface"] = surface
+		group.erase("parts")
+
+func _poll_rail() -> void:
+	if _rail_job.is_empty() or not WorkerThreadPool.is_task_completed(int(_rail_job.task)): return
+	WorkerThreadPool.wait_for_task_completion(int(_rail_job.task))
+	var job := _rail_job
+	_rail_job = {}
+	var holder: Node3D = job.holder
+	if not is_instance_valid(holder): return
+	var merged := {}
+	var added := 0
+	for group: Dictionary in job.jobs:
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, group.surface)
+		mesh.surface_set_material(0, group.material)
+		var view := MeshInstance3D.new(); view.name = "Rail_%d" % added; view.mesh = mesh; view.position = group.origin
+		_copy_drawing(group.template, view, group.points, group.origin)
+		holder.add_child(view)
+		for mi: MeshInstance3D in group.pieces: merged[mi] = true
+		added += 1
+	_hide_rail(merged)
+	statistics["rail_pieces"] = int(statistics.get("rail_pieces", 0)) + merged.size()
+	statistics["rail_meshes"] = int(statistics.get("rail_meshes", 0)) + added
+	print("[render budget] rail: %d pieces drawn as %d merged meshes, %d ms after the merge started" % [
+		merged.size(), added, Time.get_ticks_msec() - int(job.started)])
+
+## Merged pieces stay as nodes (anything may still find them), hidden, and let go of their mesh.
+static func _hide_rail(merged: Dictionary) -> void:
+	for gi: GeometryInstance3D in merged:
+		if not is_instance_valid(gi): continue
+		gi.visible = false
+		gi.set_meta(BATCHED, true)
+		if gi is MeshInstance3D: (gi as MeshInstance3D).mesh = null
+		elif gi is MultiMeshInstance3D: (gi as MultiMeshInstance3D).multimesh = null
+
+static func _points_centre(points: Array) -> Vector3:
+	var box := AABB(points[0], Vector3.ZERO)
+	for p: Vector3 in points: box = box.expand(p)
+	return box.get_center()
+
+## The merged view draws, casts and stops like its pieces; its range grows by the farthest piece origin.
+static func _copy_drawing(template: GeometryInstance3D, view: GeometryInstance3D, points: Array, origin: Vector3) -> void:
+	view.cast_shadow = template.cast_shadow; view.layers = template.layers; view.gi_mode = template.gi_mode
+	view.set_meta(BATCHED, true)
+	if template.visibility_range_end > 0.0:
+		var reach := 0.0
+		for p: Vector3 in points: reach = maxf(reach, (p as Vector3).distance_to(origin))
+		view.visibility_range_end = template.visibility_range_end + reach
+	view.visibility_range_end_margin = template.visibility_range_end_margin
+	view.visibility_range_fade_mode = template.visibility_range_fade_mode
 
 func _stone_mergeable(mi: MeshInstance3D, stone_materials: Array) -> bool:
 	if mi.mesh == null or mi.skin != null or mi.material_overlay != null or mi.transparency > 0.0: return false
@@ -940,6 +1114,7 @@ func _set_door_shadows(home: Node, on: bool) -> void:
 func _process(delta: float) -> void:
 	_poll_lods()
 	_poll_mesh_lods()
+	_poll_rail()
 	_tick -= delta
 	if _tick > 0.0: return
 	_tick = 0.25
@@ -950,6 +1125,9 @@ func _process(delta: float) -> void:
 		_set_door_shadows(_door_home, false)
 		_set_door_shadows(home, true)
 		_door_home = home
+		# Lane card 2026-11-21: occluder walls just outside the room's own walls while the camera is
+		# inside it (world/buildings/interior_occluder.gd, off unless its ENABLED is true).
+		INTERIOR_OCCLUDER.show_for(home)
 	var inside: OccluderInstance3D = _by_house.get(home)
 	if inside == _hidden: return
 	if is_instance_valid(_hidden): _hidden.visible = true

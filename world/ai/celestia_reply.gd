@@ -18,7 +18,7 @@ const LATEST_HOUR := 12.0
 const SPIKE := "spike"
 const TWILIGHT := "twilight_sparkle"
 const POLL := 2.0
-const TEXT := "Princess Celestia's reply to the letter %s sent arrived%s: she thanks you for writing, is glad Anon is safe and welcome in Ponyville, and will look into how %s came here herself. The letter is answered; there is nothing more to write to her about it for now."
+const TEXT := "Princess Celestia's reply to the letter %s sent arrived%s. She thanks you for writing and is glad Anon is safe and welcome in Ponyville. She will look into how %s got here herself, so there is no need to write to her about it again for now."
 var game: Node
 var _poll := 0.0
 

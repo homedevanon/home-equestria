@@ -226,7 +226,7 @@ func _ready() -> void:
 		return
 	expression_stance.pony = self
 	var lod_clock := Timer.new(); lod_clock.name = "LodClock"; lod_clock.wait_time = 0.25
-	lod_clock.timeout.connect(func() -> void: _lod_timer = 0.0)
+	lod_clock.timeout.connect(_on_lod_clock)
 	add_child(lod_clock)
 	lod_clock.start(randf_range(0.02, 0.25))   # spread the ponies' passes over the quarter second
 	lod_clock.timeout.connect(func() -> void: lod_clock.wait_time = 0.25, CONNECT_ONE_SHOT)
@@ -463,6 +463,25 @@ func _coat_ao(mi: MeshInstance3D) -> Texture2D:
 ## Rollback: IMPOSTOR_ON_PHYSICS = false (animated in _process as before).
 const IMPOSTOR_ON_PHYSICS := true
 
+## LodClock's quarter-second distance pass, run at the timeout when nothing keeps _process on
+## (performance overhaul 2026-11-21, lane services): waking _process for one frame every 0.25 s
+## took 45 ponies out of the engine's frame and step lists and put them back about 360 times a
+## second, so the engine re-sorted both lists in every step and every frame (census:
+## tools/profile/services_probe.gd --svc-churn). With _process off, nothing animates and no mesh
+## waits (their setters switch _process on), so only the parking check and the pass remain.
+## Rollback: LOD_PASS_DIRECT = false (the Timer wakes _process as before).
+const LOD_PASS_DIRECT := true
+
+func _on_lod_clock() -> void:
+	if not LOD_PASS_DIRECT or is_processing():
+		_lod_timer = 0.0
+		return
+	if park_hidden_rig_meshes and _rig_watched.is_empty() and _tick >= 3:
+		set_rig_parking(true)
+	_lod_timer = 0.25
+	_lod_pass()
+
+
 func _unprofiled_process(delta: float) -> void:
 	var animate := _impostor_shown and not IMPOSTOR_ON_PHYSICS
 	if animate: _animate_impostor(delta)
@@ -477,6 +496,11 @@ func _unprofiled_process(delta: float) -> void:
 		return
 	_lod_timer = 0.25
 	if not (animate or _far_mesh_waiting or _near_waiting): set_process(false)
+	_lod_pass()
+
+
+## The distance pass (render detail by camera distance), from _process or LodClock.
+func _lod_pass() -> void:
 	var camera := preload("res://world/player_view.gd").camera(self)
 	if camera == null: return
 	var distance := global_position.distance_to(camera.global_position)
@@ -520,23 +544,40 @@ func _notification(what: int) -> void:
 	for mi: MeshInstance3D in find_children("*", "MeshInstance3D", true, false):
 		mi.mesh = null
 
+## FAR off-beat skip (pony_locomotion.gd TICK_SKIP): per-step work of her own that an asleep FAR pony must not
+## skip. A picture's flip-book counts every step while she moves; standing on its first frame with
+## its clock at zero it changes nothing.
+func _clock_extra_sleepable() -> bool:
+	if pinkie_bounce != null or expression_stance.amount > 0.0: return false
+	if _held or _carry_reaction.active or _carry_reaction.struggle.busy(): return false
+	if _impostor_shown and IMPOSTOR_ON_PHYSICS and (_impostor_pose != 0 or _impostor_clock != 0.0 \
+			or actual_speed / maxf(body_scale, 0.01) > 0.1):
+		return false
+	return true
+
+
 ## Physics time the clip tier's face logic has skipped since its last 20 Hz logic tick.
 var _face_delta := 0.0
 var _carry_reaction := preload("res://world/characters/locomotion/carry_reaction.gd").new()
 
 func _physics_process(delta: float) -> void:
+	# FAR off-beat skip (pony_locomotion.gd TICK_SKIP): an asleep step only adds the step's time.
+	if _clock_asleep and _clock_skip(delta): return
 	if _impostor_shown and IMPOSTOR_ON_PHYSICS: _animate_impostor(delta)
 	if not CROWD_PROFILE.enabled:
 		_hybrid_physics(delta)
+		if _clock_gate and sim_tier == SimTier.FAR: _clock_after_step()
 		return
 	var started := Time.get_ticks_usec()
 	_hybrid_physics(delta)
+	if _clock_gate and sim_tier == SimTier.FAR: _clock_after_step()
 	CROWD_PROFILE.record("hybrid_physics_tier%d" % sim_tier, started)
 
 func _hybrid_physics(delta: float) -> void:
 	var started := Time.get_ticks_usec() if CROWD_PROFILE.enabled else 0
-	# Not held and already reset, update() would only reset it again.
-	if _held or _carry_reaction.active: _carry_reaction.update(self, delta)
+	# Not held and already reset, update() would only reset it again. A pony who just struggled
+	# free of his arms (carry_struggle.gd) keeps it a few seconds more while she lands and steps away.
+	if _held or _carry_reaction.active or _carry_reaction.struggle.busy(): _carry_reaction.update(self, delta)
 	if pinkie_bounce != null: pinkie_bounce.advance(delta)
 	# The stance is HERO only: on the clip tiers advance() would only keep a zero amount at zero.
 	if sim_tier == SimTier.HERO or expression_stance.amount > 0.0: expression_stance.advance(delta)
@@ -1194,6 +1235,7 @@ func request_arrival(landing: Vector3) -> bool:
 	return flight.arrive(landing)
 
 func _ensure_flight() -> void:
+	_clock_wake()  # FAR off-beat skip: wake (TICK_SKIP)
 	if flight == null:
 		flight = preload("res://world/characters/locomotion/pony_flight.gd").new()
 		flight.bind(self)
@@ -1256,6 +1298,7 @@ func set_conversation_target(listener: Node3D, hold_position := true) -> void:
 
 ## Conversation hooks (world/ai/conversation_director.gd).
 func say(wav_path: String, text := "") -> void:
+	_clock_wake()  # FAR off-beat skip: wake (TICK_SKIP)
 	head.speak(wav_path, text)
 
 

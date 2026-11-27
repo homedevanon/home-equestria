@@ -61,6 +61,8 @@ This file adds the working rules.
   the override does not compile against the player's game, the mod is switched off with "could
   not extend <path> in this build"; check the log for the compiler's message.
 - If your mod needs another mod, declare it in `mod.json`: `"depends": {"other_id": ">=1.2.0"}`.
+  The game then loads that mod's pack first; a missing, switched-off or older one stops yours with
+  a reason in Settings → Mods, and mods that need each other in a loop do not run.
   Read the other mod's state through `Mods.is_active(id)` and `Mods.pack_rows()`, never by
   reaching into its files.
 - Do not ship `.uid` files, and do not rely on `uid://` references between your own files: the

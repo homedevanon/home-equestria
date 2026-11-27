@@ -89,7 +89,10 @@ func _physics_process(delta:float)->void:
 	if not is_instance_valid(mare):end(true);return
 	if enabled:
 		var nav:=mare.get_node_or_null("Navigator")
-		var invalid:bool=not is_instance_valid(partner) or (partner.get("controls_locked")==true and not _sleeping_rest(partner)) or partner.get("flying")==true
+		# The open chat box locks movement too (world/ui/chat_box.gd "chat_typing"); typing to her is
+		# not a reason to end the cuddle (player board #44).
+		var locked:bool=partner.get("controls_locked")==true and not _sleeping_rest(partner) and not partner.get_meta("chat_typing",false) if is_instance_valid(partner) else false
+		var invalid:bool=not is_instance_valid(partner) or locked or partner.get("flying")==true
 		invalid=invalid or not willing() or mare.is_held() or mare.global_position.distance_to(_origin)>.18 or mare.actual_speed>.12
 		invalid=invalid or mare.posture_status().requested not in ["sit","lie_down"] or (nav!=null and nav.command_owner!=_token)
 		if not invalid:invalid=_gap(partner)>2.8
@@ -194,8 +197,11 @@ func project_contact(previous:Vector3,goal:Vector3,radius:float)->Vector3:
 	var space:=mare.get_world_3d().direct_space_state
 	var fraction:=space.cast_motion(_query)
 	if fraction.size()>0:desired=previous+(desired-previous)*fraction[0]
-	# Floor projection covers targets already touching a cushion at grab time.
-	var ray:=PhysicsRayQueryParameters3D.create(desired+Vector3.UP*.10,desired-Vector3.UP*.18,1,[mare.get_rid()])
+	# Floor projection covers targets already touching a cushion at grab time. The ray grows with her
+	# body as the contact radius does (player board #56: from about x1.35 a torso or head contact was
+	# wider than the 18 cm ray, so it pressed into the mattress); unchanged at canon size and below.
+	var reach:=maxf(1.0,mare.body_scale)
+	var ray:=PhysicsRayQueryParameters3D.create(desired+Vector3.UP*.10*reach,desired-Vector3.UP*.18*reach,1,[mare.get_rid()])
 	var hit:=space.intersect_ray(ray)
 	if not hit.is_empty() and hit.normal.y>.65:desired.y=maxf(desired.y,float(hit.position.y)+_capsule.radius)
 	return desired

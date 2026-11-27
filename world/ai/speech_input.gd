@@ -22,6 +22,16 @@ const BLOCK := 0.02   # seconds per analysis block
 const RECORD_AUDIO := "android.permission.RECORD_AUDIO"
 ## Whisper's sample rate; recordings at higher mix rates are resampled to it (stt_wav).
 const STT_RATE := 16000
+## Player board #70: when the system or security software blocks the microphone, the input never
+## starts, so the microphone player stopped by itself and was started again every frame, forever.
+## Now a capture that delivers no sound frames at all for NO_FRAMES_SECONDS (and NO_FRAMES_POLLS
+## frames), or whose player stops by itself MAX_RESTARTS times, counts as failed: speech input
+## turns itself off, `failure` holds these words for the player, and saving the speech settings
+## again (apply_settings with request_permission) is the retry.
+const FAILED_TEXT := "The microphone could not be opened, so speech input is off. Let the game use the microphone, then save Pause > AI & voice > Speech again to retry."
+const NO_FRAMES_SECONDS := 3.0
+const NO_FRAMES_POLLS := 30
+const MAX_RESTARTS := 3
 
 @export var mode := "ptt"                # "vad", "ptt", "off"
 @export var push_to_talk_action := "voice_talk"
@@ -67,6 +77,13 @@ var _applied_mode := ""
 var _debug_timer := 0.0
 var _debug_peak := 0.0
 var _debug_frames := 0
+## FAILED_TEXT after the microphone failed to open this session; "" while it works or is untried.
+var failure := ""
+## Time.get_ticks_msec() when the current capture began; -1 while the microphone is closed.
+var _capture_since := -1
+var _capture_got_frames := false
+var _empty_polls := 0
+var _restarts := 0
 
 
 func _ready() -> void:
@@ -127,6 +144,10 @@ func _ready() -> void:
 ## Re-applies mode and input device after the director changed them (provider page Save).
 func apply_settings(request_permission: bool = true) -> void:
 	if not is_inside_tree(): return
+	# Saving the speech settings is the player's retry after the microphone failed to open.
+	if request_permission and not failure.is_empty():
+		failure = ""
+		_available = bool(ProjectSettings.get_setting("audio/driver/enable_input", false)) and (not _requires_permission() or _has_record_permission())
 	_refresh_permission(request_permission)
 	# Back to "System default" is left to the next launch: in the headset _ready picks WiVRn's source.
 	if not input_device.is_empty() and input_device in AudioServer.get_input_device_list(): AudioServer.input_device = input_device
@@ -154,7 +175,8 @@ func _request_record_permission() -> bool:
 func _refresh_permission(request: bool) -> void:
 	if not _requires_permission(): return
 	var enabled := bool(ProjectSettings.get_setting("audio/driver/enable_input", false))
-	_available = enabled and _has_record_permission()
+	# A microphone that failed to open stays off until the player retries (apply_settings).
+	_available = enabled and _has_record_permission() and failure.is_empty()
 	# Saving a microphone mode is an explicit retry after refusal. Focus changes only
 	# refresh status; they must not repeatedly reopen the system prompt.
 	if request and enabled and not _available and not _permission_pending and mode != "off":
@@ -176,15 +198,54 @@ func _sync_capture() -> void:
 	var held := _ptt_pressed()
 	var wanted := _available and not muted and not (_ptt_capped and held) and (mode == "vad" or (mode == "ptt" and held))
 	if wanted and not _player.playing:
+		if _capture_since >= 0:
+			# Still wanted, but the player stopped by itself: the input did not start.
+			_restarts += 1
+			if _restarts >= MAX_RESTARTS:
+				_fail_capture("the microphone stream stopped by itself %d times" % _restarts)
+				return
+		else:
+			_capture_since = Time.get_ticks_msec()
+			_capture_got_frames = false
+			_empty_polls = 0
+			_restarts = 0
 		if _capture != null: _capture.clear_buffer()
 		_refresh_mix_rate()
 		_keep_normal_speed()
 		_player.play()
 		_route_mic()
 	elif not wanted:
+		_capture_since = -1
 		if _player.playing: _player.stop()
 		if _capture != null: _capture.clear_buffer()
 		level = 0.0
+
+
+## No sound frames since this capture began: after NO_FRAMES_SECONDS and NO_FRAMES_POLLS polls the
+## microphone counts as failed. Once frames have arrived the capture is trusted, so a slow frame
+## or a quiet room never turns speech off.
+func _watch_no_frames() -> void:
+	if _capture_since < 0 or _capture_got_frames: return
+	_empty_polls += 1
+	var waited := (Time.get_ticks_msec() - _capture_since) / 1000.0
+	if _empty_polls >= NO_FRAMES_POLLS and waited >= NO_FRAMES_SECONDS:
+		_fail_capture("no sound frames arrived in %.1f s" % waited)
+
+
+## The microphone did not open: close it, turn speech input off and keep FAILED_TEXT for the
+## player (the director shows it once). Nothing retries until the speech settings are saved.
+func _fail_capture(reason: String) -> void:
+	failure = FAILED_TEXT
+	_available = false
+	_capture_since = -1
+	push_warning("[speech] the microphone could not be opened (%s); speech input is off until the speech settings are saved again" % reason)
+	if is_instance_valid(_player) and _player.playing: _player.stop()
+	if _capture != null: _capture.clear_buffer()
+	level = 0.0
+	_ptt_held = false
+	_ptt_capped = false
+	_finish(false)
+	_set_state("off")
 
 
 ## The capture runs at the driver's mix rate; a recording labelled with a stale rate plays
@@ -288,7 +349,9 @@ func _process(delta: float) -> void:
 	if muted or (_ptt_capped and held) or (mode == "ptt" and not held): return
 	var available := _capture.get_frames_available()
 	if available <= 0:
+		_watch_no_frames()
 		return
+	_capture_got_frames = true
 	_keep_normal_speed()
 	var frames := _capture.get_buffer(available)
 	var mono := PackedFloat32Array()

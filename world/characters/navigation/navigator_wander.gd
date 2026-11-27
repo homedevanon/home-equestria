@@ -118,8 +118,26 @@ static func may_approach_player(nav: Node) -> bool:
 		if navigator != nav and bool(navigator.get("_approaching_player")): approaching += 1
 	# The attention target is normally the player's HMD, about 1.7 m above their
 	# floor. Destination snapping below remains the ground/reachability authority.
-	return approaching < 2 and distance > 3.0 and distance < 12.0 \
-		and absf(attention.global_position.y - pony.global_position.y) < 2.5
+	if approaching >= 2 or distance <= 3.0 or distance >= 12.0 \
+		or absf(attention.global_position.y - pony.global_position.y) >= 2.5:
+		return false
+	return not player_in_conversation(nav)
+
+
+## True while Anon is talking with any pony (the director's engaged(): she is speaking or thinking
+## now, or he talked with her lately and she still hears him). No pony walks up to stand beside him
+## then (player board #55: during a long chat these visits gathered an audience of a dozen ponies).
+## The director's own greeting walk-ups already wait for a chat in the same way
+## (pony_player_approaches.gd). Asked only when a visit would otherwise start, which is rare.
+static func player_in_conversation(nav: Node) -> bool:
+	if not nav.is_inside_tree(): return false
+	var director: Node = nav.get_tree().get_first_node_in_group("conversation_director")
+	if director == null or not director.has_method("engaged"): return false
+	var characters: Variant = director.get("characters")
+	if not characters is Dictionary: return false
+	for id: Variant in (characters as Dictionary):
+		if bool(director.call("engaged", str(id))): return true
+	return false
 
 
 static func try_company_visit(nav: Node) -> bool:

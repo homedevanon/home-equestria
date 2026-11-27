@@ -12,7 +12,11 @@ void vertex() {
 }
 
 void fragment() {
+	// The bark is read before the dither discard: that discard removes single pixels of a 2x2 quad,
+	// and the texture's mip (screen derivatives) taken after it is undefined in Vulkan (AMD report
+	// 2026-11-12, docs/THREAD_FIX_AMD_TREES_2026_11_19.md). Same value wherever it was defined.
+	vec3 bark = texture(albedo_texture, UV).rgb;
 	if (impostor_dither(FRAGCOORD.xy) < fade_t) { discard; }
-	ALBEDO = albedo_color.rgb * texture(albedo_texture, UV).rgb;
+	ALBEDO = albedo_color.rgb * bark;
 	ROUGHNESS = 1.0;
 }

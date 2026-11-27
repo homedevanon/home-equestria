@@ -1,6 +1,92 @@
 extends RefCounted
 ## Resolve a house trip into approach, opening and crossing the entrance.
 const HOME=preload("res://world/buildings/house_interior.gd")
+## 2026-11-18 perf (town street, 8 s, 47 ponies: update 184 ms / 2524 calls, _waypoint 56 ms /
+## 2429 calls). update() asks the room for her next waypoint from where she stands, then
+## native_walk() asks the identical question as the first point of its corridor, with no physics
+## step, other pony or house change in between. That one answer is reused only until the next
+## update() call (which clears it) and only for the same physics frame, house, pony, start and goal
+## (exact Vector3 equality). Room walks reach native_walk() only from update(), so in practice the
+## reuse never leaves the one update() call that computed it.
+## Rollback: WAYPOINT_MEMO = false.
+static var WAYPOINT_MEMO:=true
+## 2026-11-18 perf (_departure 50 ms / 882 calls, house _find_flat_waypoint 34 ms / 242 calls):
+## each recovery retry searches the room graph once per candidate spot, re-sweeping the same
+## walk-point-to-walk-point legs. One sweep memo is shared by the candidates of a single retry
+## call (same pony, peers off, nothing moves between them). Rollback: DEPARTURE_SWEEP_MEMO = false.
+static var DEPARTURE_SWEEP_MEMO:=true
+## 2026-11-19 (board "Ponies stall leaving upstairs rooms"): _departure judged each recovery spot by
+## a search of that spot's own floor toward the goal, so for a pony upstairs with a ground-floor
+## goal no spot ever had a route (Sweetie Belle beside her bedroom door post froze for 15 s, then
+## gave up). Homes with stairs answer departure_waypoint() through their staircase instead.
+## Rollback: STAIR_AWARE_DEPARTURE = false. (Static vars so fixtures can switch them off.)
+static var STAIR_AWARE_DEPARTURE:=true
+## 2026-11-19 (same card, the library): the door's passage queue admits in queueing order, and a
+## leaving pony queued the moment her trip began, upstairs. The first to set off owned the door for
+## her whole walk down the stairs while one already downstairs stood beside the doorway (Spike, 40 s
+## behind Twilight). Leaving ponies now queue once they are on the door's floor. Town houses have
+## one floor, so nothing changes there. Rollback: QUEUE_ON_DOOR_FLOOR = false.
+static var QUEUE_ON_DOOR_FLOOR:=true
+## 2026-11-19 (same card, the boutique): the approach's "last metres straight to the door point"
+## step (meant for the end of an outdoor grid route) also took a leaving pony upstairs whose spot
+## lay within 3 m of the door's inside point across the floor: Sweetie Belle's bedroom is above
+## the entrance. Every tick it replaced her room route and her recovery step with a straight line
+## through the floor, so she never moved. level() now also asks for the same storey when leaving
+## (town houses have one storey). Rollback: STOREY_AWARE_APPROACH = false.
+static var STOREY_AWARE_APPROACH:=true
+## 2026-11-19 (same card): a pony with a room route who has not moved for STALL_SECONDS (seen at
+## the boutique stair foot: a stepping turn against the shelf, 15 s, then "House passage
+## obstructed") takes the departure step aside instead of the route. Rollback: STALLED_STEP_ASIDE = false.
+static var STALLED_STEP_ASIDE:=true
+const STALL_SECONDS:=3.0
+## 2026-11-19 (same card, tools/interiors_nav/test_upstairs_exit.gd --pace=trot --trace): at the
+## boutique stair foot the native steering turns her round toward the door by a stepping turn and
+## keeps the side it chose for the whole reversal; the motor refused that side (a hoof over the
+## bottom stair or the body against the shelf: nav_refusal TURN_SUPPORT) while the other side was
+## free, so she stood there until the trip failed (Rarity turning left at (3.07, 0, 1.02), Sweetie
+## Belle turning right at (4.24, 0, 1.09)). The recovery step of STALLED_STEP_ASIDE lay behind her
+## and needed the same turn. A pony whose turn is refused now steps first to a swept spot ahead of
+## her, on the side she can turn to (TURN_FREE_STEPS per trip); her route resumes from there.
+## Rollback: TURN_FREE_STEP = false.
+static var TURN_FREE_STEP:=true
+const TURN_FREE_STEPS:=4
+## 2026-11-21 (navigation lane, board card 404 in the bench world): a NEAR or FAR pony's house travel
+## runs on her logic beat (every 3rd or 6th physics step), yet every timer here added one physics
+## step per call: blocked_seconds grew 0.33 s a second for a NEAR pony (the 3 s step-aside came after
+## 9 s, the 15 s give-up after 45 s; FAR twice that), and the doorway and room corridors handed the
+## native follower one step of time for a tick that covered three or six. They now count the time
+## the tick covers (pony_navigator.gd tick_step), as her outdoor route already does.
+## Rollback: ELAPSED_TICK_TIME = false.
+static var ELAPSED_TICK_TIME:=true
+## 2026-11-21 (navigation lane, card 404 in the bench world): the doorway crossing never asked a pony
+## in its way to move. peer_passage.gd (the outdoor courtesy step) watched only routes outside, and
+## indoor_peer_yield.gd only room routes, so a pony who had just come out and stood on the door's
+## approach waiting for her own outdoor route (a cold walk grid takes many seconds) held the next
+## pony in the crossing until the stuck-pony rescue moved her (Twilight Sparkle at the library door,
+## Aloe at the spa). The crossing now runs the same requester half of peer_passage.gd as an outdoor
+## route: a standing or waiting pony on the line takes a courtesy step aside on her own motor.
+## Rollback: DOORWAY_PEER_PASSAGE = false.
+static var DOORWAY_PEER_PASSAGE:=true
+## 2026-11-21 (navigation lane, card 404; tools/profile/nav_upstairs_tier.gd --house=library --single
+## --path-trace): a room route that passes a pony standing in the aisle (Spike beside the library's
+## reading cushions, 0.5 m from Twilight Sparkle's corridor round the trunk) made the native follower
+## start a pass round him; the loft ring is too narrow for one, so she turned on the spot, backed off,
+## came back and turned again, and each of those moves reset blocked_seconds, so house travel never
+## asked him to step aside (indoor_peer_yield.gd waits for 0.35 s without progress). She circled until
+## the follower's terminal failure ("Blocked: no progress after a local repair, a replan and an
+## alternate route"), in 2 of 3 runs on the frozen tree too. The follower's own "held by a pony"
+## reasons now ask for the courtesy step at once (still one request a second, still only a pony
+## standing on her near corridor and free to move). The request also names her corridor 2 m ahead
+## instead of the room goal: indoor_peer_yield.gd asks only a pony beside the straight line toward
+## the point it is given, and the goal (the front door, a floor below) lay behind Spike, so he was
+## never "on her way". Rollback: NEIGHBOUR_YIELD_REQUEST = false.
+static var NEIGHBOUR_YIELD_REQUEST:=true
+const HELD_BY_PONY:=["neighbour","yielding"]
+static func tick_time(nav:Node) -> float:
+	if ELAPSED_TICK_TIME:
+		var step:Variant=nav.get(&"tick_step")
+		if step is float:return step
+	return nav.get_physics_process_delta_time()
 enum Phase { APPROACH, OPEN, CROSS }
 var home:Node3D
 var entering:=false
@@ -16,6 +102,9 @@ var _yielding_peer:WeakRef
 var gestured:=false
 var waiting_for_ticket := false
 var _realigned_exit := false
+var _turn_step:=Vector3.INF
+var _turn_step_retry_at:=0
+var _turn_steps:=0
 func clear(pony:Node) -> void:
 	if is_instance_valid(home) and is_instance_valid(home.door()):home.door().release_passage(pony)
 	if is_instance_valid(home) and home.has_method("release_visit"):home.release_visit(pony)
@@ -25,6 +114,7 @@ func clear(pony:Node) -> void:
 	if is_instance_valid(pony) and pony.is_inside_tree():pony.set_meta(&"house_navigation",here(pony)!=null)
 	last_progress=Vector3.INF;blocked_seconds=0
 	_escape_goal=Vector3.INF;_escape_retry_at=0
+	_turn_step=Vector3.INF;_turn_step_retry_at=0;_turn_steps=0
 	_yielding_peer=null
 func active() -> bool:return is_instance_valid(home)
 
@@ -96,6 +186,7 @@ func abandon(pony:Node) -> void:
 	if active() and is_instance_valid(pony):
 		clear(pony)
 func update(nav:Node) -> bool:
+	_memo_frame=-1
 	var pony:Node3D=nav.pony
 	var from:Node3D=here(pony)
 	var to:Node3D=house_of(pony.get_tree(),nav._live_goal)
@@ -115,7 +206,7 @@ func update(nav:Node) -> bool:
 			if not connected.fits(pony.profile):
 				clear(pony); nav._fail("This pony cannot fit through the connected indoor route"); return true
 			nav._cancel_queries(); nav._needs_path = false
-			walk(nav, _waypoint(connected, pony, pony.global_position, nav._live_goal), connected, nav._live_goal)
+			walk(nav, _room_waypoint(connected, pony, pony.global_position, nav._live_goal), connected, nav._live_goal)
 			return true
 		if from==to:
 			# Arrival can occur one tick after handing off the doorway, when the
@@ -129,7 +220,7 @@ func update(nav:Node) -> bool:
 				nav.arrived.emit();nav._halt();return true
 			if from!=null:
 				nav._cancel_queries();nav._needs_path=false
-				var next:Vector3=_waypoint(from,pony,pony.global_position,nav._live_goal)
+				var next:Vector3=_room_waypoint(from,pony,pony.global_position,nav._live_goal)
 				walk(nav,next,from,nav._live_goal);return true
 			return false
 		home=from if from!=null else to
@@ -141,7 +232,9 @@ func update(nav:Node) -> bool:
 		set_goal(nav,home.outside() if entering else home.inside())
 	if entering and phase==Phase.APPROACH and home.has_method("request_visit") and not home.request_visit(pony):
 		clear(pony);nav._fail("Bakery is busy; choose another stop");return true
-	if phase==Phase.APPROACH:
+	# QUEUE_ON_DOOR_FLOOR: a pony leaving from an upper floor joins the door's queue on arrival
+	# downstairs, not from her bedroom, so the first one down goes out first.
+	if phase==Phase.APPROACH and (entering or not QUEUE_ON_DOOR_FLOOR or absf(pony.global_position.y-home.inside().y)<.9):
 		var door:Node=home.door()
 		if is_instance_valid(door) and door.has_method("queue_passage"):
 			var ticket:Dictionary=door.queue_passage(pony,entering,home.outside(),home.inside(),home)
@@ -153,7 +246,7 @@ func update(nav:Node) -> bool:
 				if goal.distance_to(waiting)>.05:set_goal(nav,waiting)
 				if horizontal(pony.global_position,waiting)<.35 and absf(pony.global_position.y-waiting.y)<.3:
 					nav._halt();nav.state=nav.State.WAITING;nav.reason="Waiting beside doorway";return true
-				if not entering:walk(nav,_waypoint(home,pony,pony.global_position,waiting),home,waiting);return true
+				if not entering:walk(nav,_room_waypoint(home,pony,pony.global_position,waiting),home,waiting);return true
 				# Outdoor waiters retain ordinary terrain search/following toward their own
 				# supported spot; they never share the owner's ramp or authored portal line.
 				return false
@@ -207,9 +300,12 @@ func update(nav:Node) -> bool:
 		# Walk its centre line using the real controller; collision and ground
 		# probes remain authoritative, never teleport or disable the leaf.
 		walk(nav,goal,null,Vector3.INF,home.outside() if entering else home.inside())
+		# DOORWAY_PEER_PASSAGE: a pony standing on the crossing line is asked to step aside.
+		if DOORWAY_PEER_PASSAGE and nav.get(&"peer_passage")!=null and nav.get(&"native_follow")==true:
+			nav.peer_passage.watch(nav,tick_time(nav))
 		return true
 	if not entering:
-		walk(nav,_waypoint(home,pony,pony.global_position,goal),home,goal);return true
+		walk(nav,_room_waypoint(home,pony,pony.global_position,goal),home,goal);return true
 	return false
 static func _connected_route(from: Node3D, to: Node3D) -> Node3D:
 	if from == null or to == null or from == to: return null
@@ -223,7 +319,7 @@ func walk(nav:Node,destination:Vector3,house:Node3D=null,final:=Vector3.INF,line
 	var pony:CharacterBody3D=nav.pony
 	if not last_progress.is_finite() or pony.global_position.distance_to(last_progress)>.08:
 		last_progress=pony.global_position;blocked_seconds=0
-	else:blocked_seconds+=nav.get_physics_process_delta_time()
+	else:blocked_seconds+=tick_time(nav)
 	if blocked_seconds>15:
 		clear(pony);nav._fail("House passage obstructed; waiting for a clear route");return
 	# Guarded: test Navigator stubs (tools/boutique/test_door_travel.gd) have no native_follow.
@@ -246,7 +342,7 @@ func walk(nav:Node,destination:Vector3,house:Node3D=null,final:=Vector3.INF,line
 				var away:Vector3=pony.global_position-(other as Node3D).global_position;away.y=0
 				if away.length()<.01:away=-offset
 				velocity=(away.normalized()+away.normalized().cross(Vector3.UP)*.8).normalized()*.5
-				blocked_seconds=maxf(0,blocked_seconds-nav.get_physics_process_delta_time()*2)
+				blocked_seconds=maxf(0,blocked_seconds-tick_time(nav)*2)
 			else:velocity=Vector3.ZERO
 		else:velocity=Vector3.ZERO
 	pony.set_desired_velocity(velocity);nav.agent.velocity=Vector3.ZERO
@@ -268,7 +364,7 @@ func native_walk(nav:Node,destination:Vector3,house:Node3D=null,final:=Vector3.I
 		# them, so she walks through instead of braking at every one.
 		var at:=pony.global_position
 		for i in 6:
-			var next:Vector3=_waypoint(house,pony,at,final)
+			var next:Vector3=_room_waypoint(house,pony,at,final)
 			if next.distance_to(at)<.01:break
 			points.append(next)
 			if next.distance_to(final)<.01:break
@@ -286,12 +382,21 @@ func native_walk(nav:Node,destination:Vector3,house:Node3D=null,final:=Vector3.I
 		# A controller can stop legally beside furniture while the room's wider route
 		# envelope overlaps its corner. Recover through a physically swept short leg,
 		# then resume the existing room route; never teleport or change either shape.
-		var departure:=_departure(nav,house,final)
+		# TURN_FREE_STEP first: a departure spot behind her is no use while her turn is refused.
+		var departure:=_turn_free_step(nav,house)
+		if not departure.is_finite():departure=_departure(nav,house,final)
 		if departure.is_finite(): points.append(departure)
-
+	elif STALLED_STEP_ASIDE and house!=null and final.is_finite() and blocked_seconds>STALL_SECONDS:
+		# STALLED_STEP_ASIDE: a room route she cannot start on (a stepping turn pinned against the
+		# shelf at the boutique stair foot) gets the same swept short leg; the route resumes once
+		# she has moved. TURN_FREE_STEP: a refused turn gets a step ahead on her free side first.
+		var aside:=_turn_free_step(nav,house)
+		if not aside.is_finite():aside=_departure(nav,house,final)
+		if aside.is_finite():points=PackedVector3Array([pony.global_position,aside])
 	else:
 		_escape_goal=Vector3.INF
-	if house!=null and final.is_finite() and blocked_seconds>.35:_request_peer_yield(nav,house,final)
+	if house!=null and final.is_finite() and (blocked_seconds>.35 or (NEIGHBOUR_YIELD_REQUEST and str(nav.get(&"_native_wait")) in HELD_BY_PONY)):
+		_request_peer_yield(nav,house,_along(points,2.0) if NEIGHBOUR_YIELD_REQUEST and points.size()>=2 else final)
 	if points.size()<2 or horizontal(pony.global_position,points[-1])<.05:
 		nav._halt();nav.state=nav.State.WAITING;nav.reason="Walking inside / through house doorway";return
 	var changed:bool=not nav._native_authored or nav.path.size()!=points.size()
@@ -304,10 +409,27 @@ func native_walk(nav:Node,destination:Vector3,house:Node3D=null,final:=Vector3.I
 	if changed:
 		nav.path=points;nav._path_serial+=1
 	nav._native_authored=true;nav._native_speed_cap=1.2;nav._needs_path=false
-	nav._native_tick(nav.get_physics_process_delta_time())
+	nav._native_tick(tick_time(nav))
 	nav.state=nav.State.MOVING;nav.reason="Walking inside / through house doorway";nav._stuck_time=0
 static func _waypoint(house:Node3D,pony:Node3D,from:Vector3,to:Vector3) -> Vector3:
 	return house.local_waypoint_for(pony,from,to) if house.has_method("local_waypoint_for") else house.local_waypoint(from,to)
+
+## _waypoint with the one-answer memo of WAYPOINT_MEMO (cleared at the start of every update()).
+var _memo_frame:=-1
+var _memo_house:=0
+var _memo_pony:=0
+var _memo_from:=Vector3.INF
+var _memo_to:=Vector3.INF
+var _memo_next:=Vector3.INF
+func _room_waypoint(house:Node3D,pony:Node3D,from:Vector3,to:Vector3) -> Vector3:
+	if not WAYPOINT_MEMO:return _waypoint(house,pony,from,to)
+	var frame:=Engine.get_physics_frames()
+	if frame==_memo_frame and house.get_instance_id()==_memo_house and pony.get_instance_id()==_memo_pony and from==_memo_from and to==_memo_to:
+		return _memo_next
+	var next:Vector3=_waypoint(house,pony,from,to)
+	_memo_frame=frame;_memo_house=house.get_instance_id();_memo_pony=pony.get_instance_id()
+	_memo_from=from;_memo_to=to;_memo_next=next
+	return next
 
 func _departure(nav:Node,house:Node3D,final:Vector3) -> Vector3:
 	var pony:CharacterBody3D=nav.pony
@@ -321,6 +443,9 @@ func _departure(nav:Node,house:Node3D,final:Vector3) -> Vector3:
 	if holder==null or holder.disabled or holder.shape==null:return Vector3.INF
 	var space:=pony.get_world_3d().direct_space_state
 	var angle:=atan2(final.z-at.z,final.x-at.x)
+	# DEPARTURE_SWEEP_MEMO: one sweep memo for every candidate of this one retry (null = old path).
+	var sweeps:Variant=null
+	if DEPARTURE_SWEEP_MEMO:sweeps={}
 	for radius:float in [.25,.5,.8]:
 		for step:int in [0,1,-1,2,-2,3,-3,4]:
 			var turn:=angle+float(step)*TAU/8.
@@ -328,11 +453,63 @@ func _departure(nav:Node,house:Node3D,final:Vector3) -> Vector3:
 			if not house.contains(wanted):continue
 			var safe:Vector3=preload("res://world/navigation/roster_placement.gd").support(space,wanted,pony.profile,house,[pony.get_rid()])
 			if not safe.is_finite() or absf(safe.y-at.y)>.15:continue
-			var next:Vector3=house._find_flat_waypoint(safe,final,pony,false) if house.has_method("local_waypoint_for") else house.local_waypoint(safe,final)
+			# STAIR_AWARE_DEPARTURE: the spot's route by the stairs when the goal is on the other floor.
+			var next:Vector3
+			if STAIR_AWARE_DEPARTURE and house.has_method("departure_waypoint"):next=house.departure_waypoint(pony,safe,final,sweeps)
+			elif house.has_method("local_waypoint_for"):next=house._find_flat_waypoint(safe,final,pony,false,sweeps)
+			else:next=house.local_waypoint(safe,final)
 			if next.distance_to(safe)<.05:continue
 			if not controller_clear(pony,safe):continue
 			_escape_goal=safe
 			return safe
+	return Vector3.INF
+
+## TURN_FREE_STEP: a supported, swept spot 0.35 or 0.6 m away within 50 degrees of her heading,
+## straight ahead first, then toward the side the motor lets her turn to. INF when her turn is not
+## being refused, when nothing there is clear, or after TURN_FREE_STEPS steps this trip.
+func _turn_free_step(nav:Node,house:Node3D) -> Vector3:
+	var pony:CharacterBody3D=nav.pony
+	var at:=pony.global_position
+	if _turn_step.is_finite() and at.distance_to(_turn_step)>.06:return _turn_step
+	_turn_step=Vector3.INF
+	# 3 = pony_locomotion.gd NAV_REFUSAL_TURN_SUPPORT (bodies without it never take this step).
+	var refusal:Variant=pony.get("nav_refusal")
+	if not TURN_FREE_STEP or _turn_steps>=TURN_FREE_STEPS or not (refusal is int) or int(refusal)!=3:return Vector3.INF
+	var now:=Time.get_ticks_msec()
+	if now<_turn_step_retry_at:return Vector3.INF
+	_turn_step_retry_at=now+1000
+	var forward:=-pony.global_basis.z;forward.y=0
+	if forward.length_squared()<.0001:return Vector3.INF
+	forward=forward.normalized()
+	# Her own turn check (pony_locomotion.gd _turn_support_safe): positive yaw is a left turn.
+	var left_ok:=true;var right_ok:=true
+	if pony.has_method("_turn_support_safe"):
+		left_ok=bool(pony.call("_turn_support_safe",.12,true));right_ok=bool(pony.call("_turn_support_safe",-.12,true))
+	var turns:Array[float]=[0.0]
+	for degrees:float in [25.0,50.0]:
+		if left_ok:turns.append(degrees)
+		if right_ok:turns.append(-degrees)
+	var space:=pony.get_world_3d().direct_space_state
+	for radius:float in [.35,.6]:
+		for degrees:float in turns:
+			# A left turn (positive yaw about +Y) rotates the heading the same way.
+			var heading:=forward.rotated(Vector3.UP,deg_to_rad(degrees))
+			var wanted:=at+heading*radius
+			if not house.contains(wanted):continue
+			var safe:Vector3=preload("res://world/navigation/roster_placement.gd").support(space,wanted,pony.profile,house,[pony.get_rid()])
+			if not safe.is_finite() or absf(safe.y-at.y)>.15:continue
+			if not controller_clear(pony,safe):continue
+			_turn_step=safe;_turn_steps+=1
+			return safe
+	# Nothing ahead is clear (she faces into the corner): a point 50 degrees round on the free side
+	# only to turn her that way. Inside 60 degrees the steering ends the held reversal and steps
+	# round toward it; her real collision stops any walk that follows, and the next step or her
+	# route takes over from the new heading.
+	if left_ok!=right_ok:
+		var aim:=at+forward.rotated(Vector3.UP,deg_to_rad(50.0 if left_ok else -50.0))*.6
+		if house.contains(aim):
+			_turn_step=aim;_turn_steps+=1
+			return aim
 	return Vector3.INF
 
 static func off_line(at:Vector3,line:PackedVector3Array) -> float:
@@ -352,7 +529,11 @@ static func crossed_target(position:Vector3,from:Vector3,to:Vector3) -> bool:
 ## the entrance) mean a pony overhead is not at the door point below her.
 const SKY_WALK:=8.0
 static func sky(house:Node) -> bool:return house!=null and house.has_method("sky_home")
-func level(a:Vector3,b:Vector3) -> bool:return not sky(home) or absf(a.y-b.y)<1.5
+## STOREY_AWARE_APPROACH: a pony leaving from another storey (the library loft, the boutique's
+## bedrooms) is not "at" the door point below her, however close it is across the floor.
+func level(a:Vector3,b:Vector3) -> bool:
+	if sky(home):return absf(a.y-b.y)<1.5
+	return entering or not STOREY_AWARE_APPROACH or absf(a.y-b.y)<.9
 ## Bound for a home on a cloud from anywhere off it: a flyer flies up to its door approach and
 ## walks in from there like any house; a pony without wings is refused instead of walking legs
 ## toward a cloud. Long trips aim at the house itself, not their next leg on the ground.
@@ -411,6 +592,14 @@ func _request_peer_yield(nav:Node,house:Node3D,final:Vector3) -> void:
 		if peer.get("indoor_yield")!=null and peer.indoor_yield.request(peer,nav,house,final):
 			_yielding_peer=weakref(peer);return
 
+## NEIGHBOUR_YIELD_REQUEST: the point `ahead` metres along `line` (its end when shorter).
+static func _along(line:PackedVector3Array,ahead:float) -> Vector3:
+	var left:=ahead
+	for i in range(1,line.size()):
+		var leg:=line[i-1].distance_to(line[i])
+		if leg>=left:return line[i-1].move_toward(line[i],left)
+		left-=leg
+	return line[-1]
 ## A physically valid stopped body may overlap its wider planning envelope. Certify
 ## only the short departure with its unchanged controller; destinations use full support.
 static func controller_clear(pony:CharacterBody3D,to:Vector3) -> bool:

@@ -1,0 +1,10 @@
+[gd_resource type="StandardMaterial3D" load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://world/buildings/clean/textures/clean_plaster.res" id="1_q457p"]
+
+[resource]
+resource_name = "clean_plaster"
+albedo_color = Color(0.96, 0.89, 0.66, 1)
+albedo_texture = ExtResource("1_q457p")
+roughness = 0.92
+texture_filter = 5

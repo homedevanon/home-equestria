@@ -640,5 +640,22 @@
       0.1119
     ],
     "price_bits": 5
+  },
+  "cart-wheel": {
+    "name": "Cart Wheel",
+    "category": "tools",
+    "stack": 1,
+    "consume": false,
+    "drink": false,
+    "container": "",
+    "description": "A sturdy spare wheel for Applejack's apple wagon. Hold it up to the wagon to fit it.",
+    "mass": 8.0,
+    "size_m": [
+      1.004,
+      1.003,
+      0.104
+    ],
+    "price_bits": 0,
+    "model": "../apple_cart/cart_wheel_item"
   }
 }

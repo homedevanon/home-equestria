@@ -68,6 +68,7 @@ var _missing: Dictionary = {}              # source material instance id -> vari
 var _timer: Timer
 var _warmup: Node3D
 var _listening := false
+var _extra_roots: Array[WeakRef] = []      # scan roots outside ROOT_NAMES (add_root)
 
 func _init() -> void:
 	add_to_group(GROUP)
@@ -206,12 +207,38 @@ func _on_node_added(node: Node) -> void:
 func _roots() -> Array[Node]:
 	if not roots_override.is_empty(): return roots_override
 	var out: Array[Node] = []
+	for ref: WeakRef in _extra_roots:
+		var extra: Variant = ref.get_ref()
+		if extra is Node and (extra as Node).is_inside_tree(): out.append(extra)
 	var game: Node = season_state.get("game") as Node if season_state != null and is_instance_valid(season_state) else null
 	if game == null or not is_instance_valid(game): return out
 	for name: String in ROOT_NAMES:
 		var root := game.get_node_or_null(name)
 		if root != null: out.append(root)
 	return out
+
+## An outdoor prop built outside the town's zones (the player's mailbox, the apple wagon) joins the
+## snow and wetness: `node` becomes a scan root, with the same name and material exclusions below
+## it. Call it once the prop is in the tree; a freed root drops out by itself. Safe in any season.
+func add_root(node: Node) -> void:
+	if not is_instance_valid(node) or not node.is_inside_tree(): return
+	for i in range(_extra_roots.size() - 1, -1, -1):
+		var kept: Variant = _extra_roots[i].get_ref()
+		if kept == null: _extra_roots.remove_at(i)
+		elif kept == node: return
+	_extra_roots.append(weakref(node))
+	_root_ids.clear()
+	_excluded.clear()
+	if not active: return
+	_incoming.append_array(node.find_children("*", "MeshInstance3D", true, false))
+	if node is MeshInstance3D: _incoming.append(node)
+	set_process(true)
+
+## add_root() on the world's snow materials, when there are any (none in bare fixtures).
+static func adopt(node: Node) -> void:
+	if not is_instance_valid(node) or not node.is_inside_tree(): return
+	var snow := node.get_tree().get_first_node_in_group(GROUP)
+	if snow != null and snow.has_method("add_root"): snow.call("add_root", node)
 
 # ------------------------------------------------------------------ scanning
 

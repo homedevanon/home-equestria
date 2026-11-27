@@ -65,6 +65,22 @@ const HOME_REGION := "ponyville"
 var houses: Dictionary = {} # resident id -> HouseInterior.place_id()
 var _houses_loaded := false
 var _house_signature := 0
+## Thread fix 2026-11-19 (docs/THREAD_FIX_RESIDENCY_2026_11_19.md). Addresses the player chose for a
+## pony ([move_house]): resident id -> place id, in home_choices.json beside homes.json (the same
+## world-level lifetime). A dedicated home that lets its pony live elsewhere (the library, the cottage,
+## Pinkie's tower) takes her back on load unless her saved address is one of these or the house the
+## player shares with her household: one broken session (an old chess mod's library) no longer
+## keeps Twilight and Spike out for good. Rollback: HEAL_CANONICAL_HOMES = false.
+const HEAL_CANONICAL_HOMES := true
+## Metres from a house's door step (outside()) that count as being at the house.
+const AT_DOOR_M := 2.5
+const SAVE_FILE := preload("res://world/save_file.gd")
+var home_choices: Dictionary = {}
+## place id -> {"owner": resident id, "releases": bool}: what each dedicated home's own
+## configure_owner says, asked once a session. "releases": it lets her live elsewhere.
+var _owners: Dictionary = {}
+## The EMPTY HOUSE door signs (world/housing/home_boards.gd); rollback there (ENABLED, --home-boards=off).
+var boards: Node
 
 func _ready() -> void:
 	add_to_group("pony_populations")
@@ -117,19 +133,62 @@ func setup(game: Node, camera: Node3D) -> void:
 			var initial := CONFIG.new()
 			if initial.load_file(CONFIG.LIVE_PATH):
 				initial.save_file(config_path)
+			# A new world also takes the "Who lives where" choices made for new worlds.
+			if FileAccess.file_exists(CHOICES.TEMPLATE_CHOICES) and not FileAccess.file_exists(_choices_file()):
+				DirAccess.copy_absolute(ProjectSettings.globalize_path(CHOICES.TEMPLATE_CHOICES), ProjectSettings.globalize_path(_choices_file()))
 	config.defaults(); reload_config()
 	overnight_visitors = preload("res://world/life/overnight_visitors.gd").new()
 	overnight_visitors.name = "OvernightVisitors"
 	add_child(overnight_visitors); overnight_visitors.setup(self)
+	var board_script: Script = load("res://world/housing/home_boards.gd") as Script
+	if board_script != null and board_script.can_instantiate() and bool(board_script.call("wanted")):
+		boards = board_script.new()
+		boards.name = "HomeBoards"
+		add_child(boards); boards.call("setup", self)
 
 func reload_config() -> bool:
 	var candidate := CONFIG.new()
 	if not candidate.load_file(config_path):
 		status["settings"] = candidate.error; return false
+	if _put_back(candidate): candidate.save_file(config_path)
 	config = candidate; _generation += 1; retry_at.clear()
 	_stamp = _signature(); status.erase("settings")
 	if is_instance_valid(host) and "social" in host and is_instance_valid(host.social): host.social.enabled = config.social_groups
 	return true
+
+## Who lives where (world/population/population_choices.gd, 2026-11-24): the player's choices in
+## population_choices.json beside population.json are put back whenever something else rewrites
+## the assignments (an older checkpoint, a one-time migration, a town mod's config). Checked once
+## a second in reconcile() and on every reload; the side file is re-read only when its modified
+## time changes or the window says it wrote it (choices_changed). Without the file nothing changes.
+const CHOICES = preload("res://world/population/population_choices.gd")
+var _choices: Dictionary = {}
+var _choices_stamp := -1
+
+func _choices_file() -> String:
+	return config_path.get_base_dir().path_join(CHOICES.FILE)
+
+## The window wrote new choices: read them now, whatever the file's modified time says.
+func choices_changed() -> void:
+	_choices_stamp = -1
+	# It wrote population.json too: take that now, as the 3-second check would.
+	if _signature() != _stamp: reload_config()
+	else: _keep_choices()
+
+## Puts the player's choices back into `target` (a config). True when it changed anything.
+func _put_back(target: RefCounted) -> bool:
+	var path := _choices_file()
+	var stamp := FileAccess.get_modified_time(path) if FileAccess.file_exists(path) else 0
+	if stamp != _choices_stamp:
+		_choices_stamp = stamp
+		_choices = CHOICES.read(path)
+		if not _choices.is_empty(): _choices = CHOICES.usable(_choices, available if not available.is_empty() else CONFIG.catalogue())
+	return not _choices.is_empty() and CHOICES.put_back(target, _choices)
+
+func _keep_choices() -> void:
+	if not _put_back(config): return
+	print("[population] the player's choices of who lives where were put back")
+	if config.save_file(config_path): _stamp = _signature()
 
 func _signature() -> String:
 	return FileAccess.get_sha256(config_path) if FileAccess.file_exists(config_path) else "default"
@@ -205,10 +264,17 @@ func _assign_houses() -> void:
 		_houses_loaded = true
 		var stored: Variant = JSON.parse_string(FileAccess.get_file_as_string(path)) if FileAccess.file_exists(path) else null
 		if stored is Dictionary: houses = stored; _houses_version += 1
+		var chosen: Variant = JSON.parse_string(FileAccess.get_file_as_string(_choices_path())) if FileAccess.file_exists(_choices_path()) else null
+		if chosen is Dictionary: home_choices = chosen
 	if town.is_empty(): return
+	var healed := false
 	# Dedicated homes choose reservation only after this world's saved addresses load.
 	if not CONFIGURE_ON_CHANGE or not _configured_for(town):
 		_configure_always.clear()
+		if HEAL_CANONICAL_HOMES: healed = _heal_canonical(town)
+		if healed:
+			# The pass below must run in full and save: the town is the same, the addresses are not.
+			_house_signature = 0; _houses_version += 1
 		for house: Node3D in town:
 			if CONFIGURE_ON_CHANGE and not house.tree_exiting.is_connected(_on_house_exiting):
 				house.tree_exiting.connect(_on_house_exiting, CONNECT_ONE_SHOT)
@@ -223,7 +289,9 @@ func _assign_houses() -> void:
 	# bed/house assignment service without moving their residents into town.
 	for house:Node3D in town:
 		var owner:String=str(house.get_meta("reserved_for",""))
-		if owner!="" and config.assignments.has(owner) and owner not in ids:ids.append(owner)
+		# Only from outside a Ponyville plot house (2026-11-24): a pony moved out of Ponyville
+		# leaves her reserved town house instead of living there while her region is elsewhere.
+		if owner!="" and config.assignments.has(owner) and owner not in ids and not str(house.get_path()).contains("PonyvilleTown/plot"):ids.append(owner)
 	var signature := hash([ids, town.size()])
 	if signature == _house_signature: return
 	_house_signature = signature
@@ -232,12 +300,12 @@ func _assign_houses() -> void:
 	for house: Node3D in town:
 		if house.has_meta("reserved_for"): reserved[house.place_id()] = str(house.get_meta("reserved_for"))
 		else: occupants[house.place_id()] = 0
-	var changed := false
+	var changed := healed
 	for place in reserved:
 		var owner: String = reserved[place]
 		if owner in ids and houses.get(owner, "") != place: houses[owner] = place; changed = true
 	for id in houses.keys():
-		if reserved.has(houses[id]) and reserved[houses[id]] == id: continue
+		if reserved.has(houses[id]) and reserved[houses[id]] == id and id in ids: continue
 		# Sky homes (Rainbow Dash's Cloudominium) take nopony's house on the ground; her walk-in
 		# Cloudominium (world/buildings/cloudominium/home.gd) is reserved for her just above.
 		if preload("res://world/life/night_rest.gd").SKY_HOMES.has(id): houses.erase(id); changed = true; continue
@@ -322,6 +390,160 @@ func _configured_for(town: Array) -> bool:
 		_configured_stamp = [houses, houses.size(), _houses_version, _house_signature, town.size()]
 		_town_left = false
 	return same
+
+func _choices_path() -> String:
+	return config_path.get_base_dir().path_join("home_choices.json")
+
+## What a dedicated home's own configure_owner says (cached per place for the session): its pony,
+## and whether it lets her live elsewhere. The adapter decides; nothing here knows the library.
+## Each question is followed by the real answer for the saved addresses, so the meta is unchanged.
+func _owner_row(house: Node3D) -> Dictionary:
+	var place: String = house.place_id()
+	if _owners.has(place): return _owners[place]
+	var row := {}
+	if house.has_method(&"_adopt_legacy_move_in"):
+		# The Cloudominium: always hers, and its configure_owner does timed work; never asked twice.
+		var always := str(house.get_meta("reserved_for", ""))
+		if not always.is_empty(): row = {"owner": always, "releases": false}
+	elif house.has_method("configure_owner"):
+		house.configure_owner({})
+		var owner := str(house.get_meta("reserved_for", ""))
+		if not owner.is_empty() and owner != "player":
+			row = {"owner": owner, "releases": not bool(house.configure_owner({owner: "house:elsewhere"}))}
+		house.configure_owner(houses)
+	_owners[place] = row
+	return row
+
+## A pony whose dedicated home is in town but whose saved address is another house the player did
+## not choose goes back to it (her family follows in the pass below). Only ever toward a home that
+## is loaded this frame, so a half-loaded town moves nopony out. True when an address changed.
+func _heal_canonical(town: Array) -> bool:
+	var healed := false
+	for house: Node3D in town:
+		if not is_instance_valid(house) or not house.has_method("configure_owner"): continue
+		var row := _owner_row(house)
+		var owner := str(row.get("owner", ""))
+		if owner.is_empty() or not bool(row.get("releases", false)) or not config.assignments.has(owner): continue
+		var place: String = house.place_id()
+		var current := str(houses.get(owner, ""))
+		if current.is_empty() or current == place or _deliberate(owner, current): continue
+		print("[population] %s goes home to %s (saved address %s was not chosen by the player)" % [owner, place, current])
+		houses[owner] = place
+		healed = true
+	return healed
+
+## Her household's address was chosen: a [move_house] record, or the house Anon shares with one of them.
+func _deliberate(id: String, place: String) -> bool:
+	for member: String in CONFIG.HOUSEHOLDS.members(id):
+		if str(home_choices.get(member, "")) == place or _shared_home(member) == place: return true
+	return false
+
+## The world's relationship records (world_context.gd opens them before population setup).
+func _bonds() -> Node:
+	var context: Variant = host.get("world_context") if is_instance_valid(host) else null
+	if not context is Node or not is_instance_valid(context): return null
+	var bonds: Variant = (context as Node).get("player_bonds")
+	return bonds as Node if bonds is Node and is_instance_valid(bonds) and (bonds as Node).has_method("record_for") else null
+
+func _shared_home(id: String) -> String:
+	var bonds := _bonds()
+	if bonds == null: return ""
+	var row: Variant = bonds.call("record_for", id)
+	return str((row as Dictionary).get("shared_home_id", "")) if row is Dictionary else ""
+
+## The house a point is in, else the house whose door step is within AT_DOOR_M of it, else null.
+func house_at(point: Vector3) -> Node3D:
+	if not is_inside_tree() or not point.is_finite(): return null
+	var inside: Variant = (load("res://world/buildings/house_interior.gd") as Script).call("at", get_tree(), point)
+	if inside is Node3D: return inside as Node3D
+	var best: Node3D = null
+	var gap := AT_DOOR_M
+	for house: Node3D in get_tree().get_nodes_in_group("house_interiors"):
+		if not house.has_method("outside"): continue
+		var door: Vector3 = house.outside()
+		if not door.is_finite() or absf(door.y - point.y) > 3.0: continue
+		var distance := flat_distance(door, point)
+		if distance <= gap: best = house; gap = distance
+	return best
+
+## An empty Ponyville plot house nopony lives in and nopony holds: one Anon may be given, or a
+## pony may move into. Never a dedicated home, a business or the player's own house.
+func empty_plot(house: Node3D) -> bool:
+	if not is_instance_valid(house) or not house.is_inside_tree() or not house.has_method("place_id"): return false
+	if house.has_meta("reserved_for") or bool(house.get_meta("shared_player_home", false)): return false
+	if not str(house.get_path()).contains("PonyvilleTown/plot"): return false
+	_assign_houses()
+	return residents_of(house.place_id()).is_empty()
+
+## A dedicated home that always claims one of these ponies (the boutique, the Apple house, the wagon,
+## the hut): her household cannot move away from it.
+func _pinned(family: Array) -> bool:
+	for house: Node3D in get_tree().get_nodes_in_group("house_interiors"):
+		if not house.has_meta("reserved_for"): continue
+		if house.has_method("configure_owner"):
+			var row := _owner_row(house)
+			if str(row.get("owner", "")) in family and not bool(row.get("releases", false)): return true
+		elif str(house.get_meta("reserved_for", "")) in family: return true
+	return false
+
+## [move_house]: the house she and Anon both stand in or at, when her household may move into it
+## (an empty plot house, or her own dedicated home), else null.
+func move_target(id: String, pony_at: Vector3, player_at: Vector3) -> Node3D:
+	if str(config.assignments.get(id, "")) != HOME_REGION or is_overnight_visitor(id) or NIGHT_REST.SKY_HOMES.has(id): return null
+	if not is_inside_tree(): return null
+	_assign_houses()
+	if not houses.has(id): return null
+	var house := house_at(player_at)
+	if house == null or house != house_at(pony_at) or house.place_id() == str(houses[id]): return null
+	var family: Array = CONFIG.HOUSEHOLDS.members(id)
+	if _pinned(family): return null
+	if house.has_method("configure_owner") and str(_owner_row(house).get("owner", "")) in family: return house
+	return house if empty_plot(house) else null
+
+## Moves her household into `house` (checked by move_target), as a deliberate address: saved at
+## once, residents and beds reassigned in this frame, and a player who shares her old house moves
+## with her. Returns "" or why not.
+func move_household(id: String, house: Node3D) -> String:
+	if not is_instance_valid(house) or not houses.has(id): return "No such home"
+	var place: String = house.place_id()
+	var old := str(houses[id])
+	var own: bool = house.has_method("configure_owner") and str(_owner_row(house).get("owner", "")) in CONFIG.HOUSEHOLDS.members(id)
+	var family: Array = []
+	for member: String in CONFIG.HOUSEHOLDS.members(id):
+		if houses.has(member) and str(houses[member]) == old: family.append(member)
+	if not id in family: family.append(id)
+	for member: String in family:
+		houses[member] = place
+		# Her own dedicated home needs no record: it is where she belongs anyway.
+		if own: home_choices.erase(member)
+		else: home_choices[member] = place
+	_houses_version += 1
+	SAVE_FILE.write(config_path.get_base_dir().path_join("homes.json"), houses)
+	SAVE_FILE.write(_choices_path(), home_choices)
+	reassign_houses()
+	var bonds := _bonds()
+	if bonds != null and bonds.has_method("_save"):
+		# Anon's shared home follows the partners who move: her household, and anypony with no Ponyville
+		# address who shares it (a Mirror Pool copy of her: its bond row is a copy of hers), unless a
+		# partner who stays behind still lives there with him. A partner who stays keeps hers.
+		var records: Variant = (bonds.get("data") as Dictionary).get("records", {}) if bonds.get("data") is Dictionary else {}
+		var partners: Array = (records as Dictionary).keys() if records is Dictionary else family
+		var held := false
+		for member: String in partners:
+			if not member in family and str(houses.get(member, "")) == old and str((bonds.call("record_for", member) as Dictionary).get("shared_home_id", "")) == old: held = true
+		for member: String in partners:
+			if not member in family and (houses.has(member) or held): continue
+			var row: Dictionary = bonds.call("record_for", member)
+			if str(row.get("shared_home_id", "")) != old: continue
+			row.shared_home_id = place
+			bonds.call("_save", member, row)
+	print("[population] %s moved home: %s -> %s (asked by the player)" % [", ".join(family), old, place])
+	var context: Variant = host.get("world_context") if is_instance_valid(host) else null
+	if context is Node and is_instance_valid(context) and (context as Node).has_method("record"):
+		var names: Array[String] = []
+		for member: String in family: names.append(member.replace("_", " ").capitalize())
+		(context as Node).call("record", "home", "%s moved home to %s, after talking it over with Anon." % [" and ".join(names), house.label()], family, family)
+	return ""
 
 ## `ground`: for a sky-home pony (Rainbow Dash) her place down in town instead of her cloud:
 ## where she spends the day and where the morning flight lands (dev 2026-09-25: she never left
@@ -516,6 +738,7 @@ func pinned(actor: Node3D) -> bool:
 	return host.has_method("_population_busy") and host._population_busy(actor)
 
 func reconcile() -> void:
+	_keep_choices()
 	if is_instance_valid(overnight_visitors) and overnight_visitors.preparing: return
 	if not _resumes_settled: _settle_resumes()
 	for id: String in live.keys():
@@ -536,19 +759,79 @@ func reconcile() -> void:
 	# Loop invariants, read once per reconcile instead of once per resident (W2 perf pass).
 	var railway: Node = host.railway if "railway" in host and is_instance_valid(host.railway) else null
 	var cap := nearby_limit()
+	# Under a cap, bonded residents come first and may take a full town's place (bond_ranks()).
+	var bonds: Dictionary = bond_ranks() if BONDS_FIRST and cap > 0 else {}
 	for id: String in config.assignments:
 		if live.has(id) or visiting.has(id) or _clock < float(retry_at.get(id, 0.0)): continue
 		var rider: bool = railway != null and railway.owns(id)
-		if cap > 0 and live.size() >= cap and not rider: continue
+		if cap > 0 and live.size() >= cap and not rider and not bonds.has(id): continue
 		var pos := candidate_position(id)
 		var distance := flat_distance(pos, anchor.global_position)
-		if distance < activate_distance(id): candidates.append({"id": id, "distance": distance, "position": pos})
+		if distance < activate_distance(id): candidates.append({"id": id, "distance": distance, "position": pos, "rider": rider})
 	candidates.sort_custom(func(a, b):
+		var ba: float = bonds.get(a.id, 0.0); var bb: float = bonds.get(b.id, 0.0)
+		if ba != bb: return ba > bb
 		var ra: int = FIRST.find(a.id); var rb: int = FIRST.find(b.id)
 		if ra != rb: return ra >= 0 and (rb < 0 or ra < rb)
 		return a.distance < b.distance
 	)
-	if not candidates.is_empty(): _spawn(candidates[0])
+	for candidate: Dictionary in candidates:
+		if cap <= 0 or live.size() < cap or candidate.rider: _spawn(candidate); return
+		if _make_room_for(candidate.id, bonds, railway): _spawn(candidate); return
+
+## Bonds first (thread 43720475, 2026-11-19: a player on a pony cap "doesn't want to spawn without
+## the ones I've built relationships with"). Only while Settings > Max nearby ponies sets a cap:
+## residents Anon has a bond with (a stage past acquaintance, or BOND_FAMILIARITY and more) are
+## spawned before everypony else, the canonical six next, then by distance as before. When the cap
+## is full, a bonded resident in range takes the place of a lower-ranked one who is out of sight,
+## more than ROOM_DISTANCE away and not busy (pinned()). Unlimited (the default) is unchanged.
+## Rollback: BONDS_FIRST = false.
+const BONDS_FIRST := true
+const BOND_FAMILIARITY := 10.0
+const ROOM_DISTANCE := 30.0
+const BOND_STAGES := ["acquaintance", "friend", "close_friend", "dating", "engaged", "married"]
+
+## Resident id -> bond rank (stage x 100 + familiarity) for every bonded resident, read from the
+## world's player bonds (world/relationships/player_bonds.gd records); {} without them.
+func bond_ranks() -> Dictionary:
+	var out := {}
+	var context: Variant = host.get("world_context") if is_instance_valid(host) else null
+	var bonds: Variant = (context as Object).get("player_bonds") if context is Object and is_instance_valid(context) else null
+	var data: Variant = (bonds as Object).get("data") if bonds is Object and is_instance_valid(bonds) else null
+	if not data is Dictionary or not (data as Dictionary).get("records") is Dictionary: return out
+	var records: Dictionary = (data as Dictionary).records
+	for id: Variant in records:
+		if not records[id] is Dictionary: continue
+		var row: Dictionary = records[id]
+		var stage := maxi(BOND_STAGES.find(str(row.get("stage", "acquaintance"))), 0)
+		var familiarity := float(row.get("familiarity", 0.0)) if (row.get("familiarity") is float or row.get("familiarity") is int) else 0.0
+		if stage >= 1 or familiarity >= BOND_FAMILIARITY: out[str(id)] = stage * 100.0 + familiarity
+	return out
+
+## A full town under a cap: frees one place for bonded `id` by streaming away the lowest-ranked
+## resident who is out of sight, farther than ROOM_DISTANCE and not busy. False when nopony may go.
+func _make_room_for(id: String, bonds: Dictionary, railway: Node) -> bool:
+	var rank: float = bonds.get(id, 0.0)
+	if rank <= 0.0: return false
+	var pick := ""; var pick_rank := INF; var pick_distance := 0.0
+	for other: String in live:
+		var other_rank: float = bonds.get(other, 0.0)
+		if other_rank >= rank or other_rank > pick_rank: continue
+		var actor: Node3D = (live[other] as Dictionary).actor
+		if not is_instance_valid(actor) or (railway != null and railway.owns(other)): continue
+		var distance := flat_distance(actor.global_position, anchor.global_position)
+		if distance <= ROOM_DISTANCE: continue
+		var seen := anchor is Camera3D and (anchor as Camera3D).is_position_in_frustum(actor.global_position + Vector3.UP * .6)
+		if anchor is Camera3D and "pivot" in actor: seen = not actor.get_meta("crowd_hidden", false)
+		if seen or pinned(actor): continue
+		if other_rank < pick_rank or distance > pick_distance: pick = other; pick_rank = other_rank; pick_distance = distance
+	if pick.is_empty(): return false
+	var entry: Dictionary = live[pick]
+	var gone: Node3D = entry.actor
+	saved[pick] = {"region": entry.region, "position": gone.global_position, "rotation": gone.rotation}
+	host._despawn_resident(pick, gone); live.erase(pick)
+	print("[population] %s makes room for %s (bonds first, cap %d)" % [pick, id, nearby_limit()])
+	return true
 
 ## No cap by default: every resident within ACTIVATE_DISTANCE comes out and PonyCrowd's
 ## distance tiers (HERO/NEAR/FAR mesh) keep her cheap (dev 2026-09-24: "make infinite nearby

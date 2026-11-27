@@ -129,8 +129,11 @@ Optional keys:
 - `depends`: other mods this one needs, `{"<mod id>": "<version>"}`. The version may be
   `">=1.2.0"`, `">1.2"`, `"=1.2.0"`, `"<2.0"`, a bare `"1.2.0"` (meaning at least that) or `"*"`
   (any). When a dependency is missing, switched off or older, your mod does not run and Settings
-  → Mods says which one it needs. It does not change the load order: a dependency that must load
-  first needs a file name that sorts first.
+  → Mods says which one it needs. The game loads the packs your mod needs before your pack, so
+  their files, data merges, script extensions and entry scripts are in place first. Two mods that
+  need each other (directly or through others) form a loop: neither runs, and Settings → Mods
+  names the loop. Leave `depends` out when your mod needs nothing; the load order is then the
+  file-name order.
 - `patches`: for patch packs only, `{"<mod id>": "<exact version>"}`. The pack loads right after
   that mod, switches with it, and stays off when another version of it is installed.
 - `update_url`: for bundled mods, an `https://` address of a small JSON file that answers
@@ -202,6 +205,23 @@ replaced. Several mods merging the same file stack up in load order.
 `world/characters/background/roster.json`, `world/life/day/day_tables.json` and
 `world/zones.json`. Read a file in the source first to learn
 its shape.
+
+#### A pony who lives in the world
+
+To add a resident, merge two files and give her scene an identity:
+
+- `merge/world/characters/background/catalog.json`: `{"my_pony": "res://mods/<id>/my_pony.tscn"}`.
+  The scene's root uses `res://world/characters/background/background_pony.gd` with an `identity`
+  resource (`pony_identity.gd`: `id`, `display_name`, `race`, `filly`, coat colours, `cutie_mark`,
+  `ai_profile`).
+- `merge/world/population/default_assignments.json`: `{"assignments": {"my_pony": "ponyville"}}`,
+  the region she lives in.
+
+She then appears in **Settings → Who lives where** with her name, tribe and a card drawn from her
+coat and cutie mark, and the player can move her or leave her out like any other pony. Her
+`ai_profile` is a small JSON file (`id`, `name`, `prompt`); the persona file its `prompt` names is
+listed under **Settings → Prompts → Personas**, where the player can edit it. A pony a mod spawns
+by itself, outside the catalogue, is in neither place.
 
 ### 3. Extend a game script
 

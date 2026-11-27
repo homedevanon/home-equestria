@@ -126,12 +126,20 @@ func _desktop_hit(mask: int, distance: float) -> Dictionary:
 	query.exclude = _player_excludes()
 	return camera.get_world_3d().direct_space_state.intersect_ray(query)
 
-## Where a desktop click puts the held food: the top surface under the crosshair. A short pony
+## Where a desktop click puts the held food: the top surface under the crosshair, or inside the
+## scraps bin when the crosshair is on the bin. A short pony
 ## (eye 0.82 m, below the 1.03 m worktop) aims at the counter's front edge: the top just behind
 ## that edge counts, as reaching up onto it (M-INV-02, 2026-11-08: food "falling through").
 func _desktop_destination() -> Dictionary:
 	var hit: Dictionary = _desktop_hit(1, 1.65)
 	if hit.is_empty(): return {}
+	# The crosshair anywhere on the scraps bin (its labelled front, its rim, the far wall seen through
+	# its opening) means "in the bin". Before, only its floor or a wall's 3.5 cm top counted, which a
+	# standing player's crosshair hardly ever meets: a wrong burger could not be thrown out
+	# (thread 2026-11-20). The way in is the drop from over its opening.
+	if bench.is_bin(hit.get("collider")):
+		var inside: Vector3 = bench.bin_drop_point()
+		return {"pose": Transform3D(bench.global_basis.orthonormalized(), inside), "point": inside, "collider": hit.collider, "over_edge": true}
 	if Vector3(hit.normal).y < .75: hit = _top_behind_edge(hit)
 	if hit.is_empty(): return {}
 	var point: Vector3 = hit.position + hit.normal * .04

@@ -5,6 +5,7 @@ const INTERIOR := preload("res://world/buildings/golden_oak/interior.gd")
 const HOME := preload("res://world/buildings/golden_oak/home.gd")
 const WINDOWS := preload("res://world/buildings/golden_oak/windows.gd")
 const STATIC_MERGE := preload("res://world/buildings/static_mesh_merge.gd")
+const TRY := preload("res://world/perf/try_switch.gd")
 var home: Node3D
 var interior: Node3D
 
@@ -32,6 +33,9 @@ static func attach(existing: Node3D) -> Node3D:
 	runtime.add_child(runtime.home)
 	runtime.home.configure(prepared.layout, runtime.interior, prepared.door)
 	if OCCLUDE_ROOM: runtime.add_child(_room_occluder())
+	# Doorway plug (perf trial of 2026-11-24, default since 2026-11-25; off for one launch with
+	# --try=no_library_door_occluder): see entrance_occluder.gd.
+	if OCCLUDE_ROOM and not TRY.off("library_door_occluder"): runtime.add_child(preload("res://world/buildings/golden_oak/entrance_occluder.gd").create(runtime.home, prepared.door, OCCLUDER_RADIUS, OCCLUDER_TOP, OCCLUDER_OPEN))
 	existing.set_meta("golden_oak_interior", true)
 	return runtime
 

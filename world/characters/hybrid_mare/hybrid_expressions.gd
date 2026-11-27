@@ -15,7 +15,7 @@ const POSES := preload("res://world/characters/hybrid_mare/face_poses.gd")
 const EYE_POSES := POSES.EYE_POSES
 const MOUTH_POSES := POSES.MOUTH_POSES
 const LINE_FACES := POSES.LINE_FACES
-const LINE_MOUTH_SHAPES := ["smile_big", "smile_teeth", "frown", "frown_big", "pout", "open_lips", "open_soft", "smirk", "yikes", "tongue", "round"]
+const LINE_MOUTH_SHAPES := ["gasp", "smile_big", "smile_teeth", "frown", "frown_big", "pout", "open_lips", "open_soft", "smirk", "yikes", "tongue", "round"]
 var _line_pupil := 1.0
 var _line_hearts := 0.0
 var _line_shines := 0.0
@@ -138,6 +138,8 @@ func fluster(seconds: float, peeks := true) -> void:
 	_fluster_peeks = peeks
 func flustered() -> bool:
 	return _fluster_left > 0.0
+## How far (iris units, as a face's shine_drop) her eye shines sit lower with her lids nearly shut.
+const SHINE_LID_DROP := .3
 ## A half-lidded gaze that overrides every other lid source while on (deep-kiss breather).
 var stare_lids := .5
 var _stare_goal := 0.0
@@ -403,6 +405,11 @@ func _apply(smile: float, lids: float) -> void:
 	lid_weight = lids
 	mouth.set_expression("smile", smile)
 	eyes.expression_closure = lids
+	# Her eye shines move down as her lids close (blink and expression together), so they stay in
+	# what is left open instead of being cut off by the lid (dev 2026-11-22, every pony).
+	if show_head != null and show_head.has_method("set_lid_shine"):
+		var closed := 1.0 - (1.0 - clampf(float(eyes.get("closure")), 0.0, 1.0)) * (1.0 - clampf(lids, 0.0, 1.0))
+		show_head.call("set_lid_shine", SHINE_LID_DROP * smoothstep(.1, .9, closed))
 
 
 static func _ease(value: float) -> float:

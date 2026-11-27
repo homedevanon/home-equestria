@@ -127,6 +127,11 @@ func _decide() -> void:
 	var weather: Node = tree.get_first_node_in_group("weather")
 	var params: Dictionary = weather.get("params") if weather != null and weather.get("params") is Dictionary else {}
 	var cold: bool = float(params.get("snow", 0.0)) > 0.05 or (seasons != null and str(seasons.call("season")) == "winter")
+	# Seasonal effects Off (settings) switches this breath off too, like the other season looks.
+	if cold and seasons != null and seasons.has_method("effects_level") and int(seasons.call("effects_level")) <= 0: cold = false
+	# Quality key cold_breath (autoload/quality.gd AMBIENCE_CONFIG, on for every tier today).
+	var quality: Node = get_node_or_null("/root/Quality")
+	if cold and quality != null and not bool(quality.call("get_value", "cold_breath", true)): cold = false
 	if not cold:
 		_timer = 1.0
 		return

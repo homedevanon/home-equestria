@@ -117,4 +117,4 @@ func situation_line() -> String:
 		return ""
 	var where := location_id.replace("_", " ")
 	var painted := layers != null and not layers.hot_spot(location_id).is_empty()
-	return "- Your scheduled intention: %s (%s%s). This is a plan, not proof you have arrived or performed it." % [activity, where, "" if painted else ", though that place is not on the map yet"]
+	return "- What you plan to do: %s (%s%s). This is only a plan, so it doesn't mean you got there or did it." % [activity, where, "" if painted else ", though that place is not on the map yet"]

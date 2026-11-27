@@ -1,0 +1,8 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+[resource]
+resource_name = "clean_gold"
+albedo_color = Color(0.88, 0.73, 0.36, 1)
+metallic = 0.35
+roughness = 0.45
+texture_filter = 5

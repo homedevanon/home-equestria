@@ -17,6 +17,10 @@ const ICON := preload("res://world/ui/menu_icon.gd")
 const PANEL := preload("res://world/ui/spatial_menu_panel.gd")
 const PONY_DATA := preload("res://world/ui/pony_map_data.gd")
 const SUBTITLE_COLORS := preload("res://world/ai/subtitle_colors.gd")
+const BOND := preload("res://world/relationships/bond_rules.gd")
+## Model use tab, while a world runs (design section 9): how often this model tagged her feeling.
+const TAG_RATE_LINE := "This model said how the moment landed in %d of %d replies."
+const TAG_RATE_WARNING := "This model is not writing relationship tags. With it, nothing between you and a pony can change: no friendship, no feelings, no forgiving. Turn on Second look (about 4% more tokens) or choose another model."
 const TEXT := STYLE.CREAM
 const WARN := STYLE.CORAL
 ## Pony cards shown at first per world, biggest memory first; a button adds the rest.
@@ -465,7 +469,53 @@ func _portrait(id: String, coat: Color, ring: Color) -> Control:
 	return disc
 
 
+## The tag-rate lines for bond_reader.tag_rate() ({replies, tagged, rate, low, on}): the count line,
+## then the warning when the measured rate is low. Nothing before the first reply.
+static func tag_rate_lines(rate: Dictionary) -> PackedStringArray:
+	var lines := PackedStringArray()
+	var replies := int(rate.get("replies", 0))
+	if replies <= 0: return lines
+	lines.append(TAG_RATE_LINE % [int(rate.get("tagged", 0)), replies])
+	if bool(rate.get("low", false)): lines.append(TAG_RATE_WARNING)
+	return lines
+
+
+## The running world's bond_reader (contract 3.4), when there is one and the switch is on.
+func _bond_reader() -> Node:
+	if not BOND.DYNAMIC or not is_inside_tree(): return null
+	var reader := get_tree().get_first_node_in_group("bond_reader")
+	return reader if reader != null and reader.has_method("tag_rate") else null
+
+
+## The tag rate and, when it is low, the warning with the Second look switch beside it. The game
+## never turns it on by itself: only this switch or Settings does.
+func _show_tag_rate() -> void:
+	var reader := _bond_reader()
+	if reader == null: return
+	var value: Variant = reader.call("tag_rate")
+	var lines := tag_rate_lines(value if value is Dictionary else {})
+	if lines.is_empty(): return
+	_section("Relationship tags", "this session")
+	var card := _card(_body, 14)
+	var rows := VBoxContainer.new(); rows.add_theme_constant_override("separation", 10); card.add_child(rows)
+	var count := STYLE.label(lines[0], "", FONT - 2); count.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; rows.add_child(count)
+	if lines.size() < 2: return
+	var line := HBoxContainer.new(); line.add_theme_constant_override("separation", 12); rows.add_child(line)
+	var warning := STYLE.label(lines[1], "", FONT - 3); warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	warning.add_theme_color_override("font_color", WARN); warning.size_flags_horizontal = Control.SIZE_EXPAND_FILL; line.add_child(warning)
+	var settings := get_node_or_null("/root/Settings")
+	if settings == null: return
+	var switch := CheckButton.new(); switch.text = "Second look"; switch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	switch.set_pressed_no_signal(str(settings.get_value(BOND.SECOND_LOOK_KEY)) == "on")
+	switch.toggled.connect(func(on: bool) -> void:
+		settings.set_value(BOND.SECOND_LOOK_KEY, "on" if on else "off")
+		_refresh_panel())
+	switch.focus_entered.connect(_refresh_panel)
+	line.add_child(switch); _extra.append(switch)
+
+
 func _show_usage() -> void:
+	_show_tag_rate()
 	if worlds.is_empty():
 		_empty("gem", "No worlds yet", "What the AI cost in each world shows here."); return
 	var totals: Dictionary = _report.usage

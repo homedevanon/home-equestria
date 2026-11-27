@@ -110,6 +110,11 @@ func _process(delta: float) -> void:
 	var glints := 0.0
 	if outdoors and dry and winter:
 		glints = maxf(daylight * sun * 0.9, 0.0)
+	# Quality key air_motes_scale (autoload/quality.gd AMBIENCE_CONFIG, 1 on every tier today):
+	# the share of the motes and glints alive; 0 switches both clouds off.
+	var quality: Node = get_node_or_null("/root/Quality")
+	var share: float = float(quality.call("get_value", "air_motes_scale", 1.0)) if quality != null else 1.0
+	motes *= share; glints *= share
 	_apply(_motes, _mote_material, motes, Color(1.0, 0.93, 0.72).lerp(Color(1.0, 0.72, 0.4), golden), 0.5, camera)
 	_apply(_glints, _glint_material, glints, Color(0.86, 0.94, 1.0), 0.75, camera)
 

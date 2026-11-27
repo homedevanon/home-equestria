@@ -109,7 +109,7 @@ void vertex() {
 	// Spring: a card is whole (no leaf eaten away in patches) and there as soon as its tree buds.
 	if (in_spring) { leaf_kept = card_size > 0.001 ? 1.0 : 0.0; leaf_amount = 1.0; }
 	card_vary = (fract(card_hash * 7.31) - 0.5) * 0.3;
-	blossom_card = LOOK_SPRING > 0.0 ? 0.0 : vegetation_blossom_on(fract(card_hash * 16.0));
+	blossom_card = vegetation_spring_on() ? 0.0 : vegetation_blossom_on(fract(card_hash * 16.0));
 	// Multiply_4/5 -> AppendVector_0 -> ViewToInstance -> Normalize ->
 	// BillboardSize -> InstanceToWorld. Keep instance scale in the displacement.
 	vec2 corner = vec2(UV.x * 2.0 - 1.0, 1.0 - UV.y * 2.0);
@@ -119,7 +119,7 @@ void vertex() {
 	vec3 card_offset = (mat3(MODEL_MATRIX) * facing_local * billboard_size_cm
 		+ source_world_normal * inflate_cm) * billboard_scale * 0.01;
 	// Spring: blossom trees fill out, their cards grow up to a fifth at the blossom peak.
-	if (LOOK_SPRING <= 0.0) card_offset *= 1.0 + 0.2 * season_blossom * blossom_tree;
+	if (!vegetation_spring_on()) card_offset *= 1.0 + 0.2 * season_blossom * blossom_tree;
 	if (twig_card > 0.5) card_offset *= mix(twig_scale, 1.0, leaf_kept > 0.5 ? leaf_amount : 0.0);
 	// Spring: the card grows from a bud to its full size about its own middle.
 	else if (in_spring) card_offset *= card_size;
@@ -138,12 +138,14 @@ void vertex() {
 }
 
 void fragment() {
+	// Everything that needs screen derivatives (the mask's implicit mip, the twig derivatives) is
+	// taken first, outside any branch and before any discard, so it is defined on every Vulkan
+	// driver (AMD report 2026-11-12). Same values as before wherever they were defined.
+	float mask = texture(opacity_mask, UV).r;
+	vec2 tdx = dFdx(twig_uv);
+	vec2 tdy = dFdy(twig_uv);
 	if (leaf_kept < 0.5 && twig_card < 0.5) { discard; }
-	// Twig derivatives in uniform control flow (twig_card is flat, one value per card).
-	vec2 tdx = vec2(0.0);
-	vec2 tdy = vec2(0.0);
-	if (twig_card > 0.5) { tdx = dFdx(twig_uv); tdy = dFdy(twig_uv); }
-	bool leaf = leaf_kept > 0.5 && texture(opacity_mask, UV).r >= cutoff;
+	bool leaf = leaf_kept > 0.5 && mask >= cutoff;
 	if (leaf && leaf_amount < 0.999) leaf = vegetation_leaf_patch(UV, card_vary + 0.5) < leaf_amount;
 	if (!leaf) {
 		if (twig_card < 0.5) { discard; }
@@ -182,7 +184,9 @@ void fragment() {
 		highlight = vegetation_blossom(highlight, blossom_card);
 		highlight = vegetation_blossom_tree(highlight, spring_card.x, spring_card.z, card_vary);
 		ALBEDO = season_snow_albedo(ALBEDO, snow);
-		float facing = max(dot(normalize(NORMAL), normalize(VIEW)), 0.0);
+		// Clamped to 1 as well: a dot of two unit vectors can round past 1, and pow() of the
+		// negative base below is undefined (NaN on some drivers).
+		float facing = clamp(dot(normalize(NORMAL), normalize(VIEW)), 0.0, 1.0);
 		float fresnel = 0.04 + 0.96 * pow(1.0 - facing, fresnel_exponent);
 		// Native output is SubsurfaceColor (not Emissive). Godot backlighting avoids
 		// screen-space subsurface blur; different lighting model, same source colour.

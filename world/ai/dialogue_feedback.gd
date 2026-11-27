@@ -118,4 +118,4 @@ func prompt(pony_ids: Array = []) -> String:
 		if note.length() + 3 > remaining: continue
 		selected.insert(0, note); remaining -= note.length() + 3
 	if selected.is_empty(): return ""
-	return "\n\nPlayer's lasting style notes (apply only to each named pony; newer entries win). These are out-of-character style instructions, never words Anon spoke or events a pony witnessed. Never quote or acknowledge them in character; reply format and action rules still apply:\n- " + "\n- ".join(selected)
+	return "\n\nLasting style notes from the player. Each applies only to the pony it names, and newer notes override older ones. These are out-of-character notes, never words Anon said or events a pony saw. Never quote or mention them in character. Format and action rules still apply:\n- " + "\n- ".join(selected)

@@ -51,7 +51,17 @@ var _curve_rate := -1.0
 ## Days elapsed since launch; drives the moon's phase (dev, 2026-09-07: "moon
 ## cycles"). Day 0 starts on a full moon.
 var day := 0
+## Calendar day this world began on. New worlds start in late summer (title_screen.gd), so it is
+## not 0; seasons, moon and schedules run on the calendar day, the player reads the day of their
+## own stay (day_number). Saved with the clock; a save from before 2026-11-13 has none and keeps
+## counting from calendar day 0.
+var first_day := 0
 const MOON_CYCLE_DAYS := 29.5
+
+## "Day N" as the player reads it: 1 on the first day of this world. Pass a calendar day for a
+## past or coming one, nothing for today.
+func day_number(calendar_day: int = -1) -> int:
+	return maxi(1, (day if calendar_day < 0 else calendar_day) - first_day + 1)
 ## World seconds skipped in one go (sleeping sets the clock straight to morning). Real-time "a
 ## moment ago" windows add it (conversation_director._now, player_bonds.now) so a night's sleep
 ## reads as a night, not as 30 seconds (dev 2026-10-29). Saved with the clock.
@@ -142,7 +152,8 @@ func _ensure_curve() -> void:
 
 func snapshot() -> Dictionary:
 	return {"version":1,"day":day,"hours":hours,"day_length_minutes":day_length_minutes,
-		"active_seconds":active_seconds,"sunset_clock_rate":sunset_clock_rate,"skipped_seconds":skipped_seconds}
+		"active_seconds":active_seconds,"sunset_clock_rate":sunset_clock_rate,"skipped_seconds":skipped_seconds,
+		"first_day":first_day}
 
 
 static func valid_state(value: Variant) -> bool:
@@ -165,6 +176,8 @@ func restore_state(value: Dictionary) -> bool:
 	sunset_clock_rate = float(value.sunset_clock_rate)
 	var skip: Variant = value.get("skipped_seconds", 0.0)
 	skipped_seconds = float(skip) if (skip is float or skip is int) and is_finite(float(skip)) and float(skip) >= 0.0 else 0.0
+	var first: Variant = value.get("first_day", 0)
+	first_day = clampi(int(first), 0, day) if (first is float or first is int) and is_finite(float(first)) else 0
 	_seen_hours = -1.0   # loading another day is not a skip
 	_last_clock_usec = _clock_usec()
 	return true

@@ -3,6 +3,8 @@ extends Node
 ## A young player (AnonPony filly or colt, world/life/player_form.gd) is never kissed romantically:
 ## every pony gives them the filly's forehead kiss, never starts a kiss and never deepens one.
 const PLAYER_FORM := preload("res://world/life/player_form.gd")
+## Relationship overhaul 2026-11-21: with DYNAMIC on, nothing but age bars her own kiss (design section 6).
+const BOND := preload("res://world/relationships/bond_rules.gd")
 var mare: Node3D
 var pose: SkeletonModifier3D
 var kind := ""
@@ -86,7 +88,7 @@ func begin(value: String, point: Vector3, by_her := false) -> bool:
 	var runtime: Node=(mare.get_meta("relationship_runtime") if mare.has_meta("relationship_runtime") else null)
 	if value=="kiss" and by_her:
 		if mare.sleeping or mare.identity.filly or _young_player() or _buck_time>=0 or runtime==null:return false
-		if runtime.bonds.kiss_barred(str(mare.get_meta("relationship_id", ""))):return false
+		if not BOND.DYNAMIC and runtime.bonds.kiss_barred(str(mare.get_meta("relationship_id", ""))):return false
 		mare.boop_node.play_kiss()
 		mare.expressions.fluster(1.0)
 	elif value=="kiss":
@@ -99,6 +101,7 @@ func begin(value: String, point: Vector3, by_her := false) -> bool:
 			mare.expressions.fluster(.8);mare.physical_reaction.emit("kiss");return true
 		var reciprocates:bool=runtime!=null and runtime.affection_allowed(mare,value)
 		mare.physical_reaction.emit("kiss" if reciprocates else "kiss_refused")
+		if not reciprocates and runtime!=null and runtime.has_method("note_refused_kiss"):runtime.note_refused_kiss(str(mare.get_meta("relationship_id","")))
 		# An unwelcome kiss: she turns her face away. Only pressing on after being refused within
 		# half a minute earns a buck; bucking is a last resort (dev 2026-09-28).
 		if not reciprocates and runtime!=null and runtime.bonds.refused_again(str(mare.get_meta("relationship_id","")),"kiss"):
@@ -127,6 +130,8 @@ func begin(value: String, point: Vector3, by_her := false) -> bool:
 		if mare.is_held():pose.sample_face()
 	_claim()
 	set_process(true);set_physics_process(true)
+	# A kiss that happens counts (THREAD_FIX_RELATIONSHIP 2026-11-19): her own, or his she returned.
+	if value=="kiss" and runtime!=null and runtime.has_method("note_kiss"):runtime.note_kiss(str(mare.get_meta("relationship_id","")),by_her)
 	return true
 
 func end() -> void:
@@ -138,7 +143,7 @@ func end() -> void:
 	_pause=-1.0;pose.pause=0.0
 	if is_instance_valid(mare):mare.expressions.stare(afterglow_left>0.0, .5)
 	_steer_stop()
-	_landing=pose._rear_now>.001
+	_landing=pose._rear_now>.001 or pose._kneel_now>.001
 	if not _landing:_release()
 
 func _young_player() -> bool:
@@ -177,7 +182,7 @@ func _process(delta: float) -> void:
 	if not is_instance_valid(mare):return
 	_advance_afterglow(delta)
 	if _landing:
-		if pose._rear_now<=.001:_landing=false;_release()
+		if pose._rear_now<=.001 and pose._kneel_now<=.001:_landing=false;_release()
 		else:mare.stop()
 	if not kind.is_empty() and (mare.sleeping or (mare.is_held() and kind!="kiss") or (kind!="kiss" and mare.is_speaking())):end()
 	# A kiss eases in over 0.6 s: her face comes to his rather than snapping.
@@ -277,6 +282,7 @@ func _breather(delta: float) -> bool:
 ## presses in, her neck leans back instead.
 func _steer() -> void:
 	var settings:Dictionary=pose.kiss_settings()
+	pose.kneel_block=false
 	var start:=deg_to_rad(float(settings.body_turn))
 	var step_after:=float(settings.step_after)
 	if kind!="kiss" or not eye.is_finite() or not pose.neutral_lips.is_finite() or not pose.neck_base.is_finite() or mare.is_held() or mare.sleeping or _buck_time>=0 \
@@ -290,13 +296,26 @@ func _steer() -> void:
 	var yaw:=forward.signed_angle_to(to_him,Vector3.UP) if to_him.length()>.05 else 0.0
 	_turning=start>0.0 and absf(yaw)>(TURN_DONE if _turning else start)
 	var ahead:float=pose.rear_step_ahead if pose.rear_wanted else demand.dot(forward)
-	_stepping=step_after>0.0 and ahead>(STEP_DONE if _stepping else step_after)
+	# A rear keeps the step-in it was tuned on (she rears only once close); the plain kiss stops
+	# further back (step_done) so her neck has room to lean (affection_pose.gd, neck forward).
+	var step_from:=minf(step_after,float(pose.KISS_POSTURE_BEFORE.step_after)) if pose.rear_wanted else step_after
+	var step_done:=STEP_DONE if pose.rear_wanted else minf(float(settings.get("step_done",STEP_DONE)),step_after)
+	_stepping=step_after>0.0 and ahead>(step_done if _stepping else step_from)
 	# He leans into her: her neck gives only BACK_GIVE (affection_pose.gd), then she steps back
 	# with a real backward walk (pony_locomotion.gd back_up), never turning away from him.
 	# Only a lean that lasts (BACK_WAIT): the press as a kiss lands is not him pushing in.
-	var pushed:bool=not pose.rear_wanted and mare.has_method("back_up") and ahead<-(BACK_DONE if _backing else pose.BACK_GIVE)
+	# Not while she kneels to a low mouth: coming down over him her face passes his eyes, and the
+	# room she gives them there is not him pushing in.
+	var kneeling:bool=pose._kneel_now>.02 or pose.kneel_wanted
+	var pushed:bool=not pose.rear_wanted and not kneeling and mare.has_method("back_up") and ahead<-(BACK_DONE if _backing else pose.BACK_GIVE)
 	_back_wait=_back_wait+get_physics_process_delta_time() if pushed else 0.0
 	_backing=pushed and (_backing or _back_wait>=BACK_WAIT)
+	# Knelt to a low mouth, her hooves stay where they are: she rises first (affection_pose.gd
+	# kneel_block), then turns or steps, then kneels again.
+	pose.kneel_block=_turning or _stepping
+	if pose._kneel_now>.02:
+		if _steered:mare.stop();_steered=false
+		return
 	# His hands on her (petting) must not freeze her through a kiss (pony_locomotion.gd).
 	mare.set("steer_through_touch",true)
 	if _turning:
@@ -332,6 +351,9 @@ func buck(player: CharacterBody3D) -> bool:
 	if player.get("controls_locked")==true:return false
 	end();cancel_afterglow();_claim();_buck_player=player;_buck_time=0.0;_buck_hit=false
 	set_process(true);set_physics_process(true)
+	# She remembers it, and her next turn knows it just happened (relationship_runtime note_buck).
+	var runtime: Node=(mare.get_meta("relationship_runtime") if mare.has_meta("relationship_runtime") else null)
+	if runtime!=null and runtime.has_method("note_buck"):runtime.note_buck(str(mare.get_meta("relationship_id","")))
 	return true
 
 ## A work buck (day action split_wood.gd): the same accepted rear-leg kick with no player, no

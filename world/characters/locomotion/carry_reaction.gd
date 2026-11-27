@@ -5,10 +5,15 @@ var start := Vector3.ZERO
 var head_start := Vector3.ZERO
 var active := false
 var sent := false
+## Struggling out of an unwanted hold (carry_struggle.gd); ticked here, before the event below.
+var struggle := preload("res://world/characters/locomotion/carry_struggle.gd").new()
 func update(actor: Node3D, delta: float) -> void:
+	var wants_down: bool = struggle.update(actor, delta)
 	if not actor.get("_held"):
 		active = false; elapsed = 0.0; sent = false
 		return
+	# She wants down, so the "enjoy being held" event does not fit her: it is not sent.
+	if wants_down: sent = true
 	var camera: Camera3D = preload("res://world/player_view.gd").camera(actor)
 	var head: Vector3 = camera.global_position if camera != null else actor.global_position
 	if not active:

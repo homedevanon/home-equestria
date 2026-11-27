@@ -1,4 +1,4 @@
-extends SkeletonModifier3D
+extends PonyClipHeadNative
 ## Live head over the clip tiers' baked gaits (docs/CLIP_TIER_2026_09_25.md). The clips are baked
 ## with the secondary layer frozen, so here the pony's head, gaze and neck-gaze angles (updated at
 ## her 20 Hz logic tick) are interpolated between the last two logic ticks and layered onto the
@@ -7,17 +7,29 @@ extends SkeletonModifier3D
 ## right after the terrain modifier. Scaled in over the hand-off, whose clip already carries the
 ## solver's last head. In a posture it layers the gaze the way apply_rest_gaze() does over the
 ## posture's FK (no breath, 50° at most, no joint limits), faded out as a sleep pose takes over.
+##
+## Native pony step (2026-11-21, lane body): `pony`, `native` (PonySolverNative, clip_head in
+## face.cpp, when the extension is loaded; null keeps the loop below) and `_bound` live in the
+## native base PonyClipHeadNative (native/pony_solver/src/body_modifiers_native.cpp). Its
+## native_step() reads the same inputs and calls clip_head() directly; it declines, changing
+## nothing, when `native` is null (the GDScript loop of _apply() runs then).
+## Rollback: NATIVE_STEP = false (or `--native-body=off`; `--native-body=on` or
+## `--native-body=clip` turns it on for one run).
 const PROFILE := preload("res://tools/crowd_cpu_profile.gd")  # timed only under --profile-cpu / the benches
+const NATIVE_STEP := true  # rollback switch; true only after parity passes
+static var _native_on: bool = (NATIVE_STEP and not ("--native-body=off" in OS.get_cmdline_user_args())) \
+		or "--native-body=on" in OS.get_cmdline_user_args() or "--native-body=clip" in OS.get_cmdline_user_args()
 
-var pony: Node
-## PonySolverNative (clip_head, face.cpp) when the extension is loaded; null keeps the loop below.
-var native: RefCounted
-var _bound := false
+## Physics frame whose pass the native body batch took over (rig_batch.gd); this script's pass
+## returns at once in that frame. 0: never.
+var rig_batch_step := 0
 
 
 func _process_modification_with_delta(_delta: float) -> void:
+	if rig_batch_step > 0 and rig_batch_step == Engine.get_physics_frames() and Engine.is_in_physics_frame(): return
 	var started := Time.get_ticks_usec() if PROFILE.enabled else 0
-	_apply()
+	if not (_native_on and native_step()):
+		_apply()
 	if PROFILE.enabled: PROFILE.record("clip_head", started)
 
 

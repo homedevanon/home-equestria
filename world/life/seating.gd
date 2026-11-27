@@ -329,6 +329,8 @@ func _front(seat: Node3D) -> Vector3:
 	var hit := seat.get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(at + Vector3.UP * 0.3, at + Vector3.DOWN * 3.0, 1))
 	return hit.position if not hit.is_empty() else Vector3(at.x, seat.global_position.y - 0.45, at.z)
 
+const SEATED_EVERY := 6
+
 func _physics_process(_delta: float) -> void:
 	if _users.is_empty(): return   # no keys() copy on the (usual) empty ticks
 	for key in _users.keys():
@@ -358,6 +360,12 @@ func _physics_process(_delta: float) -> void:
 						entry.tries = 0
 						entry.phase = "sitting_down"
 					else: _hop_on(entry, actor, seat)
+				elif not nav._has_target and not near and Time.get_ticks_msec() <= int(entry.until) and nav.state not in [nav.State.UNREACHABLE, nav.State.BLOCKED] \
+						and int(entry.get("regoes", 0)) < 3 and entry.has("couch") and is_instance_valid(entry.couch) and entry.couch.has_method("exit_fallback"):
+					# Thread fix "beds": a bed's walk loses its target for a tick at a doorway inside the
+					# house (house travel's handoff, Golden Oak): ask again instead of giving up. Other seats as before.
+					entry.regoes = int(entry.get("regoes", 0)) + 1
+					nav.go_to(entry.get("front", _front(seat)), 1)
 				elif Time.get_ticks_msec() > int(entry.until) or nav.state in [nav.State.UNREACHABLE, nav.State.BLOCKED] or (not nav._has_target and not near):
 					_release(entry)
 			"sitting_down":
@@ -378,11 +386,44 @@ func _physics_process(_delta: float) -> void:
 						print("[seating] %s could not sit: %s" % [actor.name, actor.posture_status().refusal])
 						_hop_off(entry, actor, seat)
 			"seated":
+				if actor.get("_held"):
+					_release(entry); continue
+				# Seated ponies are asked whether someone wants them up every SEATED_EVERY ticks
+				# (staggered), not every tick: posture_status() builds a dictionary per seated pony
+				# (performance overhaul 2026-11-21: seating 10 -> 57 us a step as a town settled).
+				# A request to stand is answered at most 0.1 s later. Rollback: SEATED_EVERY = 1.
+				if SEATED_EVERY > 1 and (Engine.get_physics_frames() + int(key)) % SEATED_EVERY != 0: continue
 				var status: Dictionary = actor.posture_status()
 				if actor.get("_held") or status.requested != entry.posture:
 					# Someone wants her up: stand on the seat, then hop down in front of it.
 					if actor.get("_held"): _release(entry)
 					elif status.kind == "stand" and status.settled: _hop_off(entry, actor, seat)
+
+## Set straight down on her seat's rest (Anon carried her to a bed and laid her beside him there,
+## shared_bed.gd place_guest): no walk and no hop, she lies down where she was put. False when she is
+## not this seat's approaching user.
+func seat_at_rest(actor: Node3D) -> bool:
+	var entry: Dictionary = _users.get(actor.get_instance_id(), {})
+	if entry.is_empty() or str(entry.phase) != "approach" or not is_instance_valid(entry.seat): return false
+	var seat: Node3D = entry.seat
+	var rest: Transform3D = entry.get("rest", Transform3D(seat.global_basis.orthonormalized(), seat.global_position + Vector3.UP * 0.02))
+	actor.get_node("Navigator").stay()
+	actor.set_meta("seated", true)
+	actor.motion_paused = false
+	actor.reset_motion(rest)
+	entry.tries = 0
+	entry.phase = "sitting_down"
+	return true
+
+## Hop onto her seat from where she stands now, her walk to its front having stalled close by
+## (shared_bed.gd _hop_when_stalled; the seat's hop_clear still decides). True once she climbs.
+func hop_from_here(actor: Node3D) -> bool:
+	var entry: Dictionary = _users.get(actor.get_instance_id(), {})
+	if entry.is_empty() or str(entry.phase) != "approach" or not is_instance_valid(entry.seat): return false
+	if actor.posture_status().kind != "stand": return false
+	entry.front = actor.global_position
+	_hop_on(entry, actor, entry.seat)
+	return str(entry.phase) == "climbing"
 
 func _hop_on(entry: Dictionary, actor: Node3D, seat: Node3D) -> void:
 	if entry.has("couch"):
@@ -413,8 +454,24 @@ func _hop_off(entry: Dictionary, actor: Node3D, seat: Node3D) -> void:
 		_release(entry); return
 	if entry.has("couch") and is_instance_valid(entry.couch):
 		var floor_at: Vector3 = preload("res://world/life/couch/exit_space.gd").find_exit(actor, seat, entry.front, actor.profile.clearance, actor.profile.radius)
-		if not floor_at.is_finite(): return
-		if not entry.couch.hop_clear(actor, actor.global_position, floor_at): return
+		# Thread fix "beds": where her 0.45 m x size route footprint finds no floor beside a bed (from
+		# x1.7) find_exit fell back to the mattress itself and she hopped in place, standing on the
+		# bed for good; the bed measures again with her real capsule (shared_bed.gd exit_size).
+		# Other furniture, and every floor spot found before, as before.
+		if entry.couch.has_method("exit_size") and (not floor_at.is_finite() or bool(entry.couch.call("exit_on_bed", floor_at))):
+			var size: Vector2 = entry.couch.exit_size(actor)
+			floor_at = preload("res://world/life/couch/exit_space.gd").find_exit(actor, seat, entry.front, size.y, size.x)
+			# Still none (a princess at Hoers): the floor she came up from, or the bed's side marker.
+			if (not floor_at.is_finite() or bool(entry.couch.call("exit_on_bed", floor_at))) and entry.couch.has_method("exit_fallback"):
+				var fallback: Vector3 = entry.couch.exit_fallback(actor)
+				if fallback.is_finite(): floor_at = fallback
+		var clear: bool = floor_at.is_finite() and entry.couch.hop_clear(actor, actor.global_position, floor_at)
+		# A bed: a measured exit whose hop is blocked (furniture between) is not the only way down.
+		if not clear and entry.couch.has_method("exit_fallback"):
+			var way_down: Vector3 = entry.couch.exit_fallback(actor)
+			if way_down.is_finite() and entry.couch.hop_clear(actor, actor.global_position, way_down):
+				floor_at = way_down; clear = true
+		if not clear: return
 		entry.front = floor_at
 	entry.phase = "leaving"
 	actor.motion_paused = true

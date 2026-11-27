@@ -4,6 +4,7 @@ extends Node
 ## "send": Derpy swoops from out of sight to Anon's letter hand, takes the letter from it in her
 ## mouth, says a cheerful line and flies off toward the recipient's house. "give": the reverse, for
 ## a reply while he has no home mailbox: she brings it in her mouth and hands it to his free hand.
+## "drop" (mailbox_swoop.gd, which extends this): she brings his mail to his own mailbox.
 ##
 ## The courier Derpy is a fresh derpy_hooves.tscn (child of this node, not a resident, never
 ## registered with the director): she spawns 25 m behind and 15 m above him outside the view,

@@ -16,6 +16,11 @@ const MODEL := "res://world/characters/openpony/openpony.glb"
 @export var model_path := MODEL
 ## Fillies: bigger pupils and a third eye shine (openpony_eye_layer.gdshader).
 var pupil_scale := 1.0
+## The show-iris pupil: the left drawing's fitted ellipse (x*x, x*y, y*y terms in the iris frame) and
+## how much bigger than drawn every pony's resting pupil is (1.0 = the original art; dev picked between
+## 1.0 and 1.15 on 2026-11-22, 1.3 "way too big").
+const PUPIL_METRIC := Vector3(8.846705, .007479, 8.110767)
+const PUPIL_REST_SIZE := 1.08
 var third_shine := false
 var reference_eyes := false
 ## Reviewed September 24 artwork, tinted by each identity's iris color.
@@ -56,6 +61,15 @@ var model: Node3D
 var mouth: PonyMouth
 var voice: AudioStreamPlayer3D
 var _eye_layers: Array[ShaderMaterial] = []
+## Perf 2026-11-21 (lane native_calls): the show-iris materials of _eye_layers and their side, found
+## once instead of has_meta/get_meta on every eye material in every eye update (update_show_eyes is
+## the native eye_process callback, every step for close ponies). Per pony; built lazily in the rig
+## pass (which may run on a worker), read-only afterwards; rebuilt when _eye_layers grows (the
+## material builder appends there, on the main thread, and resets _iris_from). Rollback: CACHE_IRIS = false.
+const CACHE_IRIS := true
+var _iris: Array[ShaderMaterial] = []
+var _iris_left: Array[bool] = []
+var _iris_from := -1
 static var _clips: AnimationLibrary
 var _cues: Array = []
 var _speech_time := -1.0
@@ -402,6 +416,7 @@ func _material_for(mesh_name: String, material_name: String) -> Material:
 			eye.render_priority = 10 + (1 if layer == "" else int(layer))
 			eye.set_meta("left_eye", material_name.begins_with("left"))
 			_eye_layers.append(eye)
+			_iris_from = -1
 			return eye
 		mat.albedo_color = iris_color if layer == "" else Color(0,0,0,0)
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -417,13 +432,19 @@ func _material_for(mesh_name: String, material_name: String) -> Material:
 			# Original pupil path bounds, including the area covered by the shines.
 			# Both eyes use the L drawing's extent, centred on the iris; R was 11% narrower,
 			# 12% shorter and lower. These source transforms preserve the original art.
-			eye.set_shader_parameter("pupil_metric", Vector3(8.846705,.007479,8.110767) if side == "L" else Vector3(8.910513,.722167,8.168281))
+			# Dev 2026-11-22 (a player's photo of lopsided pupils; "the black circle in the center on
+			# neutral is way too small"): the R drawing's ellipse was tilted about 30 degrees against L's,
+			# so both eyes now take the L ellipse (mirrored for the other eye), PUPIL_REST_SIZE bigger.
+			var pupil_metric := PUPIL_METRIC / (PUPIL_REST_SIZE * PUPIL_REST_SIZE)
+			if side == "R": pupil_metric.y = -pupil_metric.y
+			eye.set_shader_parameter("pupil_metric", pupil_metric)
 			eye.set_shader_parameter("tint_source", Vector4(.509766,.5,1,1) if side == "L" else Vector4(.496094,.499349,1.012821,.971074))
 			# Drawn show lids (show_lid.gd): the export's Left Eye sits on -x, its nose side toward -UV.x.
 			eye.set_shader_parameter("nose_sign",-1.0 if material_name.begins_with("left") else 1.0)
 			eye.set_meta("show_iris",true)
 			eye.set_meta("left_eye",material_name.begins_with("left"))
 			_eye_layers.append(eye)
+			_iris_from = -1
 			return eye
 		mat.albedo_color = Color(0.98, 0.98, 1.0)
 	elif "lip" in material_name or "nostril" in material_name:
@@ -532,8 +553,29 @@ func set_face_sculpt(weights: Dictionary, shape := Vector2.ONE) -> void:
 	_apply_sculpt_appearance()
 
 
+## The show-iris materials (see CACHE_IRIS), in _eye_layers order; _iris_left[i] is material i's side.
+func _iris_materials() -> Array[ShaderMaterial]:
+	if _iris_from != _eye_layers.size():
+		var iris: Array[ShaderMaterial] = []
+		var left: Array[bool] = []
+		for material in _eye_layers:
+			if material.has_meta("show_iris"):
+				iris.append(material)
+				left.append(bool(material.get_meta("left_eye", false)))
+		_iris_left = left
+		_iris = iris
+		_iris_from = _eye_layers.size()
+	return _iris
+
+
 func _apply_sculpt_appearance() -> void:
 	var visible := 1.0 - smoothstep(0.0, .85, _sculpt_closure)
+	if CACHE_IRIS:
+		for material in _iris_materials():
+			material.set_shader_parameter(&"iris_shape", Vector2.ONE.lerp(_sculpt_iris_shape, visible))
+			material.set_shader_parameter(&"iris_projection", visible if _sculpt_amount > .00001 else 0.0)
+		for material in _lash_materials: material.set_shader_parameter(&"sculpt_amount", _sculpt_amount * visible)
+		return
 	for material in _eye_layers:
 		if material.has_meta("show_iris"):
 			material.set_shader_parameter("iris_shape", Vector2.ONE.lerp(_sculpt_iris_shape, visible))
@@ -547,6 +589,9 @@ func _update_eye_projection() -> void:
 	if unpose.is_equal_approx(_eye_rest_from_pose): return
 	_eye_rest_from_pose = unpose
 	if face_sculpt != null: face_sculpt.set_lid_projection(unpose)
+	if CACHE_IRIS:
+		for material in _iris_materials(): material.set_shader_parameter(&"eye_rest_from_pose", unpose)
+		return
 	for material in _eye_layers:
 		if material.has_meta("show_iris"): material.set_shader_parameter("eye_rest_from_pose", unpose)
 
@@ -560,7 +605,19 @@ func set_eye_details(pupil: float, hearts: float, shine_offset: float) -> void:
 		if not material.has_meta("show_iris"): continue
 		material.set_shader_parameter("pupil_dilation", details.x)
 		material.set_shader_parameter("heart_shines", details.y)
-		material.set_shader_parameter("shine_drop", details.z)
+		material.set_shader_parameter("shine_drop", clampf(details.z + _lid_shine, -.1, .4))
+
+
+## How far the shines sit lower because her lids are closing (dev 2026-11-22: "the eye shines need
+## to be able to move downward with the eyelids"), added to the face's own shine_drop. Written by
+## hybrid_expressions.gd from her lid closure every frame; the material changes only when it moves.
+var _lid_shine := 0.0
+func set_lid_shine(drop: float) -> void:
+	drop = clampf(drop, 0.0, .4)
+	if absf(drop - _lid_shine) < .002: return
+	_lid_shine = drop
+	for material in _eye_layers:
+		if material.has_meta("show_iris"): material.set_shader_parameter("shine_drop", clampf(_eye_details.z + _lid_shine, -.1, .4))
 
 
 func update_show_eyes(left_angles: Vector2, right_angles: Vector2, lid_closure: float) -> void:
@@ -574,9 +631,15 @@ func update_show_eyes(left_angles: Vector2, right_angles: Vector2, lid_closure: 
 	_shown_eyes = shown
 	_shown_right = right_angles
 	_shown_drop = iris_drop
-	for material in _eye_layers:
-		if material.has_meta("show_iris"):
-			material.set_shader_parameter("gaze_uv",show_gaze_uv(left_angles if material.get_meta("left_eye") else right_angles) + Vector2(0.0, iris_drop))
+	if CACHE_IRIS:
+		var iris := _iris_materials()
+		var sides := _iris_left
+		for i in iris.size():
+			iris[i].set_shader_parameter(&"gaze_uv", show_gaze_uv(left_angles if sides[i] else right_angles) + Vector2(0.0, iris_drop))
+	else:
+		for material in _eye_layers:
+			if material.has_meta("show_iris"):
+				material.set_shader_parameter("gaze_uv",show_gaze_uv(left_angles if material.get_meta("left_eye") else right_angles) + Vector2(0.0, iris_drop))
 	if _show_eye_mesh != null:
 		_show_eye_mesh.set_blend_shape_value(0,smoothstep(0.0,.45,lid_closure))
 

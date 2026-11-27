@@ -150,6 +150,7 @@ func _update_piloted(delta: float) -> void:
 	pony.velocity = pilot_model.step(pony.velocity / s, pilot_view, pilot_input,
 		pilot_flap, pilot_boost, pilot_retract, delta) * s
 	pony.move_and_slide()
+	if _touch_down_on_open_ground(): return
 	pony.actual_speed = Vector2(pony.velocity.x, pony.velocity.z).length()
 	var flat := Vector3(pony.velocity.x, 0.0, pony.velocity.z)
 	if flat.length() > 0.3:
@@ -431,6 +432,7 @@ func _native_fly(delta: float) -> void:
 		if _blocked > 2.0: _native_clear(); land(); return
 	else:
 		_blocked = 0.0; pony.velocity = next; pony.move_and_slide()
+		if _touch_down_on_open_ground(): return
 	pony.actual_speed = Vector2(pony.velocity.x, pony.velocity.z).length()
 	if pony.actual_speed > .15:
 		pony.rotation.y = lerp_angle(pony.rotation.y, atan2(-pony.velocity.x, -pony.velocity.z), 1.0 - exp(-delta * 4.0))
@@ -1025,6 +1027,7 @@ func update(delta: float) -> void:
 			land(); return
 	else:
 		_blocked = 0.0; pony.velocity = next; pony.move_and_slide()
+		if _touch_down_on_open_ground(): return
 	pony.actual_speed = Vector2(pony.velocity.x,pony.velocity.z).length()
 	if pony.actual_speed > .15:
 		var yaw := atan2(-pony.velocity.x,-pony.velocity.z)
@@ -1066,6 +1069,7 @@ func _update_settle(delta: float) -> void:
 	_settle_for += delta
 	pony.velocity = Vector3.DOWN * (1.5 * pony.body_scale)
 	pony.move_and_slide()
+	if _touch_down_on_open_ground(): return
 	pony.actual_speed = 0.0
 	if pony.is_on_floor():
 		destination = pony.global_position
@@ -1135,6 +1139,47 @@ func _apply_direction_pose(delta: float) -> void:
 	_visual_pitch = lerp_angle(_visual_pitch,wanted,1.0-exp(-maxf(delta,0.0)*10.0))
 	var bank: float = pilot_model.bank_angle if state == "piloted" and pilot_model != null else 0.0
 	pony.pivot.basis = Basis(Vector3.RIGHT,_visual_pitch) * Basis(Vector3.FORWARD,bank)
+
+## Thread fix "sunk" (2026-11-19, docs/THREAD_FIX_SUNK_2026_11_19.md): the ground has collision only
+## in a window around the camera (world_terrain.gd DYNAMIC_GAME), so a flight going down out there
+## went through it: the courier's glide down at a far door (courier_swoop.gd, 2 m/s for LANDING_LIMIT)
+## ended 36 m under the road, the settle after a stalled landing (SETTLE_SECONDS at 1.5 m/s) 9 m
+## under, where its rescue hover then held her, pinned to the solver, for good. A flying pony that
+## ends a step under the terrain heightmap where that column has no collision, or deeper than
+## UNDER_GROUND under a collision top with no floor of any kind under her (a cave or tunnel keeps its
+## floor), touches down on the ground above her. One heightmap read per flying step; rays only once
+## she is under it. Rollback: GROUND_GUARD = false.
+const GROUND_GUARD := true
+const UNDER_GROUND := 0.35
+
+func _open_ground_above() -> float:
+	if not GROUND_GUARD or not is_instance_valid(WorldTerrain.instance): return NAN
+	var at := pony.global_position
+	var ground: float = WorldTerrain.instance.height_at(at)
+	if not is_finite(ground) or at.y > ground - 0.05: return NAN
+	var space := pony.get_world_3d().direct_space_state
+	var column := space.intersect_ray(PhysicsRayQueryParameters3D.create(Vector3(at.x, ground + 0.6, at.z), Vector3(at.x, ground - 0.6, at.z), pony.floor_mask, _own_rids()))
+	if column.is_empty(): return ground
+	# With collision there, only under the ground itself or a path over it (never a building's roof
+	# or floor) and never in a house.
+	var collider: Variant = column.get("collider")
+	if not collider is Node or preload("res://world/navigation/roster_placement.gd").building(collider as Node): return NAN
+	var top := float(column.position.y)
+	if at.y > top - UNDER_GROUND * pony.body_scale: return NAN
+	for home: Node in pony.get_tree().get_nodes_in_group("house_interiors"):
+		if home.has_method("contains") and bool(home.call("contains", at, true)): return NAN
+	var above := minf(0.3, top - at.y - 0.1)
+	if not space.intersect_ray(PhysicsRayQueryParameters3D.create(at + Vector3.UP * above, at - Vector3.UP * 0.6, pony.floor_mask, _own_rids())).is_empty(): return NAN
+	return top
+
+func _touch_down_on_open_ground() -> bool:
+	var ground := _open_ground_above()
+	if not is_finite(ground): return false
+	var at := pony.global_position
+	print("[pony] %s flew into the ground (%s, %.2f m under it); landing on it" % [pony.name, state, ground - at.y])
+	destination = Vector3(at.x, ground, at.z)
+	_finish()
+	return true
 
 func _finish() -> void:
 	if state == "piloted" and pilot_model != null: pilot_model.finish()

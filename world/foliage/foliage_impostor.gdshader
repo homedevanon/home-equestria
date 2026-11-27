@@ -24,7 +24,9 @@ void vertex() {
 	vec3 local_view = vec3(dot(toward, MODEL_MATRIX[0].xyz) / max(size.x, 0.00001),
 		dot(toward, MODEL_MATRIX[1].xyz) / max(size.y, 0.00001),
 		dot(toward, MODEL_MATRIX[2].xyz) / max(size.z, 0.00001));
-	float azimuth = mod(floor(atan(local_view.x, local_view.z) * 8.0 / TAU + 0.5), 8.0);
+	// atan(0, 0) is undefined (NaN on some drivers): looking straight down, picture 0 stands in.
+	vec2 flat_view = dot(local_view.xz, local_view.xz) > 1e-10 ? local_view.xz : vec2(0.0, 1.0);
+	float azimuth = mod(floor(atan(flat_view.x, flat_view.y) * 8.0 / TAU + 0.5), 8.0);
 	float elevation = clamp(floor(asin(clamp(local_view.y, -1.0, 1.0)) / radians(35.0) + 0.5), 0.0, 2.0);
 	atlas_cell = vec2(azimuth, elevation);
 	vec3 right = normalize(cross(vec3(0.0, 1.0, 0.00001), toward));
@@ -47,7 +49,7 @@ void fragment() {
 	if (green > 0.3 && (season_leaf_drop > 0.001 || season_blossom > 0.001)) {
 		float patch_hash = vegetation_cell_hash(vec3(floor(UV * thin_cells) + vec2(plant_seed, 0.0), 0.0), 1.0);
 		kept = vegetation_patch_kept(vegetation_leaf_kept(patch_hash, 1.0, season_local.x, evergreen, blossom_tree), patch_hash, season_local.x, evergreen);
-		if (LOOK_SPRING <= 0.0) bloom = vegetation_blossom_on(fract(patch_hash * 16.0));
+		if (!vegetation_spring_on()) bloom = vegetation_blossom_on(fract(patch_hash * 16.0));
 	}
 	// Spring: the whole crown buds, flowers and leafs out together (vegetation_spring_far).
 	float bloom_kind = 0.0;

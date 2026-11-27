@@ -1,4 +1,4 @@
-extends Node
+extends PonyNavFollowDriverNative
 ## Batch driver of the native follower (docs/NAVIGATION_PHASE_2_2026_10_02.md, phase 2 of
 ## docs/NAVIGATION_OVERHAUL_COMPLETE_2026_10_02.txt). One per scene tree, beside the world root;
 ## pony_navigator.gd adds it on first use when native following is enabled (the default).
@@ -24,6 +24,14 @@ const CPU_PROFILE := preload("res://tools/crowd_cpu_profile.gd")
 const INPUT_STRIDE := 13
 const COMMAND_STRIDE := 4
 const STATE_STRIDE := 8
+## 2026-11-21 native pony step, lane follow (captures/perf_2026-11-21/port_follow.md): the gather,
+## the step_batch call and the hand-off run in one native call (PonyNavFollowDriverNative,
+## native/pony_solver/src/nav_follow_native.cpp) instead of the GDScript loops below, which stay as
+## the rollback path. The counters (batches, rows_stepped, observers_added, invalid_buffers,
+## last_batch_us, peer_refreshes) are properties of that native base under their old names. Each
+## follower's own hand-off (_native_apply) runs natively when pony_navigator.gd's own
+## NATIVE_FOLLOW_STATE is on. Rollback: NATIVE_FOLLOW_STATE = false.
+const NATIVE_FOLLOW_STATE := true
 
 ## Navigators queued this physics frame (each submits at most once per frame).
 var _rows: Array[Node] = []
@@ -31,11 +39,10 @@ var _peer_snapshot: Array[WeakRef] = []
 var _peer_snapshot_dirty := true
 var _followers: Array[Node] = []
 var _observers: Array[Node3D] = []
-## Counter for the actual group rebuild, independent of native batch count.
-var peer_refreshes := 0
 
 ## Reuse the observer batch; clip-tier bodies deliberately have no physics collider.
 func nearby_navigators(at:Vector3,radius:float) -> Array[Node]:
+	if NATIVE_FOLLOW_STATE and OBSERVER_CACHE: return native_nearby_navigators(at, radius)
 	var result:Array[Node]=[]
 	for reference:WeakRef in _peer_snapshot:
 		var nav:Node=reference.get_ref()
@@ -51,17 +58,12 @@ var _inputs := PackedFloat32Array()
 var _services: Array[Node] = []
 ## One observer row of inputs (all zero), appended per observer.
 var _zero_row := PackedFloat32Array()
-## Counters for labs.
-var batches := 0
-var rows_stepped := 0
-var observers_added := 0
-var invalid_buffers := 0
-var last_batch_us := 0
 
 
 func _ready() -> void:
 	process_physics_priority = -5
 	add_to_group("native_follow_drivers")
+	native_configure(BACKEND)
 	# Navigators call _invalidate_peers when they join or leave the tree (pony_navigator.gd _ready).
 	# tree_changed fired on every node added anywhere and rebuilt the list each time (2026-10-23 CPU pass).
 	_invalidate_peers()
@@ -69,24 +71,69 @@ func _ready() -> void:
 
 func _invalidate_peers() -> void:
 	_peer_snapshot_dirty = true
+	native_invalidate_peers()
+
+
+## 2026-11-21 perf (navigation lane; gather 62-73 us a step, most of it the observer rows): the
+## snapshot also keeps each navigator, her pony and her observer key in typed arrays, and a follower
+## marks her slot when the batch collects her, so an observer row reads no navigator member by name.
+## The snapshot is rebuilt whenever a navigator joins or leaves the tree or registers a native actor
+## (navigator_native_adapter.gd register()), so every cached value is the one the old loop read.
+## Rollback: OBSERVER_CACHE = false.
+static var OBSERVER_CACHE := true
+var _peer_navs: Array[Node] = []
+var _peer_ponies: Array[Node3D] = []
+var _peer_keys := PackedInt64Array()
+## navigator -> her slot in the arrays above.
+var _peer_slots: Dictionary = {}
+## Physics frame in which each snapshot slot was collected as a follower.
+var _peer_stamp := PackedInt64Array()
 
 
 func _refresh_peer_snapshot() -> void:
 	if not _peer_snapshot_dirty: return
 	_peer_snapshot_dirty = false
 	_peer_snapshot.clear()
+	_peer_navs.clear()
+	_peer_ponies.clear()
+	_peer_keys.clear()
+	_peer_slots.clear()
 	# Production navigators join their group in _ready, after entering the tree.
 	# Rebuild on the next batch so both additions and removals are reflected.
 	for navigator: Node in get_tree().get_nodes_in_group("pony_navigators"):
 		_peer_snapshot.append(weakref(navigator))
+		_peer_slots[navigator] = _peer_navs.size()
+		_peer_navs.append(navigator)
+		# Read by name once per rebuild (lab stubs may lack a member; the batch never reads them).
+		_peer_ponies.append(navigator.get(&"pony") as Node3D)
+		var held: Variant = navigator.get(&"_native_handle")
+		var handle: PackedInt64Array = held if held is PackedInt64Array else PackedInt64Array()
+		_peer_keys.append((handle[0] << 32) | handle[1] if handle.size() == 2 else (1 << 62) | (navigator.get_instance_id() & 0xffffffffffff))
+	_peer_stamp.resize(_peer_navs.size())
+	_peer_stamp.fill(-1)
 	peer_refreshes += 1
 
 
 func submit(navigator: Node) -> void:
-	_rows.append(navigator)
+	if NATIVE_FOLLOW_STATE and OBSERVER_CACHE: native_submit(navigator)
+	else: _rows.append(navigator)
 
 
 func _physics_process(delta: float) -> void:
+	if NATIVE_FOLLOW_STATE and OBSERVER_CACHE:
+		var started := Time.get_ticks_usec() if CPU_PROFILE.enabled else 0
+		if native_batch(delta) > 0 and started > 0:
+			var now := Time.get_ticks_usec()
+			CPU_PROFILE.record("nav_driver_gather", now - last_gather_us)
+			CPU_PROFILE.record("nav_driver_step_batch", now - last_step_us)
+			CPU_PROFILE.record("nav_driver_apply", now - last_apply_us)
+			CPU_PROFILE.record("navigators", started)
+		return
+	_script_physics_process(delta)
+
+
+## The batch as the GDScript loops run it (rollback path of NATIVE_FOLLOW_STATE).
+func _script_physics_process(delta: float) -> void:
 	if _rows.is_empty():
 		return
 	var started := Time.get_ticks_usec()
@@ -139,25 +186,8 @@ func _physics_process(delta: float) -> void:
 	_observers.clear()
 	var observers: Array[Node3D] = _observers
 	_refresh_peer_snapshot()
-	for reference: WeakRef in _peer_snapshot:
-		var navigator: Node = reference.get_ref()
-		if not is_instance_valid(navigator) or not navigator.is_inside_tree(): continue
-		if navigator._native_row_frame == frame:
-			continue
-		var pony: Node3D = navigator.pony as Node3D
-		if not is_instance_valid(pony) or not pony.is_inside_tree(): continue
-		observers.append(pony)
-		# Slot -1: commanded nothing. The second key names her across ticks (a committed pass round
-		# her in navigation_steering.cpp): her native handle, the same id her follower row has on
-		# the ticks she walks, else her instance id.
-		_keys.append(-1)
-		var handle: PackedInt64Array = navigator._native_handle
-		_keys.append((handle[0] << 32) | handle[1] if handle.size() == 2 else (1 << 62) | (navigator.get_instance_id() & 0xffffffffffff))
-		_positions.append(pony.global_position)
-		var velocity: Variant = pony.get(&"_ground_velocity")
-		_velocities.append(velocity if velocity is Vector3 else Vector3.ZERO)
-		_headings.append(pony.rotation.y)
-		_inputs.append_array(_zero_row)
+	if OBSERVER_CACHE: _gather_observers(frame, followers)
+	else: _gather_observers_by_name(frame)
 	var total := count + observers.size()
 	var lap := Time.get_ticks_usec() if CPU_PROFILE.enabled else 0
 	if lap > 0: CPU_PROFILE.record("nav_driver_gather", started)
@@ -193,3 +223,51 @@ func _physics_process(delta: float) -> void:
 	last_batch_us = Time.get_ticks_usec() - started
 	if CPU_PROFILE.enabled:
 		CPU_PROFILE.record("navigators", started)
+
+## The observer rows as built before OBSERVER_CACHE (every navigator member read by name).
+func _gather_observers_by_name(frame: int) -> void:
+	for reference: WeakRef in _peer_snapshot:
+		var navigator: Node = reference.get_ref()
+		if not is_instance_valid(navigator) or not navigator.is_inside_tree(): continue
+		if navigator._native_row_frame == frame:
+			continue
+		var pony: Node3D = navigator.pony as Node3D
+		if not is_instance_valid(pony) or not pony.is_inside_tree(): continue
+		_observers.append(pony)
+		# Slot -1: commanded nothing. The second key names her across ticks (a committed pass round
+		# her in navigation_steering.cpp): her native handle, the same id her follower row has on
+		# the ticks she walks, else her instance id.
+		_keys.append(-1)
+		var handle: PackedInt64Array = navigator._native_handle
+		_keys.append((handle[0] << 32) | handle[1] if handle.size() == 2 else (1 << 62) | (navigator.get_instance_id() & 0xffffffffffff))
+		_positions.append(pony.global_position)
+		var velocity: Variant = pony.get(&"_ground_velocity")
+		_velocities.append(velocity if velocity is Vector3 else Vector3.ZERO)
+		_headings.append(pony.rotation.y)
+		_inputs.append_array(_zero_row)
+
+
+## OBSERVER_CACHE: the same rows from the snapshot's typed arrays. A follower collected this frame
+## has stamped her slot; every other live navigator in the tree is an observer, in snapshot order.
+func _gather_observers(frame: int, followers: Array[Node]) -> void:
+	for navigator: Node in followers:
+		var slot: int = _peer_slots.get(navigator, -1)
+		if slot >= 0: _peer_stamp[slot] = frame
+	for i in _peer_navs.size():
+		if _peer_stamp[i] == frame: continue
+		var navigator: Node = _peer_navs[i]
+		if not is_instance_valid(navigator): continue
+		var pony: Node3D = _peer_ponies[i]
+		if not is_instance_valid(pony) or not pony.is_inside_tree(): continue
+		# Only a collected follower has _native_row_frame == frame (submit() needs a registered
+		# handle, which every collected row has), so the stamp is the by-name loop's frame test.
+		if not navigator.is_inside_tree(): continue
+		_observers.append(pony)
+		# Slot -1: commanded nothing; the second key names her across ticks (see the by-name loop).
+		_keys.append(-1)
+		_keys.append(_peer_keys[i])
+		_positions.append(pony.global_position)
+		var velocity: Variant = pony.get(&"_ground_velocity")
+		_velocities.append(velocity if velocity is Vector3 else Vector3.ZERO)
+		_headings.append(pony.rotation.y)
+		_inputs.append_array(_zero_row)

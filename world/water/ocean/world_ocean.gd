@@ -10,6 +10,13 @@ extends Node3D
 ## WorldWater creates it instead of showing its flat toon sea when the "Ocean" setting is
 ## "Stylized waves" and the renderer has a RenderingDevice; the sea's collision stays in WorldWater.
 
+## Rollback (2026-11-18): false restores the old frame path. Measured before: 13 µs a frame for
+## _process with _select (script profiler, town street, ~470 FPS). The trimmed path looks the
+## viewport and camera up once a frame (they were looked up twice), reads the camera transform and
+## the world environment once, and hands them to _select; selection itself is unchanged.
+## Off 2026-11-18: script profiler, street, 8 s: 43.9 ms before, 41.9 ms with the trim (no measurable gain).
+const FRAME_TRIM := false
+const VIEW := preload("res://world/player_view.gd")
 const SHADER := preload("res://world/water/ocean/ocean_surface.gdshader")
 const COAST_JSON := "res://world/water/ocean/coast.json"
 const GRID := 32
@@ -243,6 +250,9 @@ func _grid_mesh() -> ArrayMesh:
 	return mesh
 
 func _process(delta: float) -> void:
+	if FRAME_TRIM:
+		_trimmed_process(delta)
+		return
 	var camera := preload("res://world/player_view.gd").camera(self)
 	if camera == null or not visible: return
 	var eye := camera.global_position
@@ -274,6 +284,44 @@ func _process(delta: float) -> void:
 		_sky_tint = env.fog_light_color
 		material.set_shader_parameter("sky_tint", _sky_tint)
 
+## FRAME_TRIM path of _process, step for step the same. VIEW.camera(self) is
+## VIEW.viewport(self).get_camera_3d(); nothing between here and _select changes the viewport or
+## camera (_update_mood writes shader parameters and the FFT spectrum, _take_dry only the mask), so
+## the one lookup gives what the second lookup in _select gave. global_position and global_basis
+## are the origin and basis of global_transform.
+func _trimmed_process(delta: float) -> void:
+	var vp := VIEW.viewport(self)
+	var camera: Camera3D = vp.get_camera_3d() if vp != null else null
+	if camera == null or not visible: return
+	var view := camera.global_transform
+	var eye := view.origin
+	_mood_timer -= delta
+	if _mood_timer <= 0.0 or mood.is_empty():
+		_mood_timer = 0.5
+		_update_mood(eye)
+	if _dry_task >= 0: _take_dry()
+	var planes: Array = [] if vp.use_xr else camera.get_frustum()
+	_select_with(eye, camera.far, planes, -view.basis.z)
+	_fft_delta += delta
+	if node_count > 0 and _fft_delta >= 1.0 / FFT_RATE:
+		fft.update(_fft_delta)
+		_fft_delta = 0.0
+	elif node_count == 0:
+		_fft_delta = 0.0
+	if eye != _lod_camera:
+		_lod_camera = eye
+		material.set_shader_parameter("lod_camera", eye)
+	var time: float = fft.time
+	if time != _ocean_time_written:
+		_ocean_time_written = time
+		material.set_shader_parameter("ocean_time", time)
+	# The node's own viewport, as before (not the player view's), read once instead of twice.
+	var world := get_viewport().world_3d
+	var env := world.environment if world != null else null
+	if env != null and env.fog_light_color != _sky_tint:
+		_sky_tint = env.fog_light_color
+		material.set_shader_parameter("sky_tint", _sky_tint)
+
 # ------------------------------------------------------------------ CDLOD selection
 
 func _select(eye: Vector3) -> void:
@@ -283,6 +331,9 @@ func _select(eye: Vector3) -> void:
 	# frustum can be narrower than the eye views).
 	var planes: Array = [] if preload("res://world/player_view.gd").viewport(self).use_xr or camera == null else camera.get_frustum()
 	var behind := -camera.global_basis.z if camera != null else Vector3.ZERO
+	_select_with(eye, far, planes, behind)
+
+func _select_with(eye: Vector3, far: float, planes: Array, behind: Vector3) -> void:
 	# The selection depends on nothing else: the same inputs give the same patches.
 	if eye == _selected_eye and far == _selected_far and behind == _selected_behind and sea_level == _selected_sea and planes == _selected_planes:
 		return

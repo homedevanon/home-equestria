@@ -22,18 +22,21 @@ const PLACE_LINES := 24
 const CAPABILITIES := ["meet", "meet_cancel", "relationship_answer"]
 ## M-AI-16: kinds a letter may offer (outings and dates lapse unless made in person, see above).
 const OFFER_KINDS := ["outing", "date", "dating", "engagement", "marriage"]
-const OFFER_LINE := "Optional: [relationship_offer: %s] if you want to ask him that; you ask him in person when you next meet, so mention it in your letter."
+const OFFER_LINE := "If you want to ask him that, you can add [relationship_offer: %s]. You will ask in person next time you meet, so mention it in your letter."
 ## Only while she has room for a favour (world/mechanics/asks/asks.gd letter_context): one line.
-const FAVOUR := "Optional, only if you really need his help: [ask: WANT, REWARD] ask him a favour (2 apples, fetch PONY, go to PLACE_ID or help at JOB; REWARD bits you hold or thanks), and ask it in the letter too."
-const TASK := """Anon sent you this letter by Derpy's post. Read it as yourself, decide, and write back.
+const FAVOUR := "If you truly need his help, use [ask: WANT, REWARD] and ask for the favour in your letter too. WANT can be 2 apples, fetch PONY, go to PLACE_ID, or help at JOB. REWARD is bits you hold or thanks."
+const TASK := """Derpy brought this letter from Anon. Read it as yourself and write back.
 Start with tags only, one per line:
-[heart: 0-100] how much it touched you: kind, personal, about your interests and what you two shared = high; careless or rude = low
+[heart: 0-100] how much it moved you. Score high if it is kind, personal, and about your interests or what you shared. Score low if careless or rude.
 [gist: one line saying what he wrote or asked]
 Optional: [romance: -2..2] [mood: NAME] [thought: short private thought] [gift] (tuck a small gift in)
-Only if the letter asks for it: [meet: PLACE_ID, today|tomorrow|N, HH:MM] agree to meet him (or name another time you prefer),
-[meet_cancel] call off your meeting, [relationship_answer: OFFER_ID, yes|no], [come] set off now to where he is
-Then a line with --- and your reply letter, 40-160 words, in your own voice, starting "Dear Anon," and signed with your name.
-If you agree to meet, say where and when in the letter; he reads it tomorrow morning (right away if you meet before then), so name the day clearly. Never mention scores or tags."""
+Use only if his letter asks:
+[meet: PLACE_ID, today|tomorrow|N, HH:MM] agree to meet (or pick another time)
+[meet_cancel] call off a meeting
+[relationship_answer: OFFER_ID, yes|no]
+[come] head to him now
+Put --- on a new line, then write your reply in your own voice (40-160 words). Open with "Dear Anon," and sign your name.
+If you agree to meet, say where and when in the letter. Name the day clearly, since he reads it tomorrow morning (or right away if you meet sooner). Never mention scores or tags."""
 
 ## `parts`: name, persona, standing, bonds, memory, today, appointment, offer, places ([[id, label]]).
 ## Optional parts that are empty are left out.

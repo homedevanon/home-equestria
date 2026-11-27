@@ -20,6 +20,10 @@ using namespace pony;
 
 namespace {
 
+// Perf 2026-11-21 (lane native_calls): solve_batch() solves its first pony on the calling thread
+// instead of sleeping while the pool solves all of them. Rollback: false.
+constexpr bool CALLER_RUNS_FIRST_SOLVE = true;
+
 const double MAX_PUSH = 0.08; // pony_self_collision.gd MAX_PUSH
 
 struct Keys {
@@ -321,6 +325,15 @@ void PonySolverNative::solve_batch(const Array &p_solvers, bool p_parallel) {
 		return;
 	}
 	WorkerThreadPool *pool = WorkerThreadPool::get_singleton();
+	if (CALLER_RUNS_FIRST_SOLVE) {
+		// The calling thread solves the first pony while the pool solves the rest (it would
+		// otherwise sleep in the wait). Independent solves: the same results bit for bit.
+		const WorkerThreadPool::GroupID group = pool->add_native_group_task(&PonySolverNative::run_job,
+				solvers.data() + 1, (int)solvers.size() - 1, -1, true, String("Pony pose solve"));
+		solvers[0]->solve_run();
+		pool->wait_for_group_task_completion(group);
+		return;
+	}
 	const WorkerThreadPool::GroupID group = pool->add_native_group_task(&PonySolverNative::run_job, solvers.data(),
 			(int)solvers.size(), -1, true, String("Pony pose solve"));
 	pool->wait_for_group_task_completion(group);

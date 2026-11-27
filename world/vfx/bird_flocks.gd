@@ -82,6 +82,7 @@ func _ready() -> void:
 var _clock: Node
 var _weather: Node
 var _winter := false
+var _allowed := true
 var _lookup_in := 0.0
 
 func _process(delta: float) -> void:
@@ -104,13 +105,16 @@ func _process(delta: float) -> void:
 		_weather = tree.get_first_node_in_group("weather")
 		var seasons: Node = tree.get_first_node_in_group("season_state")
 		_winter = seasons != null and str(seasons.call("season")) == "winter"
+		# Quality key bird_flocks (autoload/quality.gd AMBIENCE_CONFIG, on for every tier today).
+		var quality: Node = get_node_or_null("/root/Quality")
+		_allowed = bool(quality.call("get_value", "bird_flocks", true)) if quality != null else true
 	var clock := _clock
 	var daylight: float = float(clock.call("daylight")) if clock != null else 1.0
 	var weather: Node = _weather if is_instance_valid(_weather) else null
 	var params: Dictionary = weather.get("params") if weather != null and weather.get("params") is Dictionary else {}
 	var winter := _winter
 	var fair := float(params.get("rain", 0.0)) < 0.2 and float(params.get("snow", 0.0)) < 0.5 and float(params.get("gust", 0.0)) < 0.8
-	var want := smoothstep(0.25, 0.5, daylight) if fair else 0.0
+	var want := smoothstep(0.25, 0.5, daylight) if fair and _allowed else 0.0
 	_shown = move_toward(_shown, want, delta * 0.25)
 	var on := _shown > 0.01
 	if _instance.visible != on: _instance.visible = on

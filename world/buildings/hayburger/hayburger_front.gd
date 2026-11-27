@@ -168,6 +168,43 @@ func set_open(value: bool) -> void:
 		if not value: door._visitors.clear()
 		if not is_instance_valid(door.holder): door.target = PI * .5 if value else 0.0
 
+## Customers reach the counter on ordinary walk-grid routes through this doorway (the houses' doors
+## are crossed on authored lines instead). The grid keeps whatever the leaves were doing when it
+## sampled the doorway, and a door that opens never resamples it: sampled shut overnight, or in the
+## first second after load before the leaves swing open, it kept a wall across the entrance all day
+## and every customer turned back at the door with "No safe route: Search budget reached" (thread
+## reports since 0.3.0; tools/interiors_nav/test_hayburger_overnight.gd). Once both leaves have come
+## to rest open, the doorway is resampled; closing is resampled by hinged_door.gd already
+## (door_settled_shut). Rollback: RESAMPLE_ON_OPEN = false.
+const RESAMPLE_ON_OPEN := true
+## A player swinging the leaves back and forth resamples at most this often (seconds).
+const RESAMPLE_INTERVAL_MS := 5000
+var _grid_open := false
+var _grid_resampled_ms := -RESAMPLE_INTERVAL_MS
+
+## Called by hayburger_runtime.gd every 0.25 s with the business-hours check.
+func tend_navigation() -> void:
+	if not RESAMPLE_ON_OPEN or doors.is_empty() or not is_inside_tree(): return
+	var open := true
+	for door: Node3D in doors:
+		var limit: float = door.open_limit()
+		if is_instance_valid(door.holder) or absf(door.opening_angle() - limit) > .01 or absf(float(door.target) - limit) > .01: open = false
+	if not open:
+		_grid_open = false
+		return
+	if _grid_open: return
+	var now := Time.get_ticks_msec()
+	if now - _grid_resampled_ms < RESAMPLE_INTERVAL_MS: return
+	_grid_open = true
+	_grid_resampled_ms = now
+	var box := AABB()
+	for i in doors.size():
+		var leaf: AABB = doors[i].navigation_world_box()
+		box = leaf if i == 0 else box.merge(leaf)
+	box = box.grow(.5)
+	for service: Node in get_tree().get_nodes_in_group("pony_navigation"):
+		if service.has_method("notify_geometry_changed"): service.notify_geometry_changed(box)
+
 func is_inside(point: Vector3) -> bool:
 	return building.to_local(point).z > float(report.front_door_point.z) + .015
 

@@ -5,6 +5,8 @@ const LIMIT := 100000
 ## Cells a single route search may expand; the service lowers it on the potato tier
 ## (quality.gd nav_search_limit) so one hopeless route cannot hold a core for seconds.
 var limit := LIMIT
+## false = the exact search sees every resident chunk (walk_grid_service.gd OPEN_ROUTES).
+var use_corridor := true
 const WANDER_LIMIT := 6000
 const MAX_CORRIDOR_SAMPLES := 512
 const MAX_SMOOTH_CHECKS := 4096
@@ -363,7 +365,7 @@ func _portal(a: Vector2i, b: Vector2i) -> bool:
 func _chunk_corridor(start: Vector3i, goal: Vector3i) -> Dictionary:
 	var a := WalkGrid.chunk_of(Vector2i(start.x,start.z))
 	var b := WalkGrid.chunk_of(Vector2i(goal.x,goal.z))
-	if a == b or data.size() < 16: return {}
+	if a == b or data.size() < 16 or not use_corridor: return {}
 	var heap: Array = []; _push(heap,[0.0,a,0.0])
 	var scores := {a:0.0}; var parents := {}; var portals := {}
 	while not heap.is_empty():

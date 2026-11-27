@@ -19,6 +19,9 @@ const HOLD_SECONDS := 0.8
 var game: Node
 var _held_at: Dictionary = {}   # side -> [pony, seconds]
 var _refused: Dictionary = {}   # pony id -> time of last refusal
+## VR: side -> the pony who did not take what that hand holds; it is offered to her again only after
+## the hand has left her muzzle (a refusal is not repeated every HOLD_SECONDS).
+var _turned_down: Dictionary = {}
 var _tick := 0.0
 
 func setup(host: Node) -> void:
@@ -93,9 +96,12 @@ func _physics_process(delta: float) -> void:
 		var item: Variant = inventory.held[side]
 		if not is_instance_valid(item): _held_at.erase(side); continue
 		var id := str((item as Node).get_meta("item_id", ""))
-		if not _offerable(id) or _reading(item as Node): _held_at.erase(side); continue
+		if not _offerable(id) or _reading(item as Node): _held_at.erase(side); _turned_down.erase(side); continue
 		var pony := _pony_at((item as Node3D).global_position)
-		if pony == null: _held_at.erase(side); continue
+		if pony == null: _held_at.erase(side); _turned_down.erase(side); continue
+		# The same thing at the same muzzle; another thing taken into that hand is offered as usual.
+		if _turned_down.get(side, []) == [pony, item]: continue
+		_turned_down.erase(side)
 		var row: Array = _held_at.get(side, [null, 0.0])
 		row = [pony, float(row[1]) + dt if row[0] == pony else 0.0]
 		_held_at[side] = row
@@ -103,6 +109,8 @@ func _physics_process(delta: float) -> void:
 		if float(row[1]) >= HOLD_SECONDS:
 			_held_at.erase(side)
 			_offer(side, item, pony, id)
+			# Still in the hand as the same thing: she did not take it (turned away or cannot wear it).
+			if inventory.held.get(side) == item and is_instance_valid(item) and str((item as Node).get_meta("item_id", "")) == id: _turned_down[side] = [pony, item]
 
 ## The awake pony whose mouth is within REACH of the food.
 func _pony_at(point: Vector3) -> Node3D:
@@ -241,7 +249,9 @@ func _give_wear(side: String, item: RigidBody3D, pony: Node3D, id: String) -> vo
 	if sale < 0: return
 	var inventory: Node = game.inventory
 	var token := str(item.get_meta("token", ""))
-	if not inventory.inventory.loans.has(token) or not wardrobe.can_give(pony_id, id, pony): return
+	if not inventory.inventory.loans.has(token): return
+	if not wardrobe.can_give(pony_id, id, pony):
+		_decline_wear(pony, pony_id, id, wardrobe); return
 	if not inventory.inventory.consume(token): return
 	wardrobe.give(pony_id, id, pony)
 	inventory.held.erase(side); inventory.loose.erase(token); inventory._track.erase(side); inventory._claim(side, false)
@@ -250,8 +260,30 @@ func _give_wear(side: String, item: RigidBody3D, pony: Node3D, id: String) -> vo
 	var expressions: Variant = pony.get("expressions")
 	if expressions != null and expressions.has_method("fluster"): expressions.fluster(1.2)
 	var name: String = str(preload("res://world/shop/shop_items.gd").definition(id).get("name", "gift")).to_lower()
+	var mech := _mechanics()
+	var what: String = str(mech.gifts.phrase(id)) if mech != null and mech.get("gifts") != null else "a " + name
 	var bonds: Node = game.world_context.get("player_bonds")
 	if bonds != null and sale == 0: bonds.experience(pony_id, "gift", "wear_%d" % Time.get_ticks_usec())
-	if sale == 0: game.world_context.record("gift", "Anon gave you a %s, and you are wearing it." % name, [pony_id, "player"], [pony_id, "player"])
+	if sale == 0: game.world_context.record("gift", "Anon gave you %s, and you are wearing it." % what, [pony_id, "player"], [pony_id, "player"])
 	_after_gift(pony, pony_id, id, "wear")
 	print("[gift] %s now wears %s" % [pony_id, id])
+
+## She cannot take this piece (pony_wardrobe.gd refusal(): the cup scarf is Anon's own, no fit for her
+## body, she has it already...). It stays in his hand; she looks at it, the wrist line says why and
+## her model hears it so she answers in character (gifts.gd declined()).
+func _decline_wear(pony: Node3D, pony_id: String, id: String, wardrobe: Node) -> void:
+	var reason := str(wardrobe.call("refusal", pony_id, id, pony)) if wardrobe.has_method("refusal") else ""
+	# Read through the instance: a mod's subclass of the wardrobe still finds the base constant.
+	var table: Variant = wardrobe.get("REFUSALS")
+	var words: Variant = (table as Dictionary).get(reason) if table is Dictionary else null
+	var her: String = str((words as Array)[0]) if words is Array else "it is not something you can wear."
+	var why: String = str((words as Array)[1]) if words is Array else "she cannot wear it"
+	var identity: Resource = pony.get("identity")
+	var name := str(identity.get("display_name")) if identity != null and not str(identity.get("display_name")).is_empty() else pony_id.replace("_", " ").capitalize()
+	var label := str(preload("res://world/shop/shop_items.gd").definition(id).get("name", "that")).to_lower()
+	var bar: Variant = game.inventory.get("hotbar") if is_instance_valid(game.get("inventory")) else null
+	if bar is Node and (bar as Node).has_method("set_message"): (bar as Node).call("set_message", "%s can't wear the %s: %s." % [name, label, why])
+	if pony.has_method("set_action_gaze"): pony.set_action_gaze(game._find_camera(game.player) if game.has_method("_find_camera") else null)
+	var mech := _mechanics()
+	if mech != null and mech.get("gifts") != null and (mech.gifts as Node).has_method("declined"): mech.gifts.declined(pony, pony_id, id, her)
+	print("[gift] %s cannot wear %s (%s)" % [pony_id, id, reason if not reason.is_empty() else "refused"])

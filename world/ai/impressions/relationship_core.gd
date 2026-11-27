@@ -567,7 +567,7 @@ func get_relationship_context() -> String:
 func get_scoring_instructions(known_tags: Array) -> String:
 	var lines: Array[String] = []
 	lines.append("## Relationship Progress Scoring (output format)")
-	lines.append("Each character below has a set relationship trajectory. At the very end of your response,")
+	lines.append("Each character below has a set path for their relationship. At the end of your reply,")
 	lines.append("append a single JSON object scoring how much this exchange ADVANCED each character's listed")
 	lines.append("trajectory — regardless of whether the dynamic is warm or hostile. Deepening a rivalry counts")
 	lines.append("as progress on a rivalry track exactly as warming counts on a friendship track.")

@@ -110,7 +110,7 @@ func summon() -> void:
 	if not is_instance_valid(population): return
 	population.visiting.erase(ID)
 	if not is_instance_valid(actor):
-		_say("The Great Evil is in the world, but found no ground here. She will turn up nearby."); _busy = false; return
+		_say("The Great Evil is loose, though she couldn't take hold here. She'll show up nearby."); _busy = false; return
 	_register(actor, region)
 	var toward: Vector3 = _camera.global_position; toward.y = actor.global_position.y
 	if toward.distance_squared_to(actor.global_position) > 1e-4 and actor.has_method("reset_motion"):

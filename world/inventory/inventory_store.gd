@@ -16,6 +16,8 @@ var loans: Dictionary = {}
 var bits: int = 0
 var save_path := ""
 var last_error := ""
+## What open() repaired in briefcase.json, in plain words ("" when nothing).
+var repair_note := ""
 var writable := true
 var _serial := 0
 ## Briefcase entries whose item the catalogue does not know now, such as an item from a mod that
@@ -27,6 +29,16 @@ var _serial := 0
 var parked: Array = []
 const MAX_PARKED := 1024
 const MAX_PARKED_COUNT := 1_000_000
+## Rollback switch (docs/THREAD_FIX_SAVES_2026_11_19.md): false restores the old all-or-nothing read,
+## where one bad briefcase entry rejected briefcase.json and every checkpoint holding it.
+const REPAIR_ON_LOAD := true
+## Rollback switch: true counts things placed at home toward the loose-item cap again (before
+## 2026-11-19 a decorated home filled the 24 and nothing could be taken out of the case).
+const PLACED_COUNT_AS_OUT := false
+## Things placed at home (furnishing_home loans) have their own cap instead.
+const MAX_PLACED := 128
+## Player notes from repair_document start with this, so the briefcase can show its own.
+const NOTE_PREFIX := "Briefcase: "
 
 func _init() -> void:
 	slots.resize(SLOT_COUNT)
@@ -34,6 +46,7 @@ func _init() -> void:
 
 func open(path: String = save_path, starter: bool = false) -> bool:
 	save_path = path
+	repair_note = ""
 	var empty_slots: Array = []
 	empty_slots.resize(SLOT_COUNT)
 	empty_slots.fill({})
@@ -46,10 +59,17 @@ func open(path: String = save_path, starter: bool = false) -> bool:
 	else:
 		# A damaged briefcase falls back to briefcase.json.previous, else it is kept aside
 		# and the case starts empty (a resumed save restores its own copy of the items).
+		# Bad entries in a readable briefcase are repaired instead (repair_document).
+		var repairs: Array = []
 		var loaded := SAVE_FILE.read_checked(path, 1 << 20, func(value: Variant) -> String:
 			if value is Dictionary and (value.get("version") is float or value.get("version") is int) and value.version > 1:
 				return SAVE_FILE.NEWER
-			return "" if valid_document(value) else "invalid inventory")
+			if valid_document(value): return ""
+			if not REPAIR_ON_LOAD: return "invalid inventory"
+			var fixed: Dictionary = repair_document(value)
+			if (fixed.doc as Dictionary).is_empty(): return "invalid inventory"
+			repairs.append([value, fixed])
+			return "")
 		if loaded.status != "ok":
 			last_error = loaded.message
 			push_warning("[inventory] " + last_error)
@@ -58,11 +78,22 @@ func open(path: String = save_path, starter: bool = false) -> bool:
 			writable = false
 			return false
 		if loaded.doc != null: decoded = loaded.doc
+		for pair: Array in repairs:
+			if not is_same(pair[0], loaded.doc): continue
+			decoded = pair[1].doc
+			repair_note = " ".join(pair[1].notes)
+			# The file as it was stays beside it before the first transaction rewrites it.
+			var absolute := ProjectSettings.globalize_path(path)
+			if FileAccess.file_exists(absolute): SAVE_FILE._copy_atomic(absolute, absolute + ".before-repair-" + SAVE_FILE.stamp())
+			push_warning("[inventory] %s repaired on load: %s" % [path.get_file(), repair_note])
 	# Items held at exit go back into the case (old slot, same stack or first empty slot).
 	# A failed open must not let a later payment overwrite the unread balance with zero.
 	# Only an explicit reopen of a supported document may lift this write guard.
 	writable = true
-	if restore_document(decoded): return true
+	if restore_document(decoded):
+		# Shown on the briefcase's own panel when it opens (briefcase_inventory.gd setup).
+		if not repair_note.is_empty(): last_error = repair_note
+		return true
 	writable = false
 	return false
 
@@ -297,9 +328,24 @@ func set_dropped(token: String, pose: Transform3D) -> bool:
 	checked[token].erase("furnishing_home")
 	return _commit(next, checked)
 
+## Things out of the briefcase that count toward the loose-item cap (briefcase_inventory.gd
+## MAX_LOOSE): everything checked out except what is placed at home, which has MAX_PLACED.
+func out_count() -> int:
+	if PLACED_COUNT_AS_OUT: return loans.size()
+	return loans.size() - placed_count()
+
+func placed_count() -> int:
+	var count := 0
+	for loan: Dictionary in loans.values():
+		if loan.has("furnishing_home"): count += 1
+	return count
+
 ## Placing uses the existing loose unit; equipped references leave their stack once.
 func set_furnishing(token: String, pose: Transform3D, home_id: String, size: float = 1.0) -> bool:
 	if not loans.has(token) or not FURNISHING.has(str(loans[token].id)): return false
+	if not loans[token].has("furnishing_home") and placed_count() >= MAX_PLACED:
+		last_error = "Your home already holds %d placed things. Take one down first." % MAX_PLACED
+		return false
 	var next: Array = slots.duplicate(true)
 	var checked: Dictionary = loans.duplicate(true)
 	if checked[token].get("equipped", false):
@@ -456,6 +502,217 @@ static func _valid_parked(value: Variant) -> bool:
 				return false
 	return true
 
+## Load-time repair of a briefcase read from a file (a checkpoint's "inventory" or briefcase.json),
+## before it is validated (thread reports 2026-11-16, docs/THREAD_FIX_SAVES_2026_11_19.md: one bad
+## entry used to reject the whole save). Returns {"doc": a repaired copy, or {} when the shape
+## itself is broken (not a version-1 document with a slot list, a loan table and a numeric balance),
+## "notes": plain sentences for the player (each starts with NOTE_PREFIX), "changed": bool}.
+## Nothing a unit stands for is lost quietly: units over today's stack size go to more stacks, else
+## under "parked" (they come back on a later load when there is room); a thing whose place in the
+## world cannot be read comes back into the case; a reference whose stack is gone is released (the
+## unit never left the stack); placement details that no longer check out are dropped and the thing
+## lies where it was. Only entries that cannot be read at all are removed, and they are named. The
+## caller keeps the file as it was (game_saves.gd open_save, open()). Never mutates `value`.
+static func repair_document(value: Variant) -> Dictionary:
+	var result := {"doc": {}, "notes": [], "changed": false}
+	if not value is Dictionary: return result
+	if valid_document(value):
+		result.doc = value
+		return result
+	var doc: Dictionary = (value as Dictionary).duplicate(true)
+	if doc.get("version") != 1 or not doc.get("slots") is Array or not doc.get("checked_out") is Dictionary: return result
+	# The balance is never repaired: guessing it would mint or lose bits (tools/hayburger/
+	# test_wallet_checkpoint.gd). A malformed balance stays structural damage.
+	var balance: Variant = doc.get("bits", 0)
+	if not (balance is int or balance is float) or not is_finite(float(balance)) or balance < 0 or balance > MAX_BITS or balance != int(balance): return result
+	var removed: Dictionary = {}
+	var returned: Dictionary = {}
+	var aside: Dictionary = {}
+	var reset: Dictionary = {}
+	var split: Dictionary = {}
+	var rows: Array = []
+	if doc.has("parked"):
+		if doc.parked is Array:
+			for row: Variant in doc.parked:
+				if rows.size() < MAX_PARKED and _valid_parked([row]): rows.append(row)
+				else: _tally(removed, _label(row.get("entry") if row is Dictionary else null))
+		else: _tally(removed, "the list of things kept aside")
+	# Slots: 27 readable stacks, each within today's stack size.
+	var slots: Array = doc.slots
+	var extra: Array = []
+	while slots.size() > SLOT_COUNT: extra.append(slots.pop_back())
+	while slots.size() < SLOT_COUNT: slots.append({})
+	var overflow: Array = []
+	for i in SLOT_COUNT:
+		var slot: Variant = slots[i]
+		if slot is Dictionary and (slot as Dictionary).is_empty(): continue
+		if not slot is Dictionary or not _parkable_id(slot.get("id")):
+			_tally(removed, _label(slot)); slots[i] = {}; continue
+		if not _known(slot.id):
+			if not _parkable_slot(slot):
+				_tally(removed, _label(slot)); slots[i] = {}
+			continue
+		var count: Variant = slot.get("count")
+		if not (count is int or count is float) or not is_finite(float(count)) or float(count) < 0.0 or float(count) > MAX_PARKED_COUNT:
+			_tally(removed, _label(slot)); slots[i] = {}; continue
+		var whole := int(floorf(float(count)))
+		if whole <= 0:
+			slots[i] = {}; continue
+		slot.count = whole
+		if slot.has("bites"):
+			if not _valid_bites(slot.bites): slot.erase("bites")
+			elif whole > 1:
+				# One bitten portion keeps its slot; the rest are whole ones.
+				overflow.append({"id": str(slot.id), "count": whole - 1}); slot.count = 1
+		var size := maxi(1, CATALOG.stack(str(slot.id)))
+		if int(slot.count) > size:
+			overflow.append({"id": str(slot.id), "count": int(slot.count) - size}); slot.count = size
+	for entry: Variant in extra:
+		if entry is Dictionary and (entry as Dictionary).is_empty(): continue
+		if entry is Dictionary and _known(entry.get("id")) and (entry.get("count") is int or entry.get("count") is float) and is_finite(float(entry.count)) and float(entry.count) >= 1.0:
+			overflow.append({"id": str(entry.id), "count": int(clampf(floorf(float(entry.count)), 1.0, float(MAX_PARKED_COUNT)))})
+		elif entry is Dictionary and _parkable_id(entry.get("id")) and _parkable_slot(entry):
+			if int(entry.count) > 0 and rows.size() < MAX_PARKED: rows.append({"kind": "slot", "at": 0, "entry": entry})
+		else: _tally(removed, _label(entry))
+	# Loans: every unit out of the case keeps its place when it can be read, else comes back.
+	var loans: Dictionary = doc.checked_out
+	for token: Variant in loans.keys():
+		var loan: Variant = loans[token]
+		if not token is String or (token as String).is_empty() or (token as String).length() > 128 or not loan is Dictionary or not _parkable_id(loan.get("id")):
+			_tally(removed, _label(loan)); loans.erase(token); continue
+		var name := _label(loan)
+		# A malformed flag: kept as a loose unit, which can only return one unit too many, never lose one.
+		if loan.has("equipped") and not loan.equipped is bool: loan.erase("equipped")
+		var equipped: bool = loan.get("equipped", false)
+		var index := _index(loan.get("slot"))
+		if index < 0:
+			if equipped:
+				loans.erase(token); continue
+			index = 0
+		loan.slot = index
+		if loan.has("bites") and not _valid_bites(loan.bites): loan.erase("bites")
+		if loan.has("cooking") and not COOKING_STATE.valid_mark(loan.cooking): loan.erase("cooking")
+		if loan.has("world_transform"):
+			if equipped:
+				_unplace(loan)
+			elif not valid_pose(loan.world_transform):
+				var fixed := _fixed_pose(loan.world_transform)
+				if fixed.is_empty():
+					_unplace(loan); _tally(returned, name)
+				else: loan.world_transform = fixed
+		if not loan.has("world_transform"): _unplace(loan)
+		if not _known(loan.id): continue
+		if loan.has("furnishing_home") and not FURNISHING.valid_loan(loan):
+			loan.erase("furnishing_size")
+			if not FURNISHING.valid_loan(loan):
+				loan.erase("furnishing_home"); _tally(reset, name)
+		var blanket := CATALOG.canonical(str(loan.id)) == "goods:folded-blanket"
+		if loan.has("picnic_deployed") and (not loan.picnic_deployed is bool or loan.picnic_deployed != true or not blanket):
+			loan.erase("picnic_deployed"); loan.erase("picnic_heights"); _tally(reset, name)
+		if loan.has("picnic_heights") and (not loan.get("picnic_deployed", false) or not valid_picnic_heights(loan.picnic_heights)): loan.erase("picnic_heights")
+		if loan.has("easel_open") and (not loan.easel_open is bool or loan.easel_open != true or CATALOG.canonical(str(loan.id)) != "goods:easel"):
+			loan.erase("easel_open"); _tally(reset, name)
+	# Pots whose contents no longer make a recipe: their things lie where they were, off the heat.
+	var stations: Dictionary = {}
+	for token: String in loans:
+		var loan: Dictionary = loans[token]
+		if loan.has("cooking") and _known(loan.id): stations[str(loan.cooking.station)] = true
+	for station: String in stations:
+		var group: Dictionary = {}
+		for token: String in loans:
+			var loan: Dictionary = loans[token]
+			if loan.has("cooking") and _known(loan.id) and str(loan.cooking.station) == station: group[token] = loan
+		if COOKING_STATE.valid_loans(group): continue
+		for token: String in group:
+			loans[token].erase("cooking"); _tally(reset, _label(loans[token]))
+	# References: an equipped loan points at one unit of its own stack, never more than it holds.
+	var used: Dictionary = {}
+	for token: String in loans.keys():
+		var loan: Dictionary = loans[token]
+		if not loan.get("equipped", false): continue
+		var at := int(loan.slot)
+		var slot: Dictionary = slots[at]
+		if slot.is_empty() or CATALOG.canonical(str(slot.get("id", ""))) != CATALOG.canonical(str(loan.id)) or int(used.get(at, 0)) >= int(slot.get("count", 0)):
+			loans.erase(token); continue
+		used[at] = int(used.get(at, 0)) + 1
+	# Units over a full stack: further stacks first, then kept aside until there is room.
+	for entry: Dictionary in overflow:
+		var id := CATALOG.canonical(str(entry.id))
+		var size := maxi(1, CATALOG.stack(id))
+		var left := int(entry.count)
+		var placed := left
+		for i in SLOT_COUNT:
+			if left <= 0: break
+			var slot: Dictionary = slots[i]
+			if slot.is_empty() or slot.has("bites") or CATALOG.canonical(str(slot.id)) != id or int(slot.count) >= size: continue
+			var add := mini(left, size - int(slot.count))
+			slot.count = int(slot.count) + add; left -= add
+		for i in SLOT_COUNT:
+			if left <= 0: break
+			if not (slots[i] as Dictionary).is_empty(): continue
+			slots[i] = {"id": id, "count": mini(left, size)}; left -= mini(left, size)
+		if placed > left: _tally(split, _name(id), placed - left)
+		while left > 0:
+			if rows.size() >= MAX_PARKED:
+				_tally(removed, _name(id), left); break
+			var chunk := mini(left, size) if rows.size() < MAX_PARKED - 1 else mini(left, MAX_PARKED_COUNT)
+			rows.append({"kind": "slot", "at": 0, "entry": {"id": id, "count": chunk}})
+			_tally(aside, _name(id), chunk)
+			left -= chunk
+	if not rows.is_empty(): doc.parked = rows
+	else: doc.erase("parked")
+	if not valid_document(doc):
+		push_warning("[inventory] a briefcase could not be repaired")
+		return result
+	result.doc = doc
+	result.changed = true
+	var notes: Array[String] = []
+	if not returned.is_empty(): notes.append(NOTE_PREFIX + "back in the case, their place in the world was lost: %s." % _listing(returned))
+	if not split.is_empty(): notes.append(NOTE_PREFIX + "moved to more stacks, one held more than it may now: %s." % _listing(split))
+	if not aside.is_empty(): notes.append(NOTE_PREFIX + "kept aside until there is room, they return on a later load: %s." % _listing(aside))
+	if not reset.is_empty(): notes.append(NOTE_PREFIX + "set down as ordinary things where they were: %s." % _listing(reset))
+	if not removed.is_empty(): notes.append(NOTE_PREFIX + "removed, the save could not read them: %s." % _listing(removed))
+	if notes.is_empty(): notes.append(NOTE_PREFIX + "tidied a few records; nothing was lost.")
+	result.notes = notes
+	return result
+
+## A placed or laid-out thing that is no longer placed (its unit stays its own).
+static func _unplace(loan: Dictionary) -> void:
+	for key: String in ["world_transform", "furnishing_home", "furnishing_size", "picnic_deployed", "picnic_heights", "easel_open", "cooking"]:
+		loan.erase(key)
+
+## A pose whose numbers are readable but whose rotation is stretched or skewed, made a rotation
+## again at the same spot; [] when there is no spot to keep.
+static func _fixed_pose(values: Variant) -> Array:
+	if not values is Array or (values as Array).size() != 12: return []
+	for n: Variant in values:
+		if not (n is int or n is float) or not is_finite(float(n)) or absf(float(n)) > 100000.0: return []
+	var pose := decode_pose(values)
+	var basis := Basis.IDENTITY
+	if absf(pose.basis.determinant()) > 0.0001:
+		basis = pose.basis.orthonormalized()
+		if basis.determinant() < 0.0: basis = Basis.IDENTITY
+	var encoded := encode_pose(Transform3D(basis, pose.origin))
+	return encoded if valid_pose(encoded) else []
+
+static func _tally(into: Dictionary, name: String, amount: int = 1) -> void:
+	into[name] = int(into.get(name, 0)) + amount
+
+## "2 x Muffin wrapper, 1 x Hoof file"
+static func _listing(counts: Dictionary) -> String:
+	var parts: PackedStringArray = []
+	for name: String in counts: parts.append("%d x %s" % [int(counts[name]), name])
+	return ", ".join(parts)
+
+static func _name(id: String) -> String:
+	var shown := str(CATALOG.definition(id).get("name", "")) if CATALOG.has(id) else ""
+	return shown if not shown.is_empty() else id.left(40)
+
+## The name of a slot or loan entry as the player knows it.
+static func _label(entry: Variant) -> String:
+	if entry is Dictionary and _parkable_id(entry.get("id")): return _name(str(entry.id))
+	return "an unreadable entry"
+
 ## Atomic replacement: return the previous hand item and equip the new slot in one save.
 ## Empty slots intentionally leave the hand empty. Other hands' references remain reserved.
 func select_slot(index: int, previous: String = "") -> Dictionary:
@@ -601,6 +858,29 @@ func consume(token: String) -> bool:
 	COOKING_STATE.detach(checked, token)
 	checked.erase(token)
 	return _commit(next, checked)
+
+## Thrown away in a rubbish bin (world/inventory/rubbish_rules.gd): the loan ends as in consume, and
+## when `slot` still holds the same item, the rest of that stack leaves the briefcase too, except
+## units another hand holds. One saved commit. Returns how many units went, 0 when refused.
+func consume_stack(token: String, slot: int = -1) -> int:
+	if not loans.has(token): return 0
+	var checked := loans.duplicate(true)
+	var next: Array = slots.duplicate(true)
+	var id := CATALOG.canonical(str(checked[token].get("id", "")))
+	if checked[token].get("equipped", false): _remove_unit(next, int(checked[token].slot))
+	COOKING_STATE.detach(checked, token)
+	checked.erase(token)
+	var gone := 1
+	if slot >= 0 and slot < SLOT_COUNT and not next[slot].is_empty() and CATALOG.canonical(str(next[slot].id)) == id:
+		var keep := 0
+		for loan: Dictionary in checked.values():
+			if loan.get("equipped", false) and int(loan.slot) == slot: keep += 1
+		var count := int(next[slot].count)
+		if count > keep:
+			gone += count - keep
+			next[slot].count = keep
+			if keep <= 0: next[slot] = {}
+	return gone if _commit(next, checked) else 0
 
 ## A bitten portion becomes its own unit: it leaves an equipped stack and saves its bites,
 ## so stowing, dropping or reloading keeps what was already eaten.

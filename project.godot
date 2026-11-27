@@ -12,7 +12,7 @@ config_version=5
 
 config/name="Home: Equestria"
 config/description="Cozy VR life-sim in Equestria."
-config/version="0.3.1-maredev"
+config/version="0.3.2-maredev"
 run/main_scene="res://world/ui/title_screen.tscn"
 config/use_custom_user_dir=true
 config/custom_user_dir_name="home-equestria-public"
@@ -203,6 +203,10 @@ vegetation_color_rect={
 "value": Vector4(0, 0, 1, 1)
 }
 vegetation_color_enabled={
+"type": "bool",
+"value": false
+}
+vegetation_classic_crowns={
 "type": "bool",
 "value": false
 }

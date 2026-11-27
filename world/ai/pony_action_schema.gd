@@ -5,13 +5,16 @@ const MEET_TIME := preload("res://world/life/appointments/meet_time.gd")
 const ITEM_CATALOG := preload("res://world/inventory/item_catalog.gd")
 const ASK_RULES := preload("res://world/mechanics/asks/ask_rules.gd")
 ## Data only. Never turn model text into method names, code, paths or coordinates.
-const AGREED_KINDS := ["dating", "date", "outing", "move_in", "engagement", "marriage"]
-const TYPES := ["look_at", "approach", "call_pony", "send_pony", "follow", "go_to", "step", "lead", "stay", "cancel", "resume_routine", "sit", "stand", "lie_down", "fly_to", "hover", "land", "loop_de_loop", "barrel_roll", "circle_over", "sonic_rainboom", "sit_on_seat", "go_home", "go_to_bed", "air_show", "relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle", "kiss_player", "wake_up", "teleport_to_ponyville", "send_letter", "give_house", "magic_show", "take_off", "put_on", "meet", "meet_cancel", "pay_player", "give", "offer_job", "use", "ask", "invite", "sell", "buy"]
+const AGREED_KINDS := ["dating", "date", "outing", "move_in", "engagement", "marriage", "kiss", "hug"]
+## 2026-11-19 (THREAD_FIX_RELATIONSHIP): the ways models write relationship and feeling tags.
+const ROMANCE_RULES := preload("res://world/relationships/romance_rules.gd")
+const BOND_TAGS := preload("res://world/relationships/bond_tags.gd")
+const TYPES := ["look_at", "approach", "call_pony", "send_pony", "follow", "go_to", "step", "lead", "stay", "cancel", "resume_routine", "sit", "stand", "lie_down", "fly_to", "hover", "land", "loop_de_loop", "barrel_roll", "circle_over", "sonic_rainboom", "sit_on_seat", "go_home", "go_to_bed", "air_show", "relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle", "kiss_player", "wake_up", "teleport_to_ponyville", "send_letter", "give_house", "move_house", "magic_show", "take_off", "put_on", "meet", "meet_cancel", "pay_player", "give", "offer_job", "use", "ask", "invite", "sell", "buy"]
 ## Actions that need spoken words in the same reply (docs/MECHANICS_ARCHITECTURE_2026_11_01.md 4.6).
 const SPEECH_REQUIRED := ["relationship_offer", "relationship_answer", "agreed", "request_space", "buck_player", "cuddle",
-	"teleport_to_ponyville", "give_house", "meet", "meet_cancel", "pay_player", "give", "ask", "offer_job", "invite", "sell", "buy"]
+	"teleport_to_ponyville", "give_house", "move_house", "meet", "meet_cancel", "pay_player", "give", "ask", "offer_job", "invite", "sell", "buy"]
 ## One intention per channel per reply; everything not listed is "movement".
-const CHANNELS := {"look_at": "gaze", "give_house": "grant", "magic_show": "grant", "pay_player": "money",
+const CHANNELS := {"look_at": "gaze", "give_house": "grant", "move_house": "grant", "magic_show": "grant", "pay_player": "money",
 	"take_off": "wardrobe", "put_on": "wardrobe", "meet": "plan", "meet_cancel": "plan",
 	"give": "trade", "sell": "trade", "buy": "trade", "ask": "plan", "offer_job": "plan", "invite": "plan"}
 const SPEECH_LIMIT := 2880
@@ -20,7 +23,7 @@ const STEP_SPELLINGS := {"forwards": "forward", "ahead": "forward", "backward": 
 	"back_up": "back", "behind": "back", "sideways": "aside", "out_of_the_way": "aside", "out_of_way": "aside", "to_the_side": "aside",
 	"side": "aside", "away_from_player": "away", "away_from_you": "away"}
 const FIELDS := {
-	"teleport_to_ponyville": [], "give_house": [], "magic_show": [], "take_off": ["kind"], "put_on": ["kind"],
+	"teleport_to_ponyville": [], "give_house": [], "move_house": [], "magic_show": [], "take_off": ["kind"], "put_on": ["kind"],
 	"meet": ["location_id", "day", "time"], "meet_cancel": [], "pay_player": ["amount"], "give": ["item"], "use": ["station_id"], "offer_job": ["job_id"], "ask": ["want", "reward"], "invite": ["event_id"], "sell": ["item", "price"], "buy": ["item", "price"],
 	"call_pony": ["pony_id"], "send_pony": ["pony_id", "target_id"],
 	"request_space": [], "buck_player": [], "cuddle": [], "kiss_player": [], "wake_up": [], "send_letter": [], "relationship_offer": ["kind", "activity", "location_id"], "relationship_answer": ["offer_id", "accept"], "agreed": ["kind"],
@@ -81,7 +84,7 @@ const ALIASES := {"lookat": "look_at", "look": "look_at", "goto": "go_to", "walk
 	"bedtime": "go_to_bed", "get_in_bed": "go_to_bed", "lie_in_bed": "go_to_bed", "lay_in_bed": "go_to_bed", "sleep_in_bed": "go_to_bed", "go_to_sleep": "go_to_bed", "resume": "resume_routine", "stop": "cancel", "seat": "sit_on_seat", "bench": "sit_on_seat",
 	"kiss": "kiss_player", "buck": "buck_player", "hug": "cuddle", "space": "request_space",
 	"letter": "send_letter", "send_a_letter": "send_letter", "write_letter": "send_letter", "letter_to_celestia": "send_letter", "send_letter_to_celestia": "send_letter", "fire_letter": "send_letter",
-	"give_home": "give_house", "grant_house": "give_house", "grant_home": "give_house", "assign_house": "give_house", "house_grant": "give_house",
+	"give_home": "give_house", "grant_house": "give_house", "grant_home": "give_house", "assign_house": "give_house", "house_grant": "give_house", "move_home": "move_house", "move_in_here": "move_house", "relocate": "move_house",
 	"airshow": "air_show", "show": "air_show", "stunts": "air_show", "stunt_show": "air_show", "aerobatics": "air_show", "flying_show": "air_show",
 	"perform_show": "magic_show", "stage_show": "magic_show", "start_show": "magic_show", "magicshow": "magic_show", "trixie_show": "magic_show",
 	"put_on_show": "magic_show", "put_on_a_show": "magic_show", "great_and_powerful_show": "magic_show", "perform": "magic_show",
@@ -101,8 +104,8 @@ const ALIASES := {"lookat": "look_at", "look": "look_at", "goto": "go_to", "walk
 	"buy_from_player": "buy", "purchase": "buy", "offer_to_buy": "buy"}
 ## One line per command for the prompt: the exact tag and what it does.
 const TAG_HELP := {
-	"teleport_to_ponyville": "[teleport_to_ponyville] Twilight takes you both out of the Everfree to Ponyville for shelter at Golden Oak; only available during the active forest rescue; finish explaining first, then regroup beside the newcomer before casting if separated",
-	"call_pony": "[call_pony: PONY_ID] ask a nearby pony who can hear you to come to you; no remote summons",
+	"teleport_to_ponyville": "[teleport_to_ponyville] Twilight takes you both out of the Everfree to shelter at Golden Oak in Ponyville. Only for the active forest rescue. Explain first, and if separated, get back beside the newcomer before casting",
+	"call_pony": "[call_pony: PONY_ID] call over a pony who is close enough to hear you. No remote summons",
 	"send_pony": "[send_pony: PONY_ID, TARGET] ask a nearby pony who can hear you to go to a nearby pony or player; a request is not arrival",
 	"look_at": "[look_at: TARGET] look at someone for a moment (optional seconds: [look_at: player, 5])",
 	"approach": "[approach: TARGET] walk up close to someone and stop there",
@@ -123,27 +126,28 @@ const TAG_HELP := {
 	"sit_on_seat": "[sit_on_seat] walk to the nearest free bench or seat and sit on it",
 	"wake_up": "[wake_up] wake up, or get up out of a bed or off a couch",
 	"go_home": "[go_home] go home to rest a while (say goodbye first)",
-	"go_to_bed": "[go_to_bed] walk to your own bed, climb in and lie there (asleep at night) until you get up; [go_to_bed: here] the bed in the house where Anon is",
+	"go_to_bed": "[go_to_bed] Go to your own bed and lie in it until you get up (asleep at night). Use [go_to_bed: here] for the bed in the house where Anon is",
 	"relationship_offer": "[relationship_offer: KIND, ACTIVITY] ask Anon for a relationship step (ACTIVITY walk/meal/visit/orchard/fishing, or place plus a LOCATION)",
-	"relationship_answer": "[relationship_answer: OFFER_ID, yes] or no: answer Anon's invitation",
-	"agreed": "[agreed: KIND] you both said yes to a step: Anon asked you for it in his own words and you accept, or he said yes to your offer (KIND dating/date/outing/move_in/engagement/marriage)",
-	"request_space": "[request_space] ask Anon to give you some space", "buck_player": "[buck_player] buck Anon away (only real, lasting anger at unwelcome contact)",
+	"relationship_answer": "[relationship_answer: OFFER_ID, yes] or no to answer Anon's invite",
+	"agreed": "[agreed: KIND] you and Anon both said yes to a step, whether he asked in his own words and you accepted, or he accepted your offer (KIND dating/date/outing/move_in/engagement/marriage)",
+	"request_space": "[request_space] ask Anon to give you some space", "buck_player": "[buck_player] buck Anon away. Save this for real, lasting anger over unwelcome touch",
 	"cuddle": "[cuddle] cuddle up to Anon", "kiss_player": "[kiss_player] kiss Anon",
-	"send_letter": "[send_letter] write a quick note on a scroll and send it to Princess Celestia with your green fire",
-	"give_house": "[give_house] officially make a free Ponyville house Anon's own home, for good (the empty one he is in or beside, else the nearest free one); only when you give it, never just to talk about houses; works alongside one other action",
-	"magic_show": "[magic_show] start your Great and Powerful stage show at the schoolhouse stage: fireworks call the town, the curtain rises in about three minutes; only when Anon paid for one or you truly want an audience; works alongside one other action",
-	"take_off": "[take_off: ITEM] take off something you are wearing (e.g. socks, scarf, hat, glasses), when asked or when you want to; you keep it and can [put_on] it again; works alongside one other action",
-	"put_on": "[put_on: ITEM] put back on something you took off earlier; works alongside one other action",
-	"meet": "[meet: LOCATION, DAY, HH:MM] agree to meet Anon at a place on a day (today, tomorrow or a number of days ahead) and time, e.g. [meet: landmark:town_hall, tomorrow, 15:00]; you will go there a bit early and wait; replaces your earlier meeting with him",
+	"send_letter": "[send_letter] jot a quick note on a scroll and send it to Princess Celestia with your green fire",
+	"give_house": "[give_house] gives Anon a free Ponyville house as his home, or moves his home. He gets the empty house he is in or at (you must be there too to move), or he can claim any empty one at the EMPTY HOUSE sign on its door. Use only when giving a house, never just to talk about houses. Works with one other action",
+	"move_house": "[move_house] moves you and your household into the house you and Anon are both in or at. Use this only when you genuinely agree to move. Works with one other action",
+	"magic_show": "[magic_show] start your Great and Powerful show at the schoolhouse stage. Fireworks draw the town and the curtain rises in about three minutes. Use only if Anon paid for a show or you truly want a crowd. Can pair with one other action",
+	"take_off": "[take_off: ITEM] remove something you're wearing (like socks, scarf, hat, glasses) when asked or when you want to. You keep it and can [put_on] it again. Works with one other action",
+	"put_on": "[put_on: ITEM] put back on something you took off earlier. Can be paired with one other action",
+	"meet": "[meet: LOCATION, DAY, HH:MM] agree to meet Anon at a place and time (DAY is today, tomorrow, or a number of days ahead), like [meet: landmark:town_hall, tomorrow, 15:00]. You'll arrive a bit early and wait. Replaces any earlier plan to meet him",
 	"meet_cancel": "[meet_cancel] call off your agreed meeting with Anon",
-	"pay_player": "[pay_player: BITS] hand Anon that many bits from your own purse (pay him for work or goods, pay back a loan, tip him, treat him, gift him); only bits you hold, say it out loud; works alongside one other action",
-	"offer_job": "[offer_job: JOB] offer Anon paid work for today (from your list); tell him where it is, he goes himself; works alongside one other action",
-	"use": "[use: STATION] go and work a station near you (from your list), e.g. [use: cider_press]",
-	"ask": "[ask: WANT, REWARD] ask Anon a favour: WANT is items and a count (2 apples), fetch PONY, go to LOCATION or help at JOB; REWARD is bits you hold (10 bits), an item you have, or thanks; one open favour at a time; works alongside one other action",
-	"invite": "[invite: EVENT] invite Anon to a town event today (from your list); it goes in his notebook; works alongside one other action",
-	"give": "[give: ITEM] hand Anon something you really have (from your list); it goes into his hand; say it out loud; works alongside one other action",
-	"sell": "[sell: ITEM, BITS] your price for Anon on something from your stall here (from your list) for two minutes; he takes it from the stall himself; say it out loud",
-	"buy": "[buy: ITEM, BITS] offer Anon bits from your purse for something he is holding (from your list); you pay when he hands it to you; say it out loud"}
+	"pay_player": "[pay_player: BITS] hand Anon that many bits from your purse (to pay for work or goods, repay a loan, tip, treat, or gift him). Only use bits you hold, and say it out loud. Works with one other action",
+	"offer_job": "[offer_job: JOB] offer Anon paid work today from your list. Tell him where to go and he goes himself. Can pair with one other action",
+	"use": "[use: STATION] go work at a nearby station from your list, like [use: cider_press]",
+	"ask": "[ask: WANT, REWARD] ask Anon a favour. WANT is items with a count (2 apples), fetch PONY, go to LOCATION, or help at JOB. REWARD is bits you hold (10 bits), an item you have, or thanks. One open favour at a time. Works with one other action",
+	"invite": "[invite: EVENT] invite Anon to a town event today from your list. It goes in his notebook. Works with one other action",
+	"give": "[give: ITEM] put an item you really have on your list into Anon's hand. Say it out loud as you give it. Can pair with one other action",
+	"sell": "[sell: ITEM, BITS] Set Anon's price for two minutes on a listed item at your stall here. Say it out loud, and he takes it from the stall himself",
+	"buy": "[buy: ITEM, BITS] offer Anon bits from your purse for an item on your list that he is holding. Say it out loud. You pay when he hands it over"}
 
 ## The reply channel of an action type: one intention per channel per reply.
 static func channel(type: String) -> String:
@@ -170,10 +174,16 @@ static func decode_tags(text: String, actor: String, turn: int, context: Diction
 	for span: Dictionary in CONTROLS.spans(text):
 		if not span.complete: dropped.append("Malformed control tag (ignored)"); continue
 		var found := tags.search(str(span.tag))
+		# "[romance +1]", "[Love+2]": a feeling tag written without its colon still counts.
+		var loose := RegEx.create_from_string("^\\[\\s*(friendship|romance|love)\\s*[:=]?\\s*([+-]?\\d+)").search(str(span.tag).to_lower()) if found == null else null
+		if loose != null:
+			impression["romance" if loose.get_string(1) == "love" else loose.get_string(1)] = int(loose.get_string(2).trim_prefix("+"))
+			continue
 		if found == null: dropped.append("Unrecognized control tag (ignored)"); continue
 		var raw := found.get_string(1)
 		var name := raw.strip_edges().to_lower().replace(" ", "_").replace("-", "_")
 		var value := found.get_string(2).strip_edges()
+		if BOND_TAGS.read(name, value, impression): continue
 		var type := action_type(raw)
 		# Trixie cannot fly: her plain [show] means her stage show, not an air show (dev 2026-10-28).
 		if name == "show" and "magic_show" in context.get("capabilities", []): type = "magic_show"
@@ -209,12 +219,17 @@ static func decode_tags(text: String, actor: String, turn: int, context: Diction
 				channels.append("movement"); actions.append(show)
 				continue
 		# Face, gesture and voice-emotion tags stay in the line for pony_dialogue_tags.gd and TTS.
-		if type.is_empty() and name not in ["silence", "friendship", "romance", "mood", "thought"]:
+		if type.is_empty() and name not in ["silence", "friendship", "romance", "love", "mood", "thought"]:
 			if not CONTROLS.presentation_tag(str(span.tag)): dropped.append("Unrecognized control tag (ignored)")
 			continue
 		if name == "silence": silent = true; continue
-		if name in ["friendship", "romance"]:
-			if value.trim_prefix("+").is_valid_float(): impression[name] = int(round(float(value.trim_prefix("+"))))
+		if name in ["friendship", "romance", "love"]:
+			var feeling := "romance" if name == "love" else name
+			if value.trim_prefix("+").is_valid_float(): impression[feeling] = int(round(float(value.trim_prefix("+"))))
+			else:
+				# "[romance: +1 (he complimented my mane)]": the first signed number.
+				var number := RegEx.create_from_string("^[+]?(-?\\d+)").search(value)
+				if number != null: impression[feeling] = int(number.get_string(1))
 			continue
 		if name == "mood": impression.mood = value.to_lower(); continue
 		if name == "thought": impression.thought = value; continue
@@ -375,26 +390,26 @@ static func _spoken_place(line: String, context: Dictionary) -> Dictionary:
 				if at > 0: clause = clause.left(at)
 			var words := PLACES.name_words(clause)
 			if words.is_empty() or words.size() > 5 or words[0] in NOT_PLACES: continue
-			var matched := PLACES.match_name(clause.strip_edges(), locations, context.get("place_labels", {}))
+			var matched := PLACES.match_name(clause.strip_edges(), locations, context.get("place_labels", {}), true)
 			if not matched.is_empty(): return {"place": matched, "invite": index < 2}
 	return {"place": "", "invite": false}
 
 ## The FORMAT RULES block for one speaker: only her commands, targets and places.
 static func tag_rules(capabilities: Array, targets: Array, places: String, include_bindings := true) -> String:
 	var lines: Array = ["REPLY FORMAT (plain text, never JSON):",
-		"Write only what you say out loud. Put tags in square brackets anywhere in the line; tags are never spoken.",
+		"Write only what you say out loud. Square-bracket tags can go anywhere in the line and are never spoken.",
 		"Example: [face:happy] Oh, hello there! [look_at: player]"]
 	var commands: Array = []
 	for type: String in TYPES:
 		if type in capabilities and TAG_HELP.has(type): commands.append("- " + str(TAG_HELP[type]))
 	if not commands.is_empty():
-		lines.append("THINGS YOU CAN DO NOW (at most one, plus one [look_at: ...]):")
+		lines.append("THINGS YOU CAN DO NOW (pick up to one, plus one [look_at: ...]):")
 		lines.append_array(commands)
 		if include_bindings:
 			lines.append("TARGETS (who TARGET can be): " + (", ".join(targets) if not targets.is_empty() else "(none)"))
 			lines.append("LOCATIONS (what LOCATION can be, nearest first; use the id before the =):")
 			lines.append(places)
-	lines.append("FEELINGS (optional, never spoken): after your complete spoken words you may add [mood: happy] [friendship: +1] [romance: 0] [thought: a short private thought]. Omit unchanged feelings. Never begin your answer with private metadata. Use [silence] to say nothing.")
+	lines.append("FEELINGS (optional, never spoken): after your spoken line you can add [mood: happy] [friendship: +1] [romance: 0] [thought: a short private thought]. Leave out any feeling that has not changed. Never start your reply with private tags. Use [silence] to say nothing.")
 	return "\n".join(lines)
 
 static func decode(text: String, actor: String, turn: int, context: Dictionary, bind_request := false) -> Dictionary:
@@ -461,9 +476,14 @@ static func validate(action: Variant, context: Dictionary) -> String:
 	if "location_id" in FIELDS[action.type] and (action.type != "relationship_offer" or action.has("location_id")):
 		if not action.get("location_id") is String: return "Unknown mapped location"
 		if action.location_id not in context.get("locations", []):
-			# A free-form name ("Sugarcube Corner", "the balloon") becomes the listed id it means.
-			var matched := PLACES.match_name(str(action.location_id), context.get("locations", []), context.get("place_labels", {}))
-			if matched.is_empty(): return "Unknown mapped location"
+			# A free-form name ("Sugarcube Corner", "the balloon") becomes the listed id it means; one that
+			# fits two differently named places ("windmill") is asked about, never guessed (thread 43716663).
+			var matched := PLACES.match_name(str(action.location_id), context.get("locations", []), context.get("place_labels", {}), true)
+			if matched.is_empty():
+				var both := PLACES.ambiguous_names(str(action.location_id), context.get("locations", []), context.get("place_labels", {}))
+				if both.size() > 1:
+					return "Location '%s' could mean %s; use the id of the one you mean" % [str(action.location_id).left(40), " or ".join(Array(both).slice(0, 3))]
+				return "Unknown mapped location"
 			action.location_id = matched
 	match action.type:
 		"relationship_offer":
@@ -473,6 +493,13 @@ static func validate(action: Variant, context: Dictionary) -> String:
 			if not context.get("relationship",{}).get("pending",{}).is_empty(): return "Answer or finish the existing invitation first"
 		"relationship_answer":
 			var pending: Dictionary=context.get("relationship",{}).get("pending",{})
+			# 2026-11-19: "[relationship_answer: yes]" or "[relationship_answer: dating, yes]" answer the
+			# one open invitation from Anon; the id is the game's, not hers to remember.
+			if ROMANCE_RULES.FACTS and not pending.is_empty() and pending.get("by")=="player" and pending.get("id")!=action.get("offer_id"):
+				var word := str(action.get("offer_id", "")).to_lower()
+				if word in ROMANCE_RULES.ANSWER_YES or word in ROMANCE_RULES.ANSWER_NO:
+					action.accept = word in ROMANCE_RULES.ANSWER_YES; action.offer_id = pending.id
+				elif not str(pending.get("kind", "")).is_empty() and (word == str(pending.kind) or ROMANCE_RULES.agreed_kind(word) == str(pending.kind)): action.offer_id = pending.id
 			if pending.is_empty() or pending.get("by")!="player" or pending.get("id")!=action.get("offer_id"): return "No matching player invitation"
 			if not action.get("accept") is bool: return "Invitation answer must be boolean"
 		"agreed":
@@ -480,9 +507,15 @@ static func validate(action: Variant, context: Dictionary) -> String:
 			# checks the step is allowed (player_bonds.gd agree).
 			var relationship: Dictionary = context.get("relationship", {})
 			var open: Dictionary = relationship.get("pending", {})
+			# 2026-11-19: "[agreed: be your marefriend]", "[agreed: couple]" name dating (romance_rules.gd).
+			if ROMANCE_RULES.FACTS and action.get("kind") not in AGREED_KINDS:
+				var named := ROMANCE_RULES.agreed_kind(str(action.get("kind", "")))
+				if not named.is_empty(): action.kind = named
 			if action.get("kind") not in AGREED_KINDS: return "Unknown relationship step"
 			if not open.is_empty() and open.get("kind") != action.get("kind"): return "Answer or finish the existing invitation first"
-			if open.is_empty() and action.get("kind") not in relationship.get("offers", []): return "Relationship milestone not eligible"
+			# Her yes is held to what she may accept (player_bonds.gd agreeable), not to her own offer list.
+			var may_accept: Array = relationship.get("agreeable", relationship.get("offers", [])) if ROMANCE_RULES.FACTS else relationship.get("offers", [])
+			if open.is_empty() and action.get("kind") not in may_accept and not (action.get("kind") == "engagement" and "marriage" in may_accept): return "Relationship milestone not eligible"
 		"meet":
 			var clock := _clock(context)
 			var when := MEET_TIME.parse(str(action.get("day", "today")), str(action.get("time", "")), int(clock.day), float(clock.hours))

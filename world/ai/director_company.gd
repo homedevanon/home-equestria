@@ -82,7 +82,7 @@ func propose_company_sit(members: Array, place: String) -> bool:
 	host._current = ids[0]; host._turn_id += 1; host._player_text = ""; host._rewrite_used = false
 	# No scripted "let's sit down" / "agreed" exchange (dev 2026-10-22: every pair said the same
 	# lines); they settle in silently and talk about something real between them.
-	host._group_request = "You have just arrived together at %s and are settling in. Do not announce sitting down, being tired or agreeing; %s starts on something real between these ponies (something they share, something one heard or wants to ask, what is on her mind), and the others answer in their own voices. About 3-6 short turns; every line moves the talk on." % [place, ids[0]]
+	host._group_request = "You just arrived together at %s and are settling in. Skip any talk about sitting down, being tired, or just agreeing. %s brings up something real between these ponies, like a shared interest, something she heard or wants to ask, or what is on her mind. The others reply in character. Write 3-6 short turns that each move the talk on." % [place, ids[0]]
 	host._begin_group(ids, true)
 	if not host.group.active(): host._sit_agreed[key] = host._now(); host._sit_key = ""
 	return host.group.active()

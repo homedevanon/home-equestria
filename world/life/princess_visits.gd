@@ -24,12 +24,12 @@ const SUBJECTS := 3
 ## A whole chance visit, however often he walks off and she follows: after this she says goodbye.
 const MAX_VISIT := 420.0
 const GREETING := {
-	"celestia": "[Observed situation, not player speech] You have come down from Canterlot and have just reached the player for a visit. Greet them warmly as yourself, matching the actual first-meeting and name knowledge in your context. Do not invent earlier visits or familiarity. If you have not met, introduce yourself; otherwise use what you actually remember. One or two short sentences; no action tags needed.",
-	"luna": "[Observed situation, not player speech] It is late at night and Anon is still awake. You have come down from the night sky to visit him, and you have just reached him. Greet him as yourself: perhaps remark on him being up so late, on the night or the stars. One or two short sentences; no action tags needed.",
+	"celestia": "[Observed situation, not player speech] You have just arrived from Canterlot to visit the player. Give them a warm greeting in your own voice. Stick to what your context says about whether you have met and know their name, without making up past visits or familiarity. Introduce yourself if this is your first meeting, or go by what you actually remember. Use one or two short sentences and skip the action tags.",
+	"luna": "[Observed situation, not player speech] It is late at night, and Anon is still up. You have come down from the night sky to visit him and just reached his side. Say hello in your own voice, maybe noting how late he is awake, or the night and stars. Keep it to a short sentence or two, without action tags.",
 }
 const FAREWELL := {
-	"celestia": "You want to look in on a few of your subjects nearby before you return to Canterlot.",
-	"luna": "You want to look in on a few of your subjects nearby before you return to the night sky.",
+	"celestia": "You would like to check on a few of your subjects nearby before heading back to Canterlot.",
+	"luna": "Before returning to the night sky, you would like to check on a few of your subjects nearby.",
 }
 
 var game: Node
@@ -146,6 +146,8 @@ func start(id: String, greeting := "", min_stay := MIN_WITH_PLAYER, fly_in := fa
 	var camera := _camera()
 	var population: Node = game.population if game != null else null
 	if camera == null or population == null or not visit.is_empty(): return false
+	# Who lives where (2026-11-24): no visit from a princess the player has not spawned.
+	if not story and "config" in population and not population.config.assignments.has(id): return false
 	if population.live.has(id) and not story: return false
 	if HOUSE.at(get_tree(), camera.global_position) != null and not story: return false
 	var path: String = CONFIG.PRINCESSES.get(id, "")

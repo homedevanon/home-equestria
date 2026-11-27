@@ -437,25 +437,63 @@ var _beat_pony: Object
 ## "the same tickspeed as minecraft"): the route and steering update on her logic beat with
 ## the time that passed, and the velocity request holds in between. HERO ponies run every tick.
 func _physics_process(delta: float) -> void:
+	# TYPED_BEAT: off her beat this is the whole callback (typed reads, no script call).
+	if _loco != null and pony == _beat_pony:
+		var tier: int = _loco.sim_tier
+		if tier != LOCO.SimTier.HERO:
+			var divisor: int = maxi(1, _loco.far_logic_divisor) if tier == LOCO.SimTier.FAR else LOCO.LOGIC_DIVISOR
+			if (Engine.get_physics_frames() + _loco.sim_phase) % divisor != 0:
+				_clip_skipped += delta
+				return
+		# Her beat (or HERO): the same tick _physics_step runs, without asking is_logic_tick() again.
+		var on_beat := Time.get_ticks_usec() if CPU_PROFILE.enabled else 0
+		var step := delta + _clip_skipped
+		_clip_skipped = 0.0
+		_logic_step(step)
+		if on_beat > 0: CPU_PROFILE.record("navigators", on_beat)
+		return
 	var started := Time.get_ticks_usec() if CPU_PROFILE.enabled else 0
 	_physics_step(delta)
 	if started > 0: CPU_PROFILE.record("navigators", started)
+
+## 2026-11-21 perf (navigation lane): about 37 of a street's 45 navigators a step are off their
+## pony's logic beat and only ask is_logic_tick() through an untyped reference. For a pony whose
+## script is the game's own hybrid mare or locomotion base (whose is_logic_tick() and
+## logic_divisor() this repeats line for line: pony_locomotion.gd), the test reads her typed fields
+## at the top of _physics_process instead. Any other body (Spike, a mod's own subclass) keeps the
+## call. Rollback: TYPED_BEAT = false.
+static var TYPED_BEAT := true
+const LOCO := preload("res://world/characters/locomotion/pony_locomotion.gd")
+const TYPED_BEAT_SCRIPTS := ["res://world/characters/hybrid_mare/hybrid_mare.gd", "res://world/characters/locomotion/pony_locomotion.gd"]
+var _loco: LOCO
 
 func _physics_step(delta: float) -> void:
 	if pony != _beat_pony:
 		_beat_pony = pony
 		_logic_beat = pony.has_method(&"is_logic_tick")
+		var body_script := pony.get_script() as Script if pony != null else null
+		_loco = pony as LOCO if TYPED_BEAT and body_script != null and body_script.resource_path in TYPED_BEAT_SCRIPTS else null
 	if _logic_beat and not pony.is_logic_tick():
 		_clip_skipped += delta
 		return
 	var step := delta + _clip_skipped
 	_clip_skipped = 0.0
+	_logic_step(step)
+
+
+## Physics time this logic tick covers (one step for HERO, the beat's steps for the clip tiers);
+## house_travel.gd ELAPSED_TICK_TIME reads it.
+var tick_step := 1.0 / 60.0
+
+func _logic_step(step: float) -> void:
+	tick_step = step
 	var started := Time.get_ticks_usec() if CPU_PROFILE.enabled else 0
 	_navigator_tick(step)
 	if started > 0: CPU_PROFILE.record("nav_logic_tick", started)
 	if trace != null or NAV_TRACE.enabled:
 		if trace == null: trace = NAV_TRACE.new(); trace.label = str(pony.name)
 		trace.advance(self, step)
+
 
 
 ## Records `label` from `since` and returns the next checkpoint (only called under CPU_PROFILE.enabled).
@@ -627,9 +665,9 @@ func _navigator_tick(delta: float) -> void:
 		return
 	if prof: lap = _cpu_lap("nav_stand_for_travel", lap)
 	if house_travel.update(self):
-		if prof: _cpu_lap("nav_house_travel", lap)
+		if prof: CPU_PROFILE.record("nav_ht:" + str(pony.name), lap); _cpu_lap("nav_house_travel", lap)
 		return
-	if prof: lap = _cpu_lap("nav_house_travel", lap)
+	if prof: CPU_PROFILE.record("nav_ht:" + str(pony.name), lap); lap = _cpu_lap("nav_house_travel", lap)
 	# The native corridor starts where she stands, cramped or not: one writer, no legacy escape step.
 	if not native_follow and _recover_cramped_start(delta): return
 	if _approaching_player and not _needs_path:
@@ -715,9 +753,22 @@ func _plan(map: RID) -> bool:
 	if _pending_leg():
 		return true
 	state = State.WAITING
-	reason = "Sampling terrain / planning route"
+	reason = _route_wait_reason()
 	_halt()
 	return false
+
+
+## 2026-11-21 (navigation lane, card 404 in the bench world): a route waiting on ground the walk grid
+## has not made ready yet (admitted, loading or sampling) read like any other wait, and the stuck-pony
+## rescue (world/life/stuck_rescue.gd) set such ponies down after 12 s. While the walk grid says the
+## request waits on sampling (WalkGridService.route_waits_on_sampling), the reason begins with
+## "Waiting", which the rescue already leaves alone. Rollback: ROUTE_WAIT_REASON = false.
+static var ROUTE_WAIT_REASON := true
+func _route_wait_reason() -> String:
+	if ROUTE_WAIT_REASON and _request >= 0 and is_instance_valid(_service) and _service.has_method(&"route_waits_on_sampling") \
+			and bool(_service.call(&"route_waits_on_sampling", _request)):
+		return "Waiting for the ground to be sampled"
+	return "Sampling terrain / planning route"
 
 
 func _recover_cramped_start(delta: float) -> bool:
@@ -1012,6 +1063,13 @@ func _exit_tree() -> void:
 
 ## --- Native follower adapter (phase 2) ---------------------------------------------------------
 
+## 2026-11-21 native pony step, lane follow (captures/perf_2026-11-21/port_follow.md): with this on,
+## native_follow_driver.gd (its own NATIVE_FOLLOW_STATE on too) hands this navigator her command
+## natively: the body of _native_apply below, same order, same calls and types
+## (nav_follow_native.cpp PonyNavFollowDriverNative.apply_row). Only for a navigator whose script is
+## exactly this file; a subclass keeps the script call. Rollback: NATIVE_FOLLOW_STATE = false.
+const NATIVE_FOLLOW_STATE := true
+
 ## The tree's single batch driver, added beside the world root on first use.
 func _ensure_follow_driver() -> void:
 	# A driver still waiting for its deferred add is not in any tree yet: keep it.
@@ -1030,7 +1088,7 @@ func _native_tick(delta: float) -> void:
 	if path.size() < 2:
 		_halt()
 		state = State.WAITING
-		reason = "Sampling terrain / planning route"
+		reason = _route_wait_reason()
 		return
 	if not _native_ready():
 		return

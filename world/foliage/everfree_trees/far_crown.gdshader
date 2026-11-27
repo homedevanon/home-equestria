@@ -36,11 +36,13 @@ void vertex() {
 }
 
 void fragment() {
+	// Screen derivatives before the dither discard, which removes single pixels of a 2x2 quad:
+	// after it they are undefined in Vulkan (AMD report 2026-11-12).
+	vec3 dpdx = dFdx(world_pos);
+	vec3 dpdy = dFdy(world_pos);
 	if (impostor_dither(FRAGCOORD.xy) < fade_t) { discard; }
-	vec3 dpdx = vec3(0.0);
-	vec3 dpdy = vec3(0.0);
 	bool growing = vegetation_spring_active(spring_tree);
-	if (season_leaf_drop > 0.001 || growing) { dpdx = dFdx(world_pos); dpdy = dFdy(world_pos); }
+	if (!(season_leaf_drop > 0.001 || growing)) { dpdx = vec3(0.0); dpdy = vec3(0.0); }
 	float patch_hash = vegetation_cell_hash(world_pos, thin_cell_m);
 	bool bare = season_leaf_drop > 0.001 && vegetation_patch_kept(vegetation_leaf_kept(patch_hash, 1.0, season_local.x, evergreen, 0.0), patch_hash, season_local.x, evergreen) < 0.5;
 	// Spring: the whole crown buds, flowers and leafs out together (vegetation_spring_far, world metres).

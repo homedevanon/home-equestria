@@ -3,12 +3,21 @@ extends Control
 ## editable", PonyPonyParadise parity, player builds included). Two kinds of prompt:
 ## - fragments from res://world/ai/prompts/catalog.json (rules, reply format, memory, events),
 ##   edited through world/ai/prompt_overrides.gd and applied when a request is sent;
-## - whole files: system.md and every pony persona, saved as the existing
+## - whole files: system.md and every pony persona, a mod's ponies included, saved as the existing
 ##   user://mods/prompts/<file name> override that ai_config.prompt_text already prefers.
 ## A fragment with fill-in slots (%s, %d) refuses an edit that drops or reorders them.
 const OVERRIDES := preload("res://world/ai/prompt_overrides.gd")
 const CONFIG := preload("res://world/ai/ai_config.gd")
+const BOND := preload("res://world/relationships/bond_rules.gd")
+const POPULATION := preload("res://world/population/pony_population_config.gd")
+## The note on a catalogue entry the relationship overhaul replaced (BOND.RETIRED_PROMPTS).
+const RETIRED_NOTE := "Replaced in this version. Your edit is kept, and is used again if the old system is switched back on."
 const PERSONA_DIRS := ["res://world/ai/prompts", "res://world/characters/princesses", "res://world/characters/background/ai"]
+## Where mounted mods keep their files; a character profile there is a small JSON file, looked for
+## PROFILE_DEPTH folders deep (the merge folder holds game data, not profiles).
+const MOD_ROOT := "res://mods"
+const PROFILE_DEPTH := 2
+const PROFILE_BYTES := 65536
 const ALL := "All prompts"
 const EDITED := "Edited only"
 const PERSONAS := "Personas"
@@ -105,12 +114,60 @@ func _load_entries() -> void:
 	for f: Dictionary in OVERRIDES.catalog():
 		_entries.append({"kind": "fragment", "id": str(f.id), "group": str(f.group), "label": str(f.label).capitalize() if str(f.label) == str(f.label).to_upper() else str(f.label),
 			"where": str(f.file), "slots": int(f.placeholders)})
+	var seen := {}
 	for dir: String in PERSONA_DIRS:
 		for file: String in DirAccess.get_files_at(dir):
 			if file.get_extension() != "md": continue
 			var path := dir.path_join(file)
+			seen[path] = true
 			_entries.append({"kind": "persona", "id": path, "group": PERSONAS, "where": path,
 				"label": "System prompt (all ponies)" if file == "system.md" else file.get_basename().capitalize()})
+	_mod_personas(seen)
+
+## A mod's ponies (2026-11-24: they were missing here). Looked for each time this page opens, and
+## anything already listed is skipped:
+## - every character the running world's director knows (her profile's "prompt" is her persona file);
+## - every character profile in a mounted mod's folder (the JSON object a pony's ai_profile names);
+## - every .md file in a mod's folder named after a character (a pony id from the catalogue or the
+##   director, as in anonfilly.md), for a mod that keeps a persona without a profile beside it.
+func _mod_personas(seen: Dictionary) -> void:
+	var names := {}
+	for id: String in POPULATION.catalogue(): names[id] = true
+	var director: Node = get_tree().get_first_node_in_group("conversation_director") if is_inside_tree() else null
+	var known: Variant = director.get("characters") if director != null else null
+	if known is Dictionary:
+		for id: Variant in known:
+			names[str(id)] = true
+			var row: Variant = (known as Dictionary)[id]
+			if row is Dictionary and (row as Dictionary).get("profile") is Dictionary: _add_persona((row as Dictionary).profile, seen)
+	for folder: String in DirAccess.get_directories_at(MOD_ROOT):
+		_scan_profiles(MOD_ROOT.path_join(folder), PROFILE_DEPTH, seen, names)
+
+func _scan_profiles(dir: String, depth: int, seen: Dictionary, names: Dictionary) -> void:
+	var files := DirAccess.get_files_at(dir)
+	for file: String in files:
+		if file.get_extension() != "json": continue
+		var path := dir.path_join(file)
+		var handle := FileAccess.open(path, FileAccess.READ)
+		if handle == null or handle.get_length() > PROFILE_BYTES: continue
+		var data: Variant = JSON.parse_string(handle.get_as_text())
+		if data is Dictionary: _add_persona(data, seen)
+	# After the profiles, so a profile's own name for her wins over the file name.
+	for file: String in files:
+		if file.get_extension() == "md" and names.has(file.get_basename().to_lower()):
+			_add_persona({"prompt": dir.path_join(file)}, seen)
+	if depth <= 0: return
+	for sub: String in DirAccess.get_directories_at(dir):
+		if sub != "merge": _scan_profiles(dir.path_join(sub), depth - 1, seen, names)
+
+func _add_persona(profile: Dictionary, seen: Dictionary) -> void:
+	if not profile.get("prompt") is String: return
+	var path := str(profile.prompt)
+	if seen.has(path) or path.get_extension() != "md" or not FileAccess.file_exists(path): return
+	seen[path] = true
+	var label := str(profile.get("name", "")).strip_edges()
+	if label.is_empty(): label = path.get_file().get_basename().capitalize()
+	_entries.append({"kind": "persona", "id": path, "group": PERSONAS, "where": path, "label": label})
 
 func _fill_list() -> void:
 	var group: String = _group.get_item_text(_group.selected) if _group.item_count > 0 else ALL
@@ -141,7 +198,14 @@ func _describe() -> void:
 	var bits := ["~%d tokens" % tokens, "edited" if _is_edited(_current) else "default", str(_current.where)]
 	if int(_current.get("slots", 0)) > 0: bits.append("keep its %d fill-in slot(s) like %%s" % int(_current.slots))
 	_info.text = " · ".join(bits)
+	var note := entry_note(_current)
+	if not note.is_empty(): _info.text = note + "\n" + _info.text
 	_refresh()
+
+## RETIRED_NOTE for a fragment the overhaul replaced while it is on; "" otherwise.
+static func entry_note(e: Dictionary) -> String:
+	if BOND.DYNAMIC and str(e.get("kind", "")) == "fragment" and str(e.get("id", "")) in BOND.RETIRED_PROMPTS: return RETIRED_NOTE
+	return ""
 
 func _edited() -> void:
 	_describe()

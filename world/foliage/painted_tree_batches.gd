@@ -55,6 +55,12 @@ var _detail_cells := {}
 var _detail_eye := Vector3.INF
 var _detail_reach := 160.0
 
+## Lane memory 2026-11-21: a batch holding one cell shares that cell's transform array with its
+## near and far groups instead of a merged copy (High kept every tree of the 12 km reach twice).
+## false = the old copy.
+const SHARE_SINGLE_CELL := true
+## Test hook (tools/profile/test_tree_share.gd compares both paths); play uses the constant.
+static var share_single_cell := SHARE_SINGLE_CELL
 func _key(cell: Vector2i) -> Vector2i:return cell
 func _far_key(key: Vector2i) -> Vector2i:return Vector2i(floori(key.x/16.0),floori(key.y/16.0))
 
@@ -111,13 +117,26 @@ static func _first(keys: Dictionary) -> Vector2i:
 func _flush_near(key: Vector2i) -> void:
 	var record: Dictionary=batches[key]
 	var merged:={}
-	for cell: Vector2i in record.cells:
-		for id: String in record.cells[cell]:
-			var group: Dictionary=record.cells[cell][id]
-			if not merged.has(id):merged[id]={"entry":group.entry,"transforms":[]}
-			for source: Transform3D in group.transforms:
-				var transform:=source;transform.origin+=Vector3(cell.x*32-key.x*SPAN,0,cell.y*32-key.y*SPAN)
-				merged[id].transforms.append(transform)
+	if share_single_cell and record.cells.size()==1 and record.cells.has(key):
+		# The batch is its own cell (_key is the identity): the merge would copy every transform
+		# with a zero shift. Share the cell's array instead; only -0.0 origin components become
+		# +0.0, as the old copy made them.
+		for id: String in record.cells[key]:
+			var group: Dictionary=record.cells[key][id]
+			var transforms: Array=group.transforms
+			for i in transforms.size():
+				var o: Vector3=(transforms[i] as Transform3D).origin
+				if o.x==0.0 or o.y==0.0 or o.z==0.0:
+					var shifted: Transform3D=transforms[i];shifted.origin+=Vector3.ZERO;transforms[i]=shifted
+			merged[id]={"entry":group.entry,"transforms":transforms}
+	else:
+		for cell: Vector2i in record.cells:
+			for id: String in record.cells[cell]:
+				var group: Dictionary=record.cells[cell][id]
+				if not merged.has(id):merged[id]={"entry":group.entry,"transforms":[]}
+				for source: Transform3D in group.transforms:
+					var transform:=source;transform.origin+=Vector3(cell.x*32-key.x*SPAN,0,cell.y*32-key.y*SPAN)
+					merged[id].transforms.append(transform)
 	var offset := Vector3(key.x*SPAN,0,key.y*SPAN)
 	if is_instance_valid(record.node): record.node.queue_free()
 	record.node = null; _detail_cells.erase(key)

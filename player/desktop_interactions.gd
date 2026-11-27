@@ -27,8 +27,8 @@ var _hoof_anchor := Vector3.ZERO
 var _slap_until := 0
 var _avatar: Node
 var _held_pose := false
-## Bridal carried, the controls move to a card in the corner (cradle_controls.gd); the row under
-## the crosshair sat where her subtitles go.
+## Bridal carried, the controls are their own titled section of the corner card
+## (world/ui/control_card.gd, shared with interaction_hints.gd).
 var _cradle_controls: CanvasLayer
 var _cradle_rows_in := 0.0
 var _cradle_rows: Array = []
@@ -419,8 +419,7 @@ func _update_cradle_controls(delta: float) -> void:
 	var on: bool = is_instance_valid(interactor) and is_instance_valid(interactor.held) and interactor.cradled and _available()
 	if not on and not is_instance_valid(_cradle_controls): return
 	if not is_instance_valid(_cradle_controls):
-		_cradle_controls = preload("res://player/cradle_controls.gd").new()
-		add_child(_cradle_controls)
+		_cradle_controls = preload("res://world/ui/control_card.gd").shared(self)
 	# Which rows apply changes with what is in front of him; checked a few times a second.
 	_cradle_rows_in -= delta
 	if on and _cradle_rows_in <= 0.0:
@@ -430,7 +429,7 @@ func _update_cradle_controls(delta: float) -> void:
 		_cradle_rows = [["G", "tap", "Lay in bed" if bed else "Put down"], ["G", "hold", "Throw"],
 			["K", "hold", "Kiss"], [Settings.key_label("carry_turn", "B"), "hold", "Carry normally"]]
 		if interactor.door_past_held() != null: _cradle_rows.insert(0, ["E", "", "Open door"])
-	_cradle_controls.update(on, _cradle_rows, delta)
+	_cradle_controls.section("carry", on, "BRIDAL CARRY", _cradle_rows, delta)
 
 
 ## While a boop comes in, her eyes follow his fingertip to her nose (dev 2026-10-14). Her own

@@ -27,12 +27,22 @@ var _redo: Array[Dictionary] = []
 var _history_bytes := 0
 var _records := {}
 var _dirty := {}
+## Memory lane 2026-11-21: in play (`bind(world, false)`) each record's unsculpted height copy
+## (4 MB per sculpted region; 88 regions, 352 MB with the whole world resident) is read only by the
+## published pass of `load_saved`, right after `_ensure` made it. Play drops it after that pass and
+## `_baseline` rebuilds it from the region file on disk if a later pass needs it (a record dropped
+## by the terrain window is forgotten and re-made from the fresh region anyway). Strokes, undo and
+## save read the coverage and the live map, never the baseline. A dropped record's "baseline" is
+## null. false keeps every baseline resident as before.
+const DROP_PLAY_BASELINES := true
+var _play := false
 
 ## Perf 0.1.0: _process runs only while dabs or a stroke's ending are queued (dab/finish wake it).
 func _ready() -> void: set_process(not _dabs.is_empty() or _ending)
 
 func bind(value: Node, use_working := true) -> void:
 	world = value; terrain = value.terrain
+	_play = not use_working
 	load_saved(use_working)
 
 func begin(invert := false) -> bool:
@@ -62,7 +72,10 @@ func _process(_delta: float) -> void:
 	if _dabs.is_empty() and not _ending: set_process(false)
 
 func _ensure(loc:Vector2i)->Dictionary:
-	if _records.has(loc):return _records[loc]
+	if _records.has(loc):
+		var kept:Dictionary=_records[loc]
+		if kept.get("coverage")==null:kept.coverage=_published_coverage(loc,kept.bounds)
+		return kept
 	var region: Object=terrain.data.get_region(loc)
 	if region==null:return {}
 	var baseline:Image=region.get_height_map().duplicate()
@@ -119,6 +132,11 @@ func _apply_dab(pos:Vector2)->void:
 				await get_tree().process_frame;clock=Time.get_ticks_usec()
 	var dab_bounds:=AABB(Vector3(lo.x,-10000.0,lo.y),Vector3(hi.x-lo.x+1,20000.0,hi.y-lo.y+1))
 	_stroke.bounds=_merged_bounds(_stroke.bounds,dab_bounds)
+	# A brush edits the Image directly. Restore and load use Terrain3DRegion's
+	# set_height_map(), which already recalculates the range of the whole tile.
+	for loc in touched:
+		var changed_region:Object=terrain.data.get_region(loc)
+		if changed_region!=null and changed_region.has_method("calc_height_range"):changed_region.calc_height_range()
 	_upload(touched.keys(),dab_bounds);busy=false;updated.emit()
 
 func _stroke_height(point:Vector2i)->float:
@@ -134,9 +152,6 @@ func _source_height(source:Dictionary,point:Vector2i)->float:
 
 func _upload(locations:Array,change_bounds:=AABB())->void:
 	if locations.is_empty():return
-	for loc in locations:
-		var changed_region:Object=terrain.data.get_region(loc)
-		if changed_region!=null and changed_region.has_method("calc_height_range"):changed_region.calc_height_range()
 	terrain.data.update_maps(0,false,false)
 	var collision: Object = terrain.get_collision() if terrain.has_method("get_collision") else null
 	if collision != null and collision.has_method("update"): collision.update(true)
@@ -235,26 +250,56 @@ func load_saved(working:=true,only:Array=[])->void:
 			coverage.convert(Image.FORMAT_L8)
 			var bounds:=Rect2i(int(bounds_value[0]),int(bounds_value[1]),int(bounds_value[2]),int(bounds_value[3]))
 			if bounds.position.x<0 or bounds.position.y<0 or bounds.size.x<0 or bounds.size.y<0 or bounds.end.x>REGION_SIZE or bounds.end.y>REGION_SIZE:continue
-			var saved:=Image.create_from_data(REGION_SIZE,REGION_SIZE,false,Image.FORMAT_RF,bytes)
 			# Published data is applied to the immutable generated baseline. Working data
 			# then overlays that result, retaining published pixels outside its coverage.
-			var map:Image=terrain.data.get_region(loc).get_height_map().duplicate() if root_dir==working_dir else rec.baseline.duplicate()
+			var map:Image
+			if root_dir==working_dir:map=terrain.data.get_region(loc).get_height_map().duplicate()
+			elif _play and DROP_PLAY_BASELINES:
+				# In place: the region keeps its own Image object, so the terrain plugin holds no
+				# stale copy of the unsculpted map once the baseline is dropped.
+				map=terrain.data.get_region(loc).get_height_map();map.copy_from(_baseline(loc,rec))
+			else:map=_baseline(loc,rec).duplicate()
 			var merged_coverage:Image=rec.coverage.duplicate() if root_dir==working_dir else Image.create(REGION_SIZE,REGION_SIZE,false,Image.FORMAT_L8)
-			var valid:=true
-			for y in range(bounds.position.y,bounds.end.y):
-				for x in range(bounds.position.x,bounds.end.x):
-					if coverage.get_pixel(x,y).r>0:
-						var height:=saved.get_pixel(x,y).r
-						if not is_finite(height):valid=false;break
-						map.set_pixel(x,y,Color(height,0,0));merged_coverage.set_pixel(x,y,Color.WHITE)
-				if not valid:break
-			if not valid:continue
+			if not preload("res://world/terrain/terrain_overlay.gd").apply(map, bytes, coverage, bounds, merged_coverage): continue
 			var region:Object=terrain.data.get_region(loc);region.set_height_map(map);region.set_modified(true);region.set_edited(true);rec.coverage=merged_coverage
 			rec.bounds=rec.bounds.merge(bounds) if root_dir==working_dir and rec.bounds.size!=Vector2i.ZERO else bounds
 			rec.source="working" if root_dir==working_dir else "published";touched[loc]=true
 			var world_bounds:=AABB(Vector3(loc.x*REGION_SIZE+bounds.position.x,-10000,loc.y*REGION_SIZE+bounds.position.y),Vector3(bounds.size.x,20000,bounds.size.y))
 			changed_bounds=_merged_bounds(changed_bounds,world_bounds)
+	if _play and DROP_PLAY_BASELINES:
+		for rec:Dictionary in _records.values():
+			rec.baseline=null
+			# Coverage (1 MB a region) is read only by editing and saving; _ensure rebuilds it.
+			if rec.source=="published":rec.coverage=null
 	_upload(touched.keys(),changed_bounds)
+
+## A dropped play record's coverage, rebuilt as the published pass made it.
+func _published_coverage(loc:Vector2i,bounds:Rect2i)->Image:
+	var merged:=Image.create(REGION_SIZE,REGION_SIZE,false,Image.FORMAT_L8)
+	var relative:String=str(_read_json(published_dir.path_join("index.json")).get("tiles",{}).get("%d_%d"%[loc.x,loc.y],""))
+	if relative.is_empty():return merged
+	var coverage:Image=preload("res://world/resource_image.gd").read(published_dir.path_join(relative).path_join("coverage.png"))
+	if coverage==null or coverage.get_width()!=REGION_SIZE or coverage.get_height()!=REGION_SIZE:return merged
+	coverage.convert(Image.FORMAT_L8)
+	for y in range(bounds.position.y,bounds.end.y):
+		for x in range(bounds.position.x,bounds.end.x):
+			if coverage.get_pixel(x,y).r>0:merged.set_pixel(x,y,Color.WHITE)
+	return merged
+
+## The record's unsculpted heights: kept, or (dropped in play) read again from the region file.
+func _baseline(loc:Vector2i,rec:Dictionary)->Image:
+	if rec.get("baseline") is Image:return rec.baseline
+	var files:Variant=world.get("_region_files") if world!=null else null
+	if files is Dictionary and (files as Dictionary).has(loc) and world.has_method("active_data_dir"):
+		var path:String=str(world.call("active_data_dir")).path_join(str(files[loc]))
+		var region:Resource=ResourceLoader.load(path,"",ResourceLoader.CACHE_MODE_IGNORE)
+		if region!=null and region.has_method("get_height_map"):
+			var heights:Variant=region.call("get_height_map")
+			if heights is Image and (heights as Image).get_width()==REGION_SIZE:
+				rec.baseline=(heights as Image).duplicate();return rec.baseline
+	push_warning("TerrainSculptor: no region file for %s; the live heights stand in for its baseline" % loc)
+	rec.baseline=terrain.data.get_region(loc).get_height_map().duplicate()
+	return rec.baseline
 
 static func _read_json(path:String)->Dictionary:
 	var value:Variant=JSON.parse_string(FileAccess.get_file_as_string(path)) if FileAccess.file_exists(path) else {}

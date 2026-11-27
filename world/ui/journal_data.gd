@@ -171,9 +171,16 @@ static func place_name(place: String) -> String:
 	return place.replace("_", " ").capitalize()
 
 
+## The player's "Day N" for a calendar day: 1 on the day this world began (TimeOfDay.first_day).
+## Looked up, not named: fixtures load this script without the autoloads.
+static func day_number(calendar_day: int) -> int:
+	var loop := Engine.get_main_loop() as SceneTree
+	var clock: Node = loop.root.get_node_or_null("TimeOfDay") if loop != null else null
+	return maxi(1, calendar_day - (int(clock.get("first_day")) if clock != null else 0) + 1)
+
 ## "Day 3 · 16:25–16:52 · Ponyville"
 static func scene_line(scene: Dictionary) -> String:
-	var bits: Array[String] = ["Day %d" % (int(scene.day) + 1)]
+	var bits: Array[String] = ["Day %d" % day_number(int(scene.day))]
 	bits.append(clock(int(scene.start)) + ("" if int(scene.end) - int(scene.start) < 2 else "–" + clock(int(scene.end))))
 	if place_name(str(scene.place)) != "": bits.append(place_name(str(scene.place)))
 	return " · ".join(bits)

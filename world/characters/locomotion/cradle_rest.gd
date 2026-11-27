@@ -13,6 +13,15 @@ extends Node
 
 const MATTRESS := preload("res://world/life/couch/mattress.gd")
 const BED_SLOT := preload("res://world/buildings/bed_slot.gd")
+const BED_FIT := preload("res://world/life/bed_fit.gd")
+## Thread fix "beds" (2026-11-19, post 43717764: "I can't put her in bed, the only one that can do that
+## is her"). Awake too, at any hour: a pony comfortable in his arms (the hug rule) whom Anon sets down
+## on a bed, from any carry, desktop or VR, or lays there with the cradle's lean-down, lies in that bed
+## awake (asleep in her night) and stays (night_rest.gd placed_in_bed) until she gets up herself, he
+## picks her up, she is given another command, or her time there runs out. If Anon lies on that bed,
+## she lies down beside him as his bed company (shared_bed.gd place_guest), if she wants to.
+## Rollback: false = only a sleeping or drowsy pony at her bedtime is laid in bed (the old rule).
+const AWAKE_SET_DOWN := true
 const BED_SIZE := Vector3(2.05, 1.1, 2.1) # house_beds.gd BED_SIZE, for beds without their own.
 ## Calm seconds in his arms before her eyelids grow heavy, and until she is asleep.
 const DROWSY_AFTER := 20.0
@@ -46,11 +55,11 @@ const BLINK_SECONDS := .9
 const CRADLE_TELL_AFTER := 3.0
 
 ## The situation, in the same voice as director_contacts.gd and pony_awareness.gd.
-const CARRIED_EVENT := "Anon is holding you cradled in his arms like a bride: your back across one arm, your legs over the other, your belly toward him. You may simply enjoy being held in silence. If words add something, one or two can be enough. Do not invent where he intends to take you."
-const CARRIED_AWAY_EVENT := "Anon is carrying you cradled in his arms like a bride, moving away from where he picked you up. You may enjoy the ride silently; speak only if something needs saying. You do not yet know his destination or intent."
-const BODY_WORDS := "cradled in the player's arms right now, carried like a bride: your back across one arm, your legs over the other"
-const DROWSY_LINE := "- It is past your bedtime and you are growing sleepy in Anon's arms: your eyelids are heavy and your head keeps settling against his chest. You may let yourself drift off; nothing needs saying."
-const ASLEEP_LINE := "- It is night and you are fast asleep in Anon's arms, held against him with your eyes shut. A voice has half-woken you: you are drowsy, yawning, and would rather go back to sleep. If you decide to wake up properly, use wake_up(); otherwise you doze on in his arms."
+const CARRIED_EVENT := "Anon is holding you in his arms like a bride, one arm under your back and the other under your legs, with your belly turned toward him. It is fine to just enjoy being held in silence, or say a word or two if it adds something. Don't make up where he plans to take you."
+const CARRIED_AWAY_EVENT := "Anon is carrying you in his arms like a bride, walking away from where he picked you up. You don't know where he is taking you or why yet. You can enjoy the ride in silence and speak only if something needs to be said."
+const BODY_WORDS := "cradled in the player's arms like a bride right now, with one arm under your back and the other under your legs"
+const DROWSY_LINE := "- It is past your bedtime and you are getting sleepy in Anon's arms, eyelids heavy, your head resting against his chest. You can just let yourself drift off without saying a thing."
+const ASLEEP_LINE := "- It is night, and you are fast asleep in Anon's arms, held close with your eyes shut. A voice has half woken you. You are drowsy and yawning, and you'd rather go back to sleep. Use wake_up() if you decide to wake up properly, or just keep dozing in his arms."
 
 var pony: Node3D
 var calm := 0.0
@@ -168,7 +177,7 @@ func _held_step(delta: float) -> void:
 		pony.sleeping = false
 		_kiss_from_sleep = true
 		carry.kiss_sleepy = true
-		_woken("You were asleep in Anon's arms and stirred to him kissing you.", true)
+		_woken("You were asleep in Anon's arms and stirred when he kissed you.", true)
 	if asleep and pony.sleeping != true: _woken("", true) # A voice, her own wake_up(): she stirs.
 	if _kiss_from_sleep:
 		var affection: Node = pony.get_node_or_null("Affection")
@@ -252,13 +261,18 @@ func _set_down() -> void:
 	pony.carry.kiss_sleepy = false
 	if not asleep and drowse < TUCK_DROWSE:
 		calm = 0.0; drowse = 0.0
+		# Set down awake over a bed (her body above its mattress): she lies in it (AWAKE_SET_DOWN).
+		var flung: Object = pony.get("thrown")
+		if AWAKE_SET_DOWN and not (flung != null and flung.active()):
+			var awake_spot := bed_spot(Vector3.INF, Vector3.ZERO)
+			if not awake_spot.is_empty(): lay_down(awake_spot)
 		return
 	var was_asleep := asleep
 	var thrown: Object = pony.get("thrown")
 	var spot: Dictionary = {} if thrown != null and thrown.active() else bed_spot(Vector3.INF, Vector3.ZERO)
 	if spot.is_empty():
 		pony.sleeping = false
-		_woken("You were asleep in Anon's arms; when he set you down, you woke up groggy." if was_asleep else "", false)
+		_woken("You were asleep in Anon's arms and woke up groggy when he set you down." if was_asleep else "", false)
 		calm = 0.0; drowse = 0.0
 		return
 	lay_down(spot)
@@ -268,7 +282,8 @@ func _set_down() -> void:
 ## body, else where his eyes meet one within reach). {} when not; else {bed, own (her own bed),
 ## spot (her rest on it: night_rest.gd's in her own bed)}.
 func bed_spot(eye: Vector3, look: Vector3) -> Dictionary:
-	if (not asleep and drowse < TUCK_DROWSE) or not _bedtime(): return {}
+	var sleepy := (asleep or drowse >= TUCK_DROWSE) and _bedtime()
+	if not sleepy and not (AWAKE_SET_DOWN and _comfortable()): return {}
 	var from: Vector3 = pony.carry.grip_transform("chest").origin
 	var hit := _bed_hit(from + Vector3.UP * .2, from + Vector3.DOWN * 2.0)
 	if hit.is_empty() and eye.is_finite(): hit = _bed_hit(eye, eye + look.normalized() * 2.5)
@@ -279,7 +294,25 @@ func bed_spot(eye: Vector3, look: Vector3) -> Dictionary:
 	var house: Node3D = rest.population.home_house(id) if rest != null and rest.population != null and rest.population.has_method("home_house") else null
 	var own: bool = house != null and house.has_method("ensure_bed") and house.ensure_bed(id) == bed
 	var spot: Transform3D = house.bed_rest(id) if own else _spot_on(bed, hit.point)
-	return {"bed": bed, "own": own, "spot": spot, "owner": "" if own else _bed_owner(bed)}
+	# Along and across the mattress for her own body (bed_fit.gd); a canon mare's spot is unchanged.
+	spot = BED_FIT.fit_actor(bed, spot, pony)
+	if sleepy: return {"bed": bed, "own": own, "spot": spot, "owner": "" if own else _bed_owner(bed)}
+	return _awake_spot(bed, own, spot)
+
+
+## The awake set-down's spot (AWAKE_SET_DOWN): with Anon lying on that bed, beside him through its
+## rest ("with"); otherwise the bed's own key in its house, so night_rest.gd can hold her there and
+## see her down from it later. {} for a bed no house owns.
+func _awake_spot(bed: Node3D, own: bool, spot: Transform3D) -> Dictionary:
+	if bed.has_meta("bed_rest") and is_instance_valid(bed.get_meta("bed_rest")) and BED_FIT._anon_lies_on(bed):
+		return {"bed": bed, "own": own, "spot": spot, "owner": "", "awake": true, "with": bed.get_meta("bed_rest")}
+	var house: Node3D = bed.get_meta("house") if bed.has_meta("house") and is_instance_valid(bed.get_meta("house")) else null
+	if house == null: house = load("res://world/buildings/house_interior.gd").at(pony.get_tree(), bed.global_position)
+	if house == null or not house.has_method("bed_rest"): return {}
+	var key: String = load("res://world/life/night_rest.gd").bed_key_for(house, bed)
+	if key == "\n": return {}
+	if not own: spot = BED_FIT.fit_actor(bed, house.bed_rest(key), pony)
+	return {"bed": bed, "own": own, "spot": spot, "owner": "", "awake": true, "house": house, "key": key}
 
 
 ## Another pony whose bed this is (a resident of the house it stands in), else "": his own bed,
@@ -326,6 +359,9 @@ func _spot_on(bed: Node3D, over: Vector3) -> Transform3D:
 func lay_down(spot: Dictionary) -> void:
 	_kiss_from_sleep = false
 	pony.carry.kiss_sleepy = false
+	if spot.get("awake", false):
+		_lay_awake(spot)
+		return
 	var rest := _night_rest()
 	var id := _id()
 	var entry: Dictionary = rest._state.get(id, {}) if rest != null else {}
@@ -342,7 +378,7 @@ func lay_down(spot: Dictionary) -> void:
 	if owner_id.is_empty():
 		_remember("home", "Anon carried you, %s in his arms, and tucked you into %s." % [how, _bed_words_now])
 	else:
-		_remember("home", "Anon carried you, %s in his arms, and laid you in %s. You stirred, saw it was not your bed, and got up to go to your own." % [how, _bed_words_now])
+		_remember("home", "Anon carried you, %s in his arms, and put you in %s. You stirred, saw it wasn't your bed, and got up to go to your own." % [how, _bed_words_now])
 	if "sleep_style" in pony:
 		pony.sleep_style = "side" if randf() < .5 else "head_down"
 		# Limbs within each mattress lane when sharing with family (night_rest.gd _settle).
@@ -359,6 +395,24 @@ func lay_down(spot: Dictionary) -> void:
 	_bed_check = 0.0
 	_get_up_in = NOT_MINE_SECONDS if not owner_id.is_empty() else -1.0
 	set_physics_process(true)
+
+
+## Awake in his arms, set down on a bed (AWAKE_SET_DOWN): beside him if he lies there and she wants
+## to be, else held in that bed by night_rest.gd. Nothing happens otherwise: she landed where she fell.
+func _lay_awake(spot: Dictionary) -> void:
+	asleep = false; calm = 0.0; drowse = 0.0
+	var bed: Node3D = spot.bed
+	var words := _bed_words(bed, bool(spot.own), "")
+	var company: Variant = spot.get("with")
+	if is_instance_valid(company):
+		if (company as Node).has_method("place_guest") and bool(company.call("place_guest", pony)):
+			print("[cradle rest] %s laid in bed beside Anon" % _id())
+			_remember("home", "Anon carried you to %s and laid you down in it beside him." % words)
+		return
+	var rest := _night_rest()
+	if rest == null or not rest.has_method("placed_in_bed"): return
+	if bool(rest.call("placed_in_bed", _id(), spot.house, str(spot.key), spot.spot)):
+		_remember("home", "Anon carried you to %s and laid you in it." % words)
 
 
 ## Up again on a bed that is not hers (her morning, her own wake_up(), or another pony's bed):
@@ -388,7 +442,7 @@ func _bed_step(delta: float) -> void:
 	_bed = null
 	if not BED_SLOT.on_mattress(bed, pony.global_position, BED_SIZE): return
 	print("[cradle rest] %s wakes up in %s" % [_id(), bed.name])
-	_remember("home", "You woke up in %s, where Anon had tucked you in, and got out of it." % _bed_words_now)
+	_remember("home", "Anon had tucked you into %s. You woke up there and got out of it." % _bed_words_now)
 	_hop_down(bed, Callable())
 
 

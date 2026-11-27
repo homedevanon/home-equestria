@@ -103,8 +103,16 @@ const SPRING_BLOSSOM_SHARE := 0.6
 static func flowers(row: Dictionary) -> bool:
 	var kind := int(row.get("kind", BROADLEAF))
 	if kind == BLOSSOM: return true
-	if kind != BROADLEAF: return false
+	if kind != BROADLEAF or classic_crowns(): return false
 	return fposmod(autumn_tree(root_of(row)).x * 97.13 + 0.37, 1.0) < SPRING_BLOSSOM_SHARE
+
+## Settings > Graphics "Tree crowns" other than Standard draws crowns as before 0.3.1
+## (vegetation_classic_crowns in the shader include): then only blossom trees flower. False without
+## the Settings autoload (tests), as before.
+static func classic_crowns() -> bool:
+	var loop := Engine.get_main_loop() as SceneTree
+	var settings: Node = loop.root.get_node_or_null(^"Settings") if loop != null and loop.root != null else null
+	return settings != null and str(settings.call("get_value", "video/tree_crowns")) in ["classic", "safe"]
 
 ## The blossom kind of a tree, 0..1 (below 0.5 cherry pink, to 0.8 apple white, above plum).
 static func blossom_kind(row: Dictionary) -> float:

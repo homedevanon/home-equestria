@@ -16,6 +16,7 @@ const PITCH := deg_to_rad(-8.0)
 const SHADER := preload("res://world/characters/hybrid_mare/pony_impostor.gdshader")
 const FAR_MESH := preload("res://world/characters/hybrid_mare/hybrid_far_mesh.gd")
 const SHUTDOWN := preload("res://world/shutdown_waits.gd")
+const RT := preload("res://world/perf/render_thread.gd")
 const NAME := "PonyImpostors"
 
 static var atlases: Dictionary = {}   # identity id -> {"material": ShaderMaterial, "size": Vector2, "foot": float}
@@ -221,6 +222,30 @@ func pending() -> int:
 ## (the caller reads synchronously instead). Callbacks run on the main thread (the game renders
 ## there, quality.gd).
 static func _read_async(viewport: SubViewport, entry: Array, outstanding: Array) -> bool:
+	if RT.active():
+		# Trial render_thread: device calls are refused off the render thread in this mode. The request
+		# runs there; the callback (also there) only builds the Image and hands it to the main thread.
+		if not RT.readback_ok(viewport): return false
+		var rid := viewport.get_texture().get_rid()
+		outstanding[0] = int(outstanding[0]) + 1
+		RenderingServer.call_on_render_thread(func() -> void:
+			var arrive := func(image: Image) -> void:
+				(func() -> void:
+					entry[1] = image
+					outstanding[0] = int(outstanding[0]) - 1).call_deferred()
+			var rd := RenderingServer.get_rendering_device()
+			var texture := RenderingServer.texture_get_rd_texture(rid) if rd != null else RID()
+			if not texture.is_valid() or not rd.texture_is_valid(texture):
+				arrive.call(null); return
+			var format: RDTextureFormat = rd.texture_get_format(texture)
+			if format == null:
+				arrive.call(null); return
+			var w := int(format.width)
+			var h := int(format.height)
+			var error: Error = rd.texture_get_data_async(texture, 0, func(data: PackedByteArray) -> void:
+				arrive.call(Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, data) if data.size() == w * h * 4 else null))
+			if error != OK: arrive.call(null))
+		return true
 	var device := RenderingServer.get_rendering_device()
 	if device == null or not device.has_method("texture_get_data_async"): return false
 	var texture := RenderingServer.texture_get_rd_texture(viewport.get_texture().get_rid())

@@ -16,6 +16,8 @@ static func register(nav: Node) -> bool:
 	var handle: PackedInt64Array = service.native_follow_actor(nav, pony.profile) if is_instance_valid(service) else PackedInt64Array()
 	nav._native_handle = handle
 	nav._native_service = service
+	# The follow driver's observer snapshot caches each navigator's key from her handle.
+	if nav.is_inside_tree(): nav.get_tree().call_group("native_follow_drivers", "_invalidate_peers")
 	if handle.size() != 2:
 		# Loud, once per navigator, and never a silent stop: this pony keeps the legacy steering.
 		var message := "%s: the native follower could not register her; using the GDScript steering" % pony.name

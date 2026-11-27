@@ -198,15 +198,24 @@ vec3 vegetation_hue(vec3 authored,vec4 ground,float strength) {
 // that left crowns "broken apart with holes in them" (dev 2026-11-10, and the rule of 2026-11-09).
 // Trees stand up to two days apart (their `late` number), so the valley does not move as one.
 // LOOK_SPRING = 0.0 restores the old spring: full crowns the day Winter Wrap Up ends and blossom
-// only on blossom_tree materials, by season_blossom.
+// only on blossom_tree materials, by season_blossom. Callers test vegetation_spring_on(), which also
+// honours the player's "Tree crowns" setting.
 const float LOOK_SPRING = 1.0;
+// Settings > Graphics "Tree crowns" (video/tree_crowns, autoload/settings.gd; AMD report of
+// 2026-11-12): any choice but Standard draws crowns as before 0.3.1, as LOOK_SPRING 0 does, a last
+// resort for a graphics driver we cannot test. Written only by Settings.apply_tree_crowns().
+global uniform bool vegetation_classic_crowns;
+// The 0.3.1 spring crown (growth, flowering share, young leaf) is in use.
+bool vegetation_spring_on() {
+    return LOOK_SPRING > 0.0 && !vegetation_classic_crowns;
+}
 const float SPRING_BLOSSOM_SHARE = .6;
 // x = this tree's leaf growth today (0 bare .. 1 full crown), y = how far its blossom has opened
 // (0 on a tree that does not flower, or not yet), z = its blossom kind 0..1, w = how much of its
 // blossom has fallen (1 = none left).
 // tree = vegetation_autumn_tree(root); own_blossom = the material's blossom_tree.
 vec4 vegetation_spring_tree(vec3 tree,float own_blossom) {
-    if (season_spring<=.0005 || LOOK_SPRING<=0.0 || evergreen) return vec4(1.0,0.0,0.0,1.0);
+    if (season_spring<=.0005 || !vegetation_spring_on() || evergreen) return vec4(1.0,0.0,0.0,1.0);
     float late=tree.x;
     bool flowers=own_blossom>.5 || fract(late*97.13+.37)<SPRING_BLOSSOM_SHARE;
     float off=late*.1;
@@ -260,7 +269,7 @@ vec3 vegetation_blossom_tree(vec3 c,float on,float kind,float vary) {
 // Any leaf that is at all green counts whole: the blue-green kinds have a low green mask and
 // stayed dark teal beside the yellow-green ones (shots of 2026-11-10).
 float vegetation_spring_fresh(float green,float deciduous) {
-    if (season_spring<=.0005 || LOOK_SPRING<=0.0 || evergreen || deciduous<=.001) return 0.0;
+    if (season_spring<=.0005 || !vegetation_spring_on() || evergreen || deciduous<=.001) return 0.0;
     return (1.0-.85*smoothstep(.88,1.0,season_spring))*smoothstep(0.0,.3,green)*smoothstep(0.0,.25,deciduous);
 }
 // Young leaves: a light yellow green all spring, twice as light as the summer leaf (at 1.3 a

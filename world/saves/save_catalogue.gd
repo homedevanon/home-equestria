@@ -65,7 +65,8 @@ static func header_from_doc(doc: Dictionary, path: String) -> Dictionary:
 	return {"format": format_of(doc), "world_id": str(doc.get("world_id", _world_of(path))),
 		"saved_at": _number(doc.get("saved_at")), "day": _number(doc.get("day")), "hours": _number(doc.get("hours")),
 		"kind": kind, "place": place, "form": form_text(FORM.saved(context)),
-		"play_seconds": _number(clock.get("active_seconds"))}
+		"play_seconds": _number(clock.get("active_seconds")),
+		"first_day": _number(clock.get("first_day"))}
 
 
 static func _kind_from_path(path: String) -> String:
@@ -128,10 +129,10 @@ static func world_started(world_id: String) -> String:
 
 
 # ------------------------------------------------------------------ text for menus
-## "Day 5, 14:20" (day 0 is the first day).
+## "Day 5, 14:20": the day of the player's stay (the world's own first day reads Day 1).
 static func game_time_text(entry: Dictionary) -> String:
 	var hours := clampf(float(entry.get("hours", 0.0)), 0.0, 23.99)
-	return "Day %d, %02d:%02d" % [int(entry.get("day", 0)) + 1, int(hours), int((hours - int(hours)) * 60.0)]
+	return "Day %d, %02d:%02d" % [maxi(1, int(entry.get("day", 0)) - int(entry.get("first_day", 0)) + 1), int(hours), int((hours - int(hours)) * 60.0)]
 
 
 ## Local wall-clock time of a save: "today 21:03", "yesterday 08:10", "Oct 12, 21:03", "Oct 12 2025, 21:03".
@@ -279,11 +280,60 @@ static func _newest_first(entries: Array[Dictionary]) -> Array[Dictionary]:
 static func world_entries(folder: String) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if folder.is_empty() or not DirAccess.dir_exists_absolute(folder): return result
+	if RESCUE_SET_ASIDE: rescue_set_aside(folder)
 	var shelf := SHELF.read(folder.get_base_dir())
 	for path in _paths(folder):
 		var header := _header(path)
 		if not header.is_empty(): result.append(_entry(path, header, shelf))
 	return _newest_first(result)
+
+
+## Rollback switch for rescue_set_aside (docs/THREAD_FIX_SAVES_2026_11_19.md).
+const RESCUE_SET_ASIDE := true
+
+## Older builds (0.3.1 and before) renamed a checkpoint they refused to "<name>.json.corrupt-<time>",
+## which no list shows: one bad briefcase entry hid a whole save for good (thread 2026-11-16). Such a
+## file that still holds a save document is moved, byte for byte, into the archive as
+## "<name>_not_loaded_<time>.json", where the Load list shows it and this version (which repairs bad
+## briefcase entries) can try it. Damaged bytes stay where they are. Only the file moves: the
+## journal and picture beside it belong to whatever save took its name since. Returns how many moved.
+static func rescue_set_aside(folder: String) -> int:
+	var moved := 0
+	var archive := folder.path_join("archive")
+	for dir: String in [folder, archive]:
+		if not DirAccess.dir_exists_absolute(dir): continue
+		for file: String in DirAccess.get_files_at(dir):
+			var at := file.find(".json.corrupt-")
+			if at <= 0: continue
+			var source := dir.path_join(file)
+			if not _holds_save(source): continue
+			var stem := "%s_not_loaded_%s" % [file.left(at), file.substr(at + 14).validate_filename()]
+			var target := archive.path_join(stem + ".json")
+			var n := 2
+			while FileAccess.file_exists(target) or FileAccess.file_exists(target + ".previous"):
+				target = archive.path_join("%s_%d.json" % [stem, n]); n += 1
+			DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(archive))
+			if DirAccess.rename_absolute(ProjectSettings.globalize_path(source), ProjectSettings.globalize_path(target)) == OK:
+				moved += 1
+				print("[saves] %s, set aside by an older version, is back in the archive as %s" % [file, target.get_file()])
+	return moved
+
+
+## A set-aside file worth showing again: a JSON object that is a save document. One over the read
+## cap is judged by its braces only (a later version may read it); a cheap brace check comes first
+## so damaged files are not parsed on every listing.
+static func _holds_save(path: String) -> bool:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null or file.get_length() < 2: return false
+	var length := file.get_length()
+	var head := file.get_buffer(mini(64, length)).get_string_from_utf8().strip_edges().trim_prefix("﻿")
+	file.seek(maxi(0, length - 64))
+	var tail := file.get_buffer(mini(64, length)).get_string_from_utf8().strip_edges()
+	file.close()
+	if not head.begins_with("{") or not tail.ends_with("}"): return false
+	if length > MAX_BYTES: return true
+	var doc: Variant = SAVE_FILE.parse(path, MAX_BYTES)
+	return doc is Dictionary and not doc.get("empty", false) and format_of(doc) >= 1
 
 
 ## Every checkpoint of every world under `root`, newest first.

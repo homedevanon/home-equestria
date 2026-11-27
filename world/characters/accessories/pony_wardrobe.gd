@@ -10,7 +10,8 @@ extends Node
 ## solid colour ("plain-socks"); only adult mares wear socks (seasonal or given); and few ponies
 ## dress for the cold at all ("maybe 20% of them even in dead winter because mare fur is warm":
 ## SCARF_SHARE, SOCKS_SHARE, BEANIE_SHARE). The /mlp/ cup scarf ("4cc-scarf") is the player's own:
-## no season picks it and only CLUB_SCARF_WEARERS accept it as a gift.
+## no season picks it and only CLUB_SCARF_WEARERS accept it as a gift. A pony who cannot take a gift
+## says why (refusal(), REFUSALS; hand_feeding.gd), and the item stays in Anon's hand.
 ## Canon ponies wear their show accessories by default (dev 2026-10-15: "add the default
 ## accessories for ponies like trixies cape and hat, nursie's nurse cap, etc"): DEFAULT_WEAR
 ## replaces seasonal clothing in the same slot; a gift still wins its slot.
@@ -69,6 +70,22 @@ const COWPONY_HAT_WEARERS := ["applejack"]
 const SOCK_KINDS := ["socks", "plain-socks"]
 ## The only ponies who take the cup scarf as a gift (Anonfilly exists while her mod is on).
 const CLUB_SCARF_WEARERS := ["anonfilly"]
+## Trixie takes gifts like any mare (thread 2026-11-15, docs/THREAD_FIX_SCARF_2026_11_19.md), except
+## what NO_FIT lists for her. Rollback: false, and she refuses every piece of wear as before.
+const TRIXIE_GIFTS := true
+## Pieces a pony's body has no usable fit for, although the piece fits other mares: Trixie's showmare
+## hat and cape (dev 2026-11-15: they cannot be made to sit right on her mane, neck and chest).
+const NO_FIT := {"trixie": ["wizard_hat", "cape"]}
+## Why a gift is refused (refusal()): [what her model is told, the player's wrist line after ":"].
+const REFUSALS := {
+	"kind": ["it is not something a pony wears.", "it is not pony wear"],
+	"club": ["it is his own /mlp/ team scarf, his to wear, not yours.", "it is your own team scarf"],
+	"cowpony": ["a cowpony hat is Applejack's look; nopony else in Ponyville wears one.", "only Applejack wears a cowpony hat"],
+	"socks": ["thigh highs are for grown mares.", "thigh highs are for grown mares"],
+	"body": ["it is not made for a body like yours and would not fit.", "it does not fit her"],
+	"no_fit": ["it does not sit right on you.", "it does not fit her"],
+	"duplicate": ["he already gave you this very one.", "she already has this one from you"],
+}
 ## Where snow never lies (climate map R under 0.2: desert, jungle, coast) it feels this much warmer.
 const SNOWLESS_WARMTH := 6.0
 ## id -> warmth of the climate she was last dressed in (wanted() without a position reuses it).
@@ -82,8 +99,8 @@ static func situation_line(pony: Node) -> String:
 		if piece.is_queued_for_deletion(): continue
 		var kind := String(piece.name).trim_prefix("Wear_")
 		if WORN_NAMES.has(kind) and not items.has(WORN_NAMES[kind]): items.append(WORN_NAMES[kind])
-	if items.is_empty(): return "- You currently have no seasonal or gifted clothing equipped."
-	return "- You are currently wearing %s. You know you are wearing these items; a comment about your hat or clothes can refer to them." % ", ".join(items)
+	if items.is_empty(): return "- You aren't wearing any seasonal or gifted clothes."
+	return "- Right now you are wearing %s. You know you have this on, so any talk about your hat or clothes can be about it." % ", ".join(items)
 
 func setup(host: Node) -> void:
 	game = host
@@ -94,18 +111,34 @@ func gifts() -> Dictionary:
 	if not state.get("pony_gifts") is Dictionary: state["pony_gifts"] = {}
 	return state.pony_gifts
 
-## Validate before the inventory transaction so a failed consume cannot grant a gift.
+## Validate before the inventory transaction so a failed consume cannot grant a gift. Mods widen or
+## narrow this (trixie_unlock overrides it); hand_feeding.gd asks it, then refusal() for the words.
 func can_give(pony_id: String, item_id: String, pony: Node3D = null) -> bool:
-	if pony_id == TRIXIE: return false
+	return refusal(pony_id, item_id, pony).is_empty()
+
+## Why she cannot take and wear this gift (a REFUSALS key), or "" when she can.
+func refusal(pony_id: String, item_id: String, pony: Node3D = null) -> String:
 	var parts := item_id.split(":")
-	if parts.size() != 3 or parts[1] not in KINDS: return false
-	if not preload("res://world/shop/shop_items.gd").has(item_id): return false
-	if parts[1] == FITTED.CLUB_SCARF and pony_id not in CLUB_SCARF_WEARERS: return false
-	if parts[1] in SOCK_KINDS and pony != null and not wears_socks(pony): return false
-	if parts[1] in COWPONY_HATS and pony_id not in COWPONY_HAT_WEARERS: return false
+	if parts.size() != 3 or parts[1] not in KINDS: return "kind"
+	if not preload("res://world/shop/shop_items.gd").has(item_id): return "kind"
+	if pony_id == TRIXIE and not TRIXIE_GIFTS: return "no_fit"
+	if parts[1] == FITTED.CLUB_SCARF and pony_id not in CLUB_SCARF_WEARERS: return "club"
+	if parts[1] in COWPONY_HATS and pony_id not in COWPONY_HAT_WEARERS: return "cowpony"
+	if parts[1] in SOCK_KINDS and pony != null and not wears_socks(pony): return "socks"
 	# Validate the recipient before taking the physical item from inventory.
-	if (FITTED.has(parts[1]) or FITTED.OUTFIT.has(parts[1])) and not FITTED.supports_fitted(pony): return false
-	return item_id not in gifts().get(pony_id, [])
+	if not has_fit(pony, parts[1]): return "body"
+	if parts[1] in NO_FIT.get(pony_id, []): return "no_fit"
+	return "duplicate" if item_id in gifts().get(pony_id, []) else ""
+
+## Whether a fitted piece of `kind` exists for this body and can be attached to it. Without a pony
+## (a caller that has none) only the fitted pieces are refused, as before.
+static func has_fit(pony: Node, kind: String) -> bool:
+	var fitted := FITTED.has(kind) or FITTED.OUTFIT.has(kind)
+	if pony == null: return not fitted
+	if fitted: return FITTED.supports_fitted(pony as Node3D) and pony.get("skeleton") != null and pony.get("pivot") != null
+	if kind == "scarf" or kind == FITTED.CLUB_SCARF: return FITTED.supports(pony as Node3D) and pony.get("skeleton") != null and pony.get("pivot") != null
+	if kind in SOCK_KINDS: return pony.find_child("MareBody", true, false) != null
+	return false
 
 ## Only adult mares wear socks (dev 2026-11-11). The princesses count: they have their own pairs.
 static func wears_socks(pony: Node) -> bool:
@@ -233,11 +266,12 @@ func wanted(id: String, season: String) -> Dictionary:
 		for other: String in result.keys():
 			if not default_slot.is_empty() and FITTED.slot(other) == default_slot: result.erase(other)
 		result[kind] = int(defaults[kind])
-	# Trixie keeps her showmare outfit; gifts are not fitted to her covered mane yet.
-	if id == TRIXIE: return result
+	if id == TRIXIE and not TRIXIE_GIFTS: return result
+	# A piece her body has no usable fit for stays off (trixie_unlock's own wanted() may add it back).
+	var unfit: Array = NO_FIT.get(id, [])
 	for gift: String in gifts().get(id, []):
 		var parts := gift.split(":")
-		if parts.size() != 3: continue
+		if parts.size() != 3 or parts[1] in unfit: continue
 		# The latest gift wins within its physical slot, preserving gift history.
 		var slot := FITTED.slot(parts[1])
 		if not slot.is_empty():

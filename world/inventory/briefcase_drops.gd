@@ -82,7 +82,7 @@ func spawn_owned_drop(id:String,pose:Transform3D)->RigidBody3D:
 	if not pose.is_finite() or not CATALOG.has(id):return null
 	if STORE._place(host.inventory.slots,id,-1)<0:
 		_refuse(TIDY.not_placed_text(host,id,false));return null
-	if host.inventory.loans.size()>=host.MAX_LOOSE and not TIDY.make_room(host):
+	if host.inventory.out_count()>=host.MAX_LOOSE and not TIDY.make_room(host):
 		_refuse(TIDY.not_placed_text(host,id,true));return null
 	# Tidying can fill the last free slot with the leftover.
 	var slot:int=STORE._place(host.inventory.slots,id,-1)

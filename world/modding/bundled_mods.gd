@@ -74,7 +74,7 @@ static func entries(folder: String) -> Array[Dictionary]:
 			"sha256": str(item.get("sha256", "")).to_lower(), "default_on": item.get("default_on", true) == true,
 			"source_url": str(item.get("source_url", "")), "update_url": update_url if update_url.begins_with("https://") else "",
 			"patches": patches, "order": int(item.get("order", 0)) if (item.get("order") is int or item.get("order") is float) else 0,
-			"debug_only": item.get("debug_only", false) == true, "caution": str(item.get("caution", "")) if item.get("caution") is String else ""})
+			"debug_only": item.get("debug_only", false) == true, "checked_game": str(item.get("checked_game", "")).strip_edges(), "caution": str(item.get("caution", "")) if item.get("caution") is String else ""})
 	# A patch for a debug-only mod is debug-only too.
 	for patched: Dictionary in out:
 		for other: Dictionary in out:

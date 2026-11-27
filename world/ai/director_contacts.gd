@@ -12,9 +12,13 @@ const CONTACT_BATCH_MAX := 6.0
 const CONTACT_COOLDOWN := 8.0
 const CONTACT_STALE := 20.0
 const CRADLE_REST := preload("res://world/characters/locomotion/cradle_rest.gd")
+const BOND := preload("res://world/relationships/bond_rules.gd")
+const BOND_PROMPT := preload("res://world/relationships/bond_prompt.gd")
 
 var host: Node
 var _remembered_contacts:Dictionary={}
+## Relationship overhaul 2026-11-21: the touch kinds of the batch a contact turn is about to answer.
+var _turn_kinds:Dictionary={}
 
 
 func _init(owner_node: Node) -> void:
@@ -78,15 +82,17 @@ func _on_physical_reaction(kind:String,id:String,deferred:bool=false,summary:=""
 	if kind in ["quiet", "carried", "carried_away", "boop", "petted", "hoofhold", "hug"] and quiet_moment(id): return
 	if kind in CONTACT_KINDS:
 		_log_contact(id,kind,pet_region);return
-	if not host.characters.has(id):return
-	if not is_instance_valid(host.player_head) or not is_instance_valid(host.characters[id].node):return
-	if not host.awareness.can_hear(host.characters[id].node,host.player_head,host._earshot(id)):return
+	if not host.characters.has(id):_lost(kind,id);return
+	if not is_instance_valid(host.player_head) or not is_instance_valid(host.characters[id].node):_lost(kind,id);return
+	if not host.awareness.can_hear(host.characters[id].node,host.player_head,host._earshot(id)):_lost(kind,id);return
 	if host.state!="idle" or host.speech.state=="hearing":
 		if (kind in ["carried", "carried_away", "sprayed", "thrown", "snowball_hit"] or kind.begins_with("anon_resting")) and not deferred:
 			host._pending_contacts[id] = {"kind": kind, "until": host._now() + 12.0}
+		_lost(kind,id)
 		return
 	if kind not in ["farewell","contact"] and host._reaction_rng.randf()>=reaction_chance(kind):return
 	host._current=id;host._listener_id="player";host._turn_id+=1;host._rewrite_used=false;host._recorded=false
+	if kind=="contact":_bond_turn(id)
 	# Conversation clock: a fresh chat starts after two quiet minutes; the situation block
 	# suggests sitting or lying down once a chat has run a while (dev, 2026-09-16).
 	if kind!="quiet" and kind!="farewell":
@@ -96,17 +102,17 @@ func _on_physical_reaction(kind:String,id:String,deferred:bool=false,summary:=""
 	host._set_attention(id,host.player_head)
 	host.state="thinking";host.speech.set_muted(false);host._show_indicator("thinking");host.hud.set_state("thinking","")
 	var event:=summary
-	if kind == "carried": event = "Anon has been holding you off the ground in his hands for over five seconds. You may simply enjoy being held in silence. If words add something, one or two can be enough. Do not invent where he intends to take you."
-	if kind == "carried_away": event = "Anon picked you up and is moving away from where he lifted you, carrying you in his hands. You may enjoy the ride silently; speak only if something needs saying. You do not yet know his destination or intent."
+	if kind == "carried": event = "Anon has been holding you off the ground in his hands for over five seconds. You can just enjoy being held in silence, or say a word or two if it adds something. Do not make up where he is taking you."
+	if kind == "carried_away": event = "Anon has picked you up in his hands and is walking away with you. You don't know where he's going or what he's up to yet. Feel free to enjoy the ride in silence and only speak if something needs to be said."
 	if kind.begins_with("carried") and CRADLE_REST.cradled(host.characters[id].node): event = CRADLE_REST.CARRIED_EVENT if kind == "carried" else CRADLE_REST.CARRIED_AWAY_EVENT
 	if kind == "thrown": event = _thrown_event(id)
 	# Cuddling is her choice (dev 2026-09-28): the bed or couch only tells her he is lying there.
-	if kind.begins_with("anon_resting"): event = "Anon is lying down on the %s a few steps from you, resting. If you would like to cuddle with him, say so and use [cuddle]. It is just as fine to leave him be, or only say something." % kind.get_slice(":", 1)
-	if kind == "sprayed": event = "Anon just sprayed you with plain water from a small spray bottle. Your coat is damp where it hit. React briefly in character to the water."
+	if kind.begins_with("anon_resting"): event = "Anon is lying on the %s a few steps away, resting. If you want to cuddle with him, say so and use [cuddle]. You can also just talk to him or leave him be." % kind.get_slice(":", 1)
+	if kind == "sprayed": event = "Anon just spritzed you with plain water from a small spray bottle, leaving a damp spot on your coat. Give a quick reaction in character to the water."
 	if kind == "snowball_hit": event = "Anon just hit you with a snowball; snow is on your coat. React briefly in character: laugh, protest, or promise payback. You may throw one back if your actions allow it."
 	if kind=="quiet":event="The player has been quiet since your last reply. Sometimes just relish the moment with them: comfortable silence is a complete answer, so reply with only [silence], above all if you already asked a question. Speak only with a reason: a few natural words, then wait; never continue a monologue, restart your last topic or invent a project from the scenery. You may bring up something new instead. " + preload("res://world/ai/chatter_topics.gd").seed_line()
 	if kind=="farewell":
-		event="The conversation has run its course: "+host._farewell_reason+" Decide for yourself what you do next. Usually you say a short goodbye in your own words and voice, then go about your day (go_to, go_home or resume_routine). You need not say where you are going or why. This is your choice, bedtime included: if you would rather stay with the player (a friend, a good talk, a moment worth staying up for), say so and use [stay] (or [follow: player] if he is walking somewhere). Speak; do not reply with only [silence]."
+		event="The conversation has run its course: "+host._farewell_reason+" What you do next is up to you, even at bedtime. Usually you say a quick goodbye in your own way and go on with your day using go_to, go_home or resume_routine, without needing to explain where you are going or why. If you would rather stay with the player for a good talk or a nice moment with a friend, say so and use [stay], or [follow: player] if he is walking off. Say something aloud rather than replying with [silence]."
 		# Another mare's goodbye moments ago: hers must not sound the same (dev 2026-10-26).
 		var last: Dictionary = host._last_farewell
 		if str(last.id) != id and host._now() - float(last.at) < 180.0 and not str(last.text).is_empty():
@@ -118,7 +124,9 @@ func _on_physical_reaction(kind:String,id:String,deferred:bool=false,summary:=""
 	var instruction:=" LESS IS MORE: one or two words, or only [silence], are often enough; longer chatter only when the moment invites it, not after every touch. Do not repeat this instruction."
 	messages.append({"role":"user","content":host._physical_context+instruction})
 	# Contact and handling are the player's doing too: they take the connection.
-	if not await host._take_llm(): return
+	if not await host._take_llm():
+		_lost(kind,id)
+		return
 	var contact_prompt: String = host.system_prompt(id)
 	host._trace_request("contact:" + kind, id, contact_prompt, messages)
 	host._label_next("lull" if kind == "quiet" else "farewell" if kind == "farewell" else "contact_" + kind.get_slice(":", 0))
@@ -132,7 +140,7 @@ func kiss_started(id: String) -> void:
 		var actor: Node = host.characters[id].node
 		if is_instance_valid(actor) and actor.has_method("stop_speaking"): actor.stop_speaking()
 		host.characters[id]["lull_used"] = host.characters[id].get("chat_last", -1.0)
-	host._contact_log.erase(id)
+	if host._contact_log.erase(id): _bond_dropped(id)
 	host._pending_contacts.erase(id)
 	host._contact_next[id] = host._now()+CONTACT_COOLDOWN
 
@@ -156,11 +164,11 @@ func _flush_contacts() -> void:
 	for id:String in host._contact_log.keys():
 		var entry:Dictionary=host._contact_log[id]
 		if not host.characters.has(id) or not is_instance_valid(host.characters[id].node) or host._now()-float(entry.last)>CONTACT_STALE:
-			host._contact_log.erase(id);continue
+			host._contact_log.erase(id);_bond_dropped(id);continue
 		if host._now()-float(entry.last)<CONTACT_PAUSE and host._now()-float(entry.first)<CONTACT_BATCH_MAX:continue
 		# A kiss owns the moment; do not build a deferred contact monologue.
 		if host.characters[id].node.has_meta("affection_active"):
-			host._contact_log.erase(id);continue
+			host._contact_log.erase(id);_bond_dropped(id);continue
 		if host._now()<float(host._contact_next.get(id,0.0)) or host.state!="idle" or host.speech.state=="hearing":continue
 		host._contact_log.erase(id)
 		host._contact_next[id]=host._now()+CONTACT_COOLDOWN
@@ -168,7 +176,10 @@ func _flush_contacts() -> void:
 		var unnoticed:=1.0
 		for kind:String in entry.counts:
 			unnoticed*=pow(1.0-reaction_chance(kind),float(entry.counts[kind]))
-		if host._reaction_rng.randf()>=1.0-unnoticed:continue
+		if host._reaction_rng.randf()>=1.0-unnoticed:
+			_bond_dropped(id)
+			continue
+		_turn_kinds[id]=entry.counts.keys()
 		_on_physical_reaction("contact",id,true,_contact_summary(id,entry))
 		return
 
@@ -185,22 +196,69 @@ func _contact_summary(id:String,entry:Dictionary) -> String:
 		parts.append(what+(" once" if n==1 else " %d times"%n))
 	var text:="Over the last %d seconds Anon %s." % [ceili(maxf(1.0,float(entry.last)-float(entry.first))),", ".join(parts)]
 	if entry.counts.has("boop"):
-		text+=" Boops tickle and make you giggle." if filly else " Secretly, nose boops feel wonderful to you: they leave you flustered, giddy and warm, even when you pretend to protest. A flurry of boops flusters you far more than it annoys you."
+		text+=" Boops tickle and make you giggle." if filly else " Secretly, you love nose boops. Even if you pretend to protest, they leave you warm, giddy and flustered. A whole flurry of them flusters you far more than it annoys you."
 	if entry.counts.has("petted"):
-		text+=" Being petted is affectionate and pleasant; you enjoy it unless you are truly, deeply upset with Anon."
+		text+=" Being petted feels nice and affectionate. You enjoy it unless you are deeply upset with Anon."
 	var runtime:Node=host.get_tree().get_first_node_in_group("player_relationships")
+	# Relationship overhaul 2026-11-21 (design section 8): no stage-written paragraphs; her block says
+	# where they stand, and the contact turn ends with what happened to a touch she turned away.
+	if BOND.DYNAMIC: return _bond_summary(text,runtime,id,entry)
 	var stage:=str(runtime.bonds.record_for(id).stage) if runtime!=null and is_instance_valid(runtime.bonds) else ""
 	var partner:bool=stage in ["dating","engaged","married"]
+	# THREAD_FIX_RELATIONSHIP 2026-11-19: a kiss the game turned away while nothing bars her own kiss
+	# (no anger, no request for space) is hers to judge: she may want it after all (dev 2026-11-15:
+	# "The llm SHOULD have agency"). Her [kiss_player] then happens and counts (37 tokens, this turn only).
+	if entry.counts.has("kiss_refused") and not partner and runtime!=null and preload("res://world/relationships/romance_rules.gd").FACTS and runtime.can_kiss_player(id):
+		text=text.replace("tried to kiss you when you had not welcomed it","leaned in to kiss you, and taken by surprise you turned your face away")
+		text+=" If you wanted that kiss, say so, or kiss him yourself with [kiss_player]. Otherwise, tell him no in your own way."
 	if partner and (entry.counts.has("kiss") or entry.counts.has("deep_kiss")):
-		text+=" You are in love with Anon and his kisses are wanted: you want to kiss him too, and a flurry of kisses can leave you quietly melting. Sometimes just relish it in silence; a word or two can say more than a speech. Do not scold him for kissing you or ask for warnings. If you choose to kiss him yourself, use [kiss_player]; you may accompany it with a short spoken line."
-	text+=" How you feel is yours to decide from your character and your relationship with Anon; show it in your words, face tag and impression mood."
+		text+=" You are in love with Anon. You welcome his kisses and want to kiss him back, and a shower of kisses can leave you quietly melting. You can just enjoy it in silence, or say a word or two instead of a whole speech. Never scold him for kissing you or ask him to warn you first. To kiss him yourself, use [kiss_player], with a short line if you want."
+	text+=" Decide how you feel based on your personality and your bond with Anon, then show it in your words, face tag and impression mood."
 	# The anger clause only where anger is a live question: contact she refused, or a non-partner.
 	# To a partner it read as "are you mad?" and she answered it (dev 2026-09-28: "Mad?! Why would I be mad!?").
 	if not partner or entry.counts.has("kiss_refused"):
-		text+=" Real anger takes a lot. If you truly want him to stop, say so; request_space is available. buck_player is only for real, lasting anger at unwelcome contact."
+		text+=" You do not anger easily. If you really want him to stop, tell him; you can also use request_space. Save buck_player for lasting anger over unwanted contact."
 	else:
-		text+=" Nobody is asking whether you are upset; there is no need to say you are not."
+		text+=" Nobody asked if you are upset, so there is no need to say that you are fine."
 	return text
+
+
+## The contact summary with the switch on: the touches as they happened, the anger clause chosen by
+## what she has said they are (not by the old stage), and the contact note (design section 8).
+func _bond_summary(text:String,runtime:Node,id:String,entry:Dictionary) -> String:
+	var standing:Dictionary={}
+	if runtime!=null and is_instance_valid(runtime.get("bonds")) and runtime.bonds.has_method("standing"):
+		var got:Variant=runtime.bonds.standing(id)
+		if got is Dictionary:standing=got
+	var partner:bool=str(standing.get("status","none"))!="none"
+	if not partner or entry.counts.has("kiss_refused"):
+		text+=" You do not anger easily. If you really want him to stop, tell him; you can also use request_space. Save buck_player for lasting anger over unwanted contact."
+	else:
+		text+=" Nobody asked if you are upset, so there is no need to say that you are fine."
+	var note:=BOND_PROMPT.contact_note(standing,entry.counts)
+	return text if note.is_empty() else text+" "+note
+
+
+## A contact turn has started for her with this turn id (contract section 4; C's contact_turn).
+func _bond_turn(id:String) -> void:
+	var kinds:Array=_turn_kinds.get(id,[])
+	_turn_kinds.erase(id)
+	if not BOND.DYNAMIC:return
+	var runtime:Node=host.get_tree().get_first_node_in_group("player_relationships") if host.is_inside_tree() else null
+	if runtime!=null and runtime.has_method("contact_turn"):runtime.contact_turn(id,host._turn_id,kinds)
+
+
+## His batched touch was dropped without a turn: her press count ends (C's contact_dropped).
+func _bond_dropped(id:String) -> void:
+	_turn_kinds.erase(id)
+	if not BOND.DYNAMIC:return
+	var runtime:Node=host.get_tree().get_first_node_in_group("player_relationships") if host.is_inside_tree() else null
+	if runtime!=null and runtime.has_method("contact_dropped"):runtime.contact_dropped(id)
+
+
+## A batched contact reaction that ended before its turn began.
+func _lost(kind:String,id:String) -> void:
+	if kind=="contact":_bond_dropped(id)
 
 
 ## Every model answered a throw with "I'm a pony, not a sack of oats!" (dev 2026-10-26). Each throw
@@ -218,4 +276,4 @@ func _thrown_event(id: String) -> String:
 	if not entry.is_empty(): entry["thrown_at"] = recent
 	var angle: String = THROWN_ANGLES[host._reaction_rng.randi_range(0, THROWN_ANGLES.size() - 1)]
 	var times := "" if recent.size() < 2 else " He has now thrown you %d times in the last few minutes." % recent.size()
-	return "Anon just threw you from his hands. React briefly in your own voice to being tossed; surprise, protest or amusement should fit your character and relationship. Do not invent injuries or claim you have landed somewhere unless your current situation confirms it." + times + " This time react as: " + angle + ", if it fits your character. Never say you are a pony, dragon or anything else that is \"not a\" sack, beanbag, ball, toy or other object; do not compare yourself to an object at all."
+	return "Anon just threw you from his hands. Give a quick reaction in your own voice to being tossed, whether surprise, protest, or amusement, fitting your character and how you get along. Don't make up injuries or claim you've landed unless your situation confirms it." + times + " This time react as: " + angle + ", if that fits your character. Never compare yourself to an object, and never say you are a pony, a dragon or anything else that is \"not a\" sack, beanbag, ball or toy."

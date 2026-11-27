@@ -138,7 +138,10 @@ var carry := CARRY.new()
 var secondary := SECONDARY.new()
 ## Optional leased physical activity pose, applied before the ordinary support
 ## solve. No activity receives ownership of body translation or foot contacts.
-var activity_mouth_pose: RefCounted
+var activity_mouth_pose: RefCounted:
+	set(value):
+		activity_mouth_pose = value
+		_clock_wake()  # FAR off-beat skip: an active one pins her (body_pinned)
 var step_timing := STEP_TIMING.new()
 var self_collision := SELF_COLLISION.new()
 var state := Motion.STANDING
@@ -147,7 +150,10 @@ var actual_speed := 0.0
 var flight: RefCounted
 var thrown: RefCounted
 var placement_recovery := preload("res://world/characters/locomotion/placement_recovery.gd").new()
-var motion_paused := false
+var motion_paused := false:
+	set(value):
+		motion_paused = value
+		_clock_wake()  # FAR off-beat skip: a pause or resume changes what her off-beat steps do
 ## Pegasi also stand on cloud floors (the Cloudominium); everypony else falls through them.
 const CLOUD_LAYER := 1 << 18
 var floor_mask := 1
@@ -310,7 +316,10 @@ var _clip_static := false
 var _clip_pose_deferred := false
 ## A FAR pony drawn as a picture (hybrid_mare.gd impostor): under a pixel of movement per tick,
 ## so she moves on her work beats only and her skeleton pose is not evaluated (2026-10-23 CPU pass).
-var coarse_motion := false
+var coarse_motion := false:
+	set(value):
+		coarse_motion = value
+		_clock_wake()  # FAR off-beat skip: her off-beat steps now accumulate differently
 var _coarse_motion_delta := 0.0
 ## One advance after a tier change even on a settled stand: leaving NEAR stops the live head, and
 ## the skins still hold its last look until something updates the skeleton.
@@ -450,6 +459,7 @@ func back_up(speed: float) -> void:
 	_desired = back.normalized() * speed
 
 func set_desired_velocity(world_velocity: Vector3) -> void:
+	if _idle_factor > 1 and world_velocity.length_squared() > 1e-4: _idle_exit()
 	if hoof_hold.active():return
 	if posture != null and posture.active() and world_velocity.length() > .05: posture.request("stand")
 	backing = false
@@ -503,6 +513,7 @@ var _nav_gait_speed := 0.0
 
 
 func accept_navigation_motion(forward_speed: float, yaw_rate: float, mode: int, gait_speed := -1.0) -> void:
+	if _idle_factor > 1: _idle_exit()
 	if hoof_hold.active(): return
 	if not (is_finite(forward_speed) and is_finite(yaw_rate)):
 		stop()
@@ -611,6 +622,7 @@ func face_direction(world_direction: Vector3) -> void:
 
 
 func begin_touch(world_force: Vector3 = Vector3(0.0, -2.0, 0.0), seconds: float = 0.8) -> void:
+	_clock_wake()  # FAR off-beat skip: wake (TICK_SKIP)
 	if _held or hoof_hold.active():
 		return
 	_interaction = "PETTING"
@@ -619,6 +631,7 @@ func begin_touch(world_force: Vector3 = Vector3(0.0, -2.0, 0.0), seconds: float 
 
 
 func begin_hold(world_position: Vector3) -> void:
+	_clock_wake()  # FAR off-beat skip: wake (TICK_SKIP)
 	HOLD.begin_hold(self, world_position)
 
 
@@ -758,10 +771,12 @@ func _coat_ao(_mi: MeshInstance3D) -> Texture2D:
 
 ## Picking her up: pony_hold_api.gd.
 func begin_grab(grip: String, world_target: Vector3, player_head: Vector3) -> void:
+	_clock_wake()  # FAR off-beat skip: wake (TICK_SKIP)
 	HOLD.begin_grab(self, grip, world_target, player_head)
 
 
 func begin_two_hand_grab(left_target: Vector3, right_target: Vector3, player_head: Vector3) -> void:
+	_clock_wake()  # FAR off-beat skip: wake (TICK_SKIP)
 	HOLD.begin_two_hand_grab(self, left_target, right_target, player_head)
 
 
@@ -794,6 +809,7 @@ func end_interaction() -> void:
 
 
 func throw_pony(momentum: Vector3) -> bool:
+	_clock_wake()  # FAR off-beat skip: wake (TICK_SKIP)
 	if thrown == null:
 		thrown = preload("res://world/characters/locomotion/pony_throw.gd").new()
 		thrown.bind(self)
@@ -882,6 +898,7 @@ var _support_moved_frame := -1
 var _support_fast_until := -1
 
 func set_moving_support(frame: Node3D) -> void:
+	_clock_wake()  # FAR off-beat skip: wake (TICK_SKIP)
 	if frame == moving_support: return
 	if is_instance_valid(moving_support): platform_floor_layers = _support_floor_layers
 	moving_support = frame
@@ -937,12 +954,113 @@ var _far_tick_delta := 0.0
 ## Physics time since water_escape and placement_recovery last ran (clip tiers: the logic beat).
 var _watch_delta := 0.0
 
+## FAR off-beat skip (perf overhaul 2026-11-21, lane pony_tick; captures/perf_2026-11-21/pony_tick.md).
+## A FAR pony who is hidden, pictured, resting or paused does nothing on her off-beat steps but add
+## the step's time to _far_tick_delta (and _coarse_motion_delta), yet each such step paid the whole
+## gate (pins, full-rate, posture, beat tests): 2.8 to 3.4 us a call. After a full step that finds
+## her coming off-beat steps are pure accumulation (_clock_sleepable), she is "asleep" until her next
+## work or logic beat (_clock_next): those steps run only the two additions at the top of
+## _physics_process, the same sums in the same order. Every pony method that changes what an
+## off-beat step does wakes her (_clock_wake callers); a state written from outside without a hook
+## is seen on her next beat (at most far_tick_divisor - 1 steps later). The engine still calls her
+## every step in its own order. (A dispatcher calling only due ponies from PonyCrowd was built and
+## measured first: its script-side call overhead cost what the skipped calls saved.)
+## Rollback: TICK_SKIP = false, or `--tick-skip off` (PonyCrowd).
+const TICK_SKIP := true
+static var tick_skip_enabled := TICK_SKIP
+var _clock_asleep := false
+var _clock_next := 0
+## The skipped steps also add to _coarse_motion_delta (hidden or pictured, not resting or paused).
+var _clock_coarse := false
+## The beat schedule she fell asleep on: a change wakes her (set_sim_tier).
+var _clock_phase := 0
+var _clock_far_tick := 0
+var _clock_far_logic := 0
+## A wake hook fired during this full step: she stays awake after it.
+var _clock_woke := false
+## The far work-beat gate of this step's start held (FAR, slower work beat, not held, not on the
+## full-rate path, no posture entry or exit animating): _clock_sleepable() reuses it.
+var _clock_gate := false
+
+
+## Something changed what her off-beat steps would do: full steps until she sleeps again (also
+## when it happened during her own step, before she decides).
+func _clock_wake() -> void:
+	_clock_woke = true
+	_clock_asleep = false
+	if _idle_factor > 1: _idle_exit()
+
+
+## Wakes the off-beat skip without ending the idle FAR beat: a new beat schedule from PonyCrowd
+## (set_sim_tier, which follows set_far_beat) or hidden/shown (seen or not, she is still settled).
+func _clock_rewake() -> void:
+	_clock_woke = true
+	_clock_asleep = false
+
+
+## An asleep step: true (and the step's additions made) until her beat, or a resting-affection rig
+## whose PonyAffection started (the watch _physics_process keeps on every step).
+func _clock_skip(delta: float) -> bool:
+	if Engine.get_physics_frames() < _clock_next and not (_rig_rest_affection and _affection_started()):
+		_far_tick_delta += delta
+		if _clock_coarse: _coarse_motion_delta += delta
+		return true
+	_clock_asleep = false
+	return false
+
+
+## After a full FAR step: fall asleep until her next work or logic beat when she may.
+func _clock_after_step() -> void:
+	if not _clock_sleepable(): return
+	_clock_asleep = true
+	_clock_phase = sim_phase
+	_clock_far_tick = far_tick_divisor
+	_clock_far_logic = far_logic_divisor
+	var frame := Engine.get_physics_frames() + 1
+	var logic := logic_divisor()
+	while ((frame + sim_phase) % far_tick_divisor) != 0 and ((frame + sim_phase) % logic) != 0:
+		frame += 1
+	_clock_next = frame
+
+
+## Whether every step until her next beat would only add its delta (the off-beat branch of
+## _physics_process with nothing else per step): FAR on a slower work beat, not held, pinned or on
+## the full-rate path, no posture entry or exit animating, and hidden, pictured, resting or paused.
+## Cheapest tests first: a shown walking pony fails on the first line.
+## The pin and full-rate tests come from this step's own gate (_clock_gate: they held at its start);
+## what her own step can switch on without a wake hook (swimming, a rescue throw or flight, a hold)
+## is read again here, and any hook that fired during the step (_clock_woke) keeps her awake.
+func _clock_sleepable() -> bool:
+	if _clock_woke or not _clock_gate or not tick_skip_enabled: return false
+	var resting: bool = posture != null and posture.active()
+	if not (motion_paused or coarse_motion or resting or has_meta(PonyCrowd.HIDDEN)): return false
+	if sim_tier != SimTier.FAR or far_tick_divisor <= 1 or _held: return false
+	if resting and (not resting_hold() or _mixer_hold > 0.0 or _clip_blend < 1.0 \
+			or (posture._sleep_blend > 0.0 and posture._sleep_blend < 1.0)):
+		return false
+	if water_escape.active or (thrown != null and thrown.active()) or (flight != null and flight.active()):
+		return false
+	_clock_coarse = not motion_paused and not resting
+	return _clock_extra_sleepable()
+
+
+## Subclasses add per-step work of their own that must not be skipped (hybrid_mare.gd).
+func _clock_extra_sleepable() -> bool:
+	return true
+
+
+## The resting-affection watch of _physics_process (pony_locomotion.gd FAR_RIG_RESTING_AFFECTION).
+func _affection_started() -> bool:
+	return not is_instance_valid(_affection) or _affection.is_physics_processing() or _affection.is_processing()
+
 ## Records `label` from `since` and returns the next checkpoint (only called under LOCO_CPU.enabled).
 static func _cpu_lap(label: String, since: int) -> int:
 	LOCO_CPU.record(label, since)
 	return Time.get_ticks_usec()
 
 func _physics_process(delta: float) -> void:
+	if _clock_asleep and _clock_skip(delta): return
+	_clock_woke = false
 	var prof := LOCO_CPU.enabled
 	var lap := Time.get_ticks_usec() if prof else 0
 	var motion_delta := delta
@@ -962,7 +1080,8 @@ func _physics_process(delta: float) -> void:
 	var posture_animating: bool = sim_tier == SimTier.FAR and posture != null and posture.active() \
 		and (not resting_hold() or _mixer_hold > 0.0 or _clip_blend < 1.0 \
 			or (posture._sleep_blend > 0.0 and posture._sleep_blend < 1.0))
-	if far_tick_divisor > 1 and sim_tier == SimTier.FAR and not _held and not needs_full_rate() and not posture_animating:
+	_clock_gate = far_tick_divisor > 1 and sim_tier == SimTier.FAR and not _held and not needs_full_rate() and not posture_animating
+	if _clock_gate:
 		_far_tick_delta += delta
 		# A scheduled navigation/logic beat must execute even between the slower work
 		# beats. Delaying it to the next work beat introduces variable steering/braking lag.
@@ -1410,6 +1529,10 @@ func set_sim_tier(tier: int, phase: int = 0) -> void:
 	# A body layout without baked gaits has nothing to play: she stays on the full solver.
 	if tier != SimTier.HERO and _baked == null:
 		tier = SimTier.HERO
+	# FAR tick clock: any other tier hands her step back to the engine; a new beat schedule wakes her.
+	if _clock_asleep and (tier != SimTier.FAR or phase != _clock_phase or far_tick_divisor != _clock_far_tick \
+			or far_logic_divisor != _clock_far_logic):
+		_clock_rewake()
 	sim_phase = phase
 	if _clip_head != null:
 		_clip_head.active = tier == SimTier.NEAR
@@ -1432,6 +1555,44 @@ func set_sim_tier(tier: int, phase: int = 0) -> void:
 		_leave_far()
 	# After a subclass's set_sim_tier has parked or woken its own modifiers.
 	_update_rig_rates.call_deferred()
+
+
+## Idle FAR beat (PonyCrowd.IDLE_FAR_BEAT): the factor her FAR divisors were multiplied by (1 = none).
+var _idle_factor := 1
+## The work-beat part of it: only while PonyCrowd hides her (a shown pony keeps her animation rate).
+var _idle_tick_factor := 1
+var _crowd_hidden := false
+
+## PonyCrowd.rank() for a FAR pony: the tier's divisors, times `idle_factor` while she is settled
+## (the work beat only while she is hidden: it sets how often a shown pony's clip advances).
+func set_far_beat(logic: int, tick: int, idle_factor: int) -> void:
+	_idle_factor = idle_factor if idle_factor > 1 and far_idle() else 1
+	_idle_tick_factor = _idle_factor if _crowd_hidden else 1
+	far_logic_divisor = logic * _idle_factor
+	far_tick_divisor = tick * _idle_tick_factor
+
+
+## Back on the normal FAR beat at once (an order, a touch, a word, a posture or flight request).
+func _idle_exit() -> void:
+	if _idle_factor <= 1: return
+	far_logic_divisor = maxi(1, far_logic_divisor / _idle_factor)
+	far_tick_divisor = maxi(1, far_tick_divisor / _idle_tick_factor)
+	_idle_factor = 1
+	_idle_tick_factor = 1
+	_clock_wake()
+
+
+## Settled enough for the idle FAR beat: a settled sit, lie or sleep, paused, or standing on the clip
+## tiers with nothing asked of her (no travel request, no live navigation command, not moving, no face
+## turn, no hand-off easing), and nothing physical going on.
+func far_idle() -> bool:
+	if sim_tier != SimTier.FAR or _held or water_escape.active or not _interaction.is_empty(): return false
+	if (thrown != null and thrown.active()) or (flight != null and flight.active()): return false
+	if needs_full_rate() or body_pinned(): return false
+	if motion_paused or resting_hold(): return true
+	if posture != null and posture.active(): return false
+	return _clip_static and _clip_blend >= 1.0 and _desired.length_squared() < 1e-4 and _command_speed == 0.0 \
+		and actual_speed < 0.05 and _face_direction.length_squared() <= 0.5 and not _nav_motion_live()
 
 
 ## Whether this pony's body layout has baked gait clips (PonyCrowd keeps the others HERO).
@@ -1506,8 +1667,14 @@ func logic_alpha() -> float:
 
 
 ## The clip tiers' 20 Hz logic: travel request and heading, the support check ahead, floor and
-## slope rays, gait clip and its rate, and the head's secondary motion.
+## slope rays, gait clip and its rate, and the head's secondary motion (native with the clip step).
 func _clip_logic(dt: float) -> void:
+	if clip_logic_native and (_clip_native != null or _make_clip_native()) and _clip_native.logic(self, dt): return
+	_script_clip_logic(dt)
+
+
+## The script body of _clip_logic (the fallback and rollback path of the native logic beat).
+func _script_clip_logic(dt: float) -> void:
 	var prof := LOCO_CPU.enabled
 	var lap := Time.get_ticks_usec() if prof else 0
 	_collision_cooldown = 0.0
@@ -1648,9 +1815,60 @@ func _choose_clip_gait(gait: String, wanted: float, speed: float) -> String:
 	return CLIP_TIER.choose_gait(profile, gait, wanted, speed)
 
 
+## Native clip step (native pony step port 2026-11-21, lane step; captures/perf_2026-11-21/port_step.md):
+## PonyClipStepNative (native/pony_solver/src/pony_clip_step_native.cpp) runs _script_clip_step() and
+## _advance_clip() below in C++, statement for statement with the same engine calls and float types, so
+## the result is bit-identical (tools/profile/port_step_parity.gd). Her members stay script variables:
+## the native step reads and writes the ones it needs by name. It declines, and the script runs, when
+## the extension is missing, under `-- --native-solver off`, or for a pony without a pivot, an
+## AnimationPlayer or a gait profile. The same object runs _clip_logic() (_script_clip_logic() is its
+## script body). Rollback: NATIVE_CLIP_STEP = false; `-- --native-clip-step on|step|off` overrides it
+## for a run (`step`: the per-step part only, the logic beat in script).
+const NATIVE_CLIP_STEP := true
+static var _clip_switch := _clip_step_switch()
+static var clip_step_native: bool = _clip_switch != "off"
+static var clip_logic_native: bool = _clip_switch == "on"
+var _clip_native: Object
+var _clip_native_tried := false
+
+
+static func _clip_step_switch() -> String:
+	var args := OS.get_cmdline_user_args()  # no preload here: a script loaded at this point shifts instance ids (port_finish.md)
+	var at := args.find("--native-clip-step")
+	if at >= 0 and at + 1 < args.size(): return args[at + 1]
+	return "on" if NATIVE_CLIP_STEP else "off"
+
+
+## This pony's native step object, made on her first clip step or logic beat, and only while the switch
+## is on (false when there is none). Any object made here shifts the instance ids of objects made after
+## it, and the secondary motion seeds a mare's random breath and sway from her skeleton's id, so with
+## the switch off nothing may be created: the game then runs exactly as before the port (port_finish.md).
+func _make_clip_native() -> bool:
+	if _clip_native_tried: return false
+	_clip_native_tried = true
+	if not NATIVE.allowed or not ClassDB.class_exists(&"PonyClipStepNative"): return false
+	_clip_native = ClassDB.instantiate(&"PonyClipStepNative")
+	_clip_native.configure({"gaits": PackedStringArray(BAKED_GAITS.GAITS), "library": String(BAKED_GAITS.LIBRARY),
+		"handoff_seconds": CLIP_HANDOFF_SECONDS, "hidden_rig_park": HIDDEN_RIG_PARK, "logic_divisor": LOGIC_DIVISOR,
+		"nav_step_turn": NAV_MODE_STEP_TURN, "motion_standing": Motion.STANDING, "motion_moving": Motion.MOVING,
+		"tier_hero": SimTier.HERO, "tier_near": SimTier.NEAR, "tier_far": SimTier.FAR,
+		"stand": BAKED_GAITS.STAND, "handoff": HANDOFF, "clip_floor_keep": CLIP_FLOOR_KEEP, "clip_drop_check": CLIP_DROP_CHECK,
+		"walk_rate_floor": CLIP_TIER.WALK_RATE_FLOOR, "rate": CLIP_TIER.RATE, "slow_split": CLIP_TIER.SLOW_SPLIT,
+		"split_margin": CLIP_TIER.SPLIT_MARGIN, "fast_split_drop": CLIP_TIER.FAST_SPLIT_DROP, "fast_margin": CLIP_TIER.FAST_MARGIN,
+		"refusal_none": NAV_REFUSAL_NONE, "refusal_support": NAV_REFUSAL_SUPPORT})
+	if not _clip_native.is_configured(): _clip_native = null
+	return _clip_native != null
+
+
 ## Every physics step in the clip tiers: turn toward the logic heading, move the root at the
 ## logic speed, settle on the floor and slope of the last rays, set the pivot, advance the clip.
 func _clip_step(delta: float) -> void:
+	if clip_step_native and (_clip_native != null or _make_clip_native()) and _clip_native.step(self, delta): return
+	_script_clip_step(delta)
+
+
+## The script body of _clip_step (the fallback and rollback path of the native step).
+func _script_clip_step(delta: float) -> void:
 	_clip_age += delta
 	var target := 0.0 if _clip_blocked else _clip_wanted
 	_command_speed = move_toward(_command_speed, target,
@@ -1837,6 +2055,12 @@ func _rest_skeletons() -> Array[Skeleton3D]:
 
 ## PonyCrowd hid (true) or showed (false) her model pivot; the rigs follow (HIDDEN_RIG_PARK).
 func set_crowd_hidden(hidden: bool) -> void:
+	_crowd_hidden = hidden
+	if not hidden and _idle_tick_factor > 1:
+		# Shown again: her clip advances on the normal work beat at once (idle FAR beat).
+		far_tick_divisor = maxi(1, far_tick_divisor / _idle_tick_factor)
+		_idle_tick_factor = 1
+	_clock_rewake()  # FAR off-beat skip: hidden or shown changes what her off-beat steps do
 	if not HIDDEN_RIG_PARK or skeleton == null:
 		return
 	_update_rig_rates(not hidden)
@@ -1958,7 +2182,7 @@ func _affection_resting(modifier: SkeletonModifier3D) -> bool:
 	for key: StringName in [&"amount", &"buck_amount", &"stretch_amount", &"yawn_amount"]:
 		var value: Variant = modifier.get(key)
 		if not (value is float) or float(value) > .001: return false
-	for key: StringName in [&"_rear_now", &"_motion"]:
+	for key: StringName in [&"_rear_now", &"_kneel_now", &"_motion"]:
 		var value: Variant = modifier.get(key)
 		if not (value is float) or float(value) > 0.0: return false
 	var bind: Variant = modifier.get(&"bind_mouth")
@@ -1970,6 +2194,10 @@ func _watched_modifiers(rig: Skeleton3D) -> Array[SkeletonModifier3D]:
 	for child in rig.get_children():
 		var modifier := child as SkeletonModifier3D
 		if modifier == null:
+			continue
+		# rig_batch.gd's native writer stays active but writes only in a step that batched her
+		# (NEAR only), so a FAR rig parks past it as if it were absent.
+		if modifier.get_class() == "PonyRigBatchApply":
 			continue
 		var script: Script = modifier.get_script()
 		if script == null or not POSE_ONLY_MODIFIERS.has(script.resource_path):
@@ -2432,6 +2660,31 @@ func _update_contacts(delta: float) -> void:
 const CONTACT_TIMING_BATCH := true
 ## Native plants go to the hoof the native pass names (M-PRF-11). Rollback: false (nearest lock).
 const HOOF_PLANT_INDICES := true
+## Perf overhaul 2026-11-21 (native_calls): contacts_begin_plant() and contacts_resample_finish()
+## fold the contact probes into the native pass (two calls instead of three plus up to eight
+## _probe() calls; the same foot state and plants bit for bit). Used only with the native probe,
+## when the library has the methods and no script overrides _probe() (a mod's probe keeps the
+## three-call path). Off: tools/profile/native_calls_hero.gd measured it equal to the three-call
+## path (1772 passes, 0 mismatches; 28.9 vs 28.4 and 31.3 vs 31.3 us a pass), because the engine
+## ray (0.9 of the 1.3 us a probe costs) stays. Kept switchable for A/B; true turns it on.
+const FUSED_CONTACTS := false
+static var fused_contacts_enabled := FUSED_CONTACTS
+static var _fused_native := ClassDB.class_has_method(&"PonySolverNative", &"contacts_begin_plant") \
+		and ClassDB.class_has_method(&"PonySolverNative", &"contacts_resample_finish")
+var _fused_script: Script = null
+var _fused_ok := false
+func _fused_contacts_ok() -> bool:
+	if not _fused_native:
+		return false
+	var script: Script = get_script()
+	if script != _fused_script:
+		_fused_script = script
+		var probes := 0
+		for method in script.get_script_method_list():
+			if method.name == "_probe":
+				probes += 1
+		_fused_ok = probes == 1
+	return _fused_ok
 func _update_contacts_native(delta: float) -> void:
 	if _native_contact_profile != profile:
 		_native_contact_profile = profile
@@ -2457,6 +2710,25 @@ func _update_contacts_native(delta: float) -> void:
 			timing.append(step_timing.leg_contact_weight(i) if _blend > 0.0 else 1.0)
 	var prof := LOCO_CPU.enabled
 	var lap := Time.get_ticks_usec() if prof else 0
+	if fused_contacts_enabled and HOOF_PLANT_INDICES and _native_probe and _fused_contacts_ok():
+		# Perf overhaul 2026-11-21 (native_calls): the four reference probes and the resample probes
+		# run inside the native pass, the same rays through the same probe, so a pass is two calls.
+		var ray := PackedFloat64Array([profile.hip_height, floor_mask, profile.max_slope_degrees])
+		var fused: Array = _native.contacts_begin_plant(source_pose, feet, global_transform, pivot.transform,
+			_model_frame, delta, timing, PackedFloat64Array([actual_speed, _yaw_rate]),
+			PackedInt32Array([state, Motion.STANDING, Motion.STOPPING]),
+			PackedFloat64Array([_blend, _spawn_settle, body_scale, profile.hip_height,
+				step_timing.seconds_since_switch(), profile.gait_blend_seconds]), ray)
+		if prof: lap = _cpu_lap("contacts_begin_plant", lap)
+		var fused_at: PackedVector3Array = fused[2]
+		if not fused_at.is_empty():
+			var fused_hoof: PackedInt32Array = fused[3]
+			for k in fused_at.size():
+				_hoof_plants.plant(fused_hoof[k], fused_at[k])
+		_native.contacts_resample_finish(feet, delta, PackedInt32Array([state, Motion.STANDING]), global_transform,
+			_model_frame, ray)
+		if prof: _cpu_lap("contacts_resample_finish", lap)
+		return
 	var references: PackedVector3Array = _native.contacts_begin(source_pose, feet, global_transform,
 		pivot.transform, _model_frame, delta, timing, PackedFloat64Array([actual_speed, _yaw_rate]))
 	if prof: lap = _cpu_lap("contacts_begin", lap)
@@ -2809,6 +3081,7 @@ static func _find_class(node: Node, type: String) -> Node:
 
 
 func request_posture(kind: String) -> bool:
+	_clock_wake()  # FAR off-beat skip: wake (TICK_SKIP)
 	if posture == null:
 		if kind == "stand": return true
 		posture=preload("res://world/characters/locomotion/pony_posture.gd").new()

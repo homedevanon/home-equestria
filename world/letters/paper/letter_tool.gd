@@ -8,6 +8,11 @@ extends Node3D
 ## - A draft: a short press opens it (desktop: to type) or folds it; holding the button SEND_SECONDS
 ##   sends it. Derpy comes for it (letter_courier.gd collect); at her grab the letter leaves the
 ##   hand and the briefcase. A small ring fills while the button is held.
+## - A sendable draft at Anon's own mailbox (player_mailbox.gd) is posted in it instead
+##   (letter_courier.gd post_in_mailbox): desktop, a click (or E, through the mailbox) while looking
+##   at the box within reach; VR, the grip let go with the hand at the box's letter spot after
+##   bringing the letter in (or squeezed there, when the letter is held by toggle). Derpy collects
+##   it later; until then it can be taken back out.
 ## - A letter to read (hers, or one of his): use opens it in front of the eyes (book_hold.gd pose
 ##   rules), turns through a long letter's sides, then folds it. Desktop: the wheel brings it closer
 ##   and right click goes back a side. Her letter's first opening is recorded (post.set_status
@@ -45,6 +50,8 @@ static var _ring_shader: Shader
 static var button_probe := Callable()
 ## VR: a hand's trigger counts as lost after this many physics ticks without a vr_step.
 const VR_LOST_TICKS := 6
+## VR posting: the gripping hand this close to the mailbox's letter spot.
+const POST_REACH := 0.25
 
 var item: Node3D
 var _inventory: Node
@@ -59,6 +66,9 @@ var _notice_until := 0.0
 var _ring: MeshInstance3D
 var _vr_down: Dictionary = {}
 var _vr_seen: Dictionary = {}
+## VR grip per hand (held or not), and whether that squeeze began away from the mailbox.
+var _vr_grip: Dictionary = {}
+var _vr_grip_far: Dictionary = {}
 var _send_check := {}
 var _send_check_at := -10.0
 var _shown_text := "\u0000"
@@ -112,6 +122,8 @@ func press(inventory: Node, side: String, down: bool) -> void:
 		if not _press_side.is_empty(): return
 		if not is_draft():
 			use(inventory, side); return
+		if side == "desktop" and can_post(inventory, side):
+			post_in_mailbox(inventory); return
 		_press_side = side; _press_time = 0.0; _press_use = true; _sent = false
 		set_process(true)
 		return
@@ -227,7 +239,52 @@ func send(inventory: Node, side: String) -> bool:
 	say("Derpy is coming for your letter to %s" % str(check.get("to_name", "her")))
 	return true
 
-## The courier's grab: the letter leaves the hand and the briefcase (called once by collect).
+## The briefcase as the courier knows it (for the hint before any press set _inventory), or null.
+func _courier_briefcase() -> Node:
+	var courier: Node = get_tree().get_first_node_in_group("letter_courier") if is_inside_tree() else null
+	return courier.call("briefcase") if courier != null else null
+
+## His own mailbox (player_mailbox.gd), when it stands; else null.
+func _mailbox() -> Node:
+	var courier: Node = get_tree().get_first_node_in_group("letter_courier") if is_inside_tree() else null
+	var box: Variant = courier.get("mailbox") if courier != null else null
+	return box if box is Node and is_instance_valid(box) and bool((box as Node).call("placed")) else null
+
+## This sendable draft could be posted in his mailbox now from `side`: desktop looking at the box
+## within reach, VR the hand at its letter spot.
+func can_post(inventory: Node, side: String) -> bool:
+	if not is_draft() or _sending or not bool(_send_status().get("ok", false)): return false
+	var box := _mailbox()
+	if box == null or not is_instance_valid(inventory): return false
+	if side == "desktop": return bool(box.call("aimed_at", inventory.get("camera")))
+	var sample: Dictionary = inventory.call("hand_sample", side)
+	return _near_post(box, sample)
+
+func _near_post(box: Node, sample: Dictionary) -> bool:
+	if not bool(sample.get("active", false)): return false
+	var pose: Transform3D = sample.get("pose", Transform3D.IDENTITY)
+	var hand: Vector3 = sample.get("grip_position", pose.origin)
+	var spot: Vector3 = box.call("post_point")
+	return hand.is_finite() and spot.is_finite() and hand.distance_to(spot) <= POST_REACH
+
+## Posts this draft in his mailbox: it leaves the hand and the briefcase (letter_courier.gd
+## post_in_mailbox calls _taken once). False, with the reason shown, when it cannot.
+func post_in_mailbox(inventory: Node) -> bool:
+	var id := letter_id()
+	var courier: Node = get_tree().get_first_node_in_group("letter_courier") if is_inside_tree() else null
+	if courier == null or id.is_empty():
+		say("Derpy isn't flying today"); return false
+	var paper := _paper()
+	if paper != null and bool(paper.call("typing")): paper.call("end_typing")
+	var sheet := letter_sheet()
+	if sheet != null and sheet.opened: sheet.fold()
+	var result: Dictionary = courier.call("post_in_mailbox", id, _taken.bind(weakref(inventory)))
+	if not bool(result.get("ok", false)):
+		say(str(result.get("reason", "It won't go in"))); return false
+	return true
+
+## The courier's grab or the mailbox: the letter leaves the hand and the briefcase (called once by
+## collect or post_in_mailbox).
 func _taken(inventory_ref: WeakRef) -> void:
 	var inventory: Node = inventory_ref.get_ref()
 	if not is_instance_valid(item): return
@@ -314,7 +371,30 @@ func vr_step(inventory: Node, side: String, sample: Dictionary) -> void:
 	if down != was:
 		_vr_down[side] = down
 		press(inventory, side, down)
+	if not is_instance_valid(item) or item.is_queued_for_deletion(): return
+	if _vr_post_step(inventory, side, sample): return
 	if sample.get("active", false): _place_sheet(sample)
+
+## VR posting: the grip let go at the mailbox's letter spot after the letter was brought there in a
+## squeeze, or squeezed there while the letter is held by toggle (the squeeze that would otherwise put
+## it down). The squeeze that took a letter out of the box never posts it straight back. True when
+## the letter went in.
+func _vr_post_step(inventory: Node, side: String, sample: Dictionary) -> bool:
+	var was_grip: bool = _vr_grip.get(side, false)
+	var grip := float(sample.get("grip", 0.0)) > (0.25 if was_grip else 0.45)
+	if not _vr_grip.has(side):
+		_vr_grip[side] = grip
+		_vr_grip_far[side] = false
+		return false
+	if grip == was_grip: return false
+	_vr_grip[side] = grip
+	if not is_draft(): return false
+	var box := _mailbox()
+	var near := box != null and _near_post(box, sample)
+	if grip: _vr_grip_far[side] = not near
+	var posting := near and (grip or bool(_vr_grip_far.get(side, false)))
+	if not posting or not can_post(inventory, side): return false
+	return post_in_mailbox(inventory)
 
 func _show_ring(fill: float, visible_: bool) -> void:
 	if not visible_:
@@ -356,6 +436,9 @@ func hint(side: String) -> Dictionary:
 			if opened and not desktop: text = "Quill to the paper · Speak to write   " + text
 			var check := _send_status()
 			if bool(check.get("ok", false)): text += "   Hold %s · Send to %s" % [click.to_lower() if desktop else "trigger", str(check.get("to_name", ""))]
+			var bag := _inventory if is_instance_valid(_inventory) else _courier_briefcase()
+			if bag != null and can_post(bag, side):
+				text = ("Click / E · Post letter" if desktop else "Let go of grip · Post letter") + "   " + text
 	else:
 		var opened: bool = sheet != null and sheet.opened
 		text = "%s · %s" % [click, "Read" if not opened else ("Next page" if sheet.more_pages() else "Fold")]

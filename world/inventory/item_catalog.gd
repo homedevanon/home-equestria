@@ -29,6 +29,8 @@ const ITEMS := {
 	"coal": {"name": "Lump of coal", "description": "Hold it to a snowman's face for an eye, or to its middle for a button.", "stack": 16, "scene": "res://world/props/seasons/coal.tscn"},
 	"stick": {"name": "Stick", "description": "A bare twig. Hold it to a snowman's side for an arm.", "stack": 8, "scene": "res://world/props/seasons/stick.tscn"},
 	"rake": {"name": "Leaf rake", "description": "Drag it through scattered leaves to rake them back into a pile. Desktop: hold click and sweep.", "stack": 1, "scene": "res://world/props/seasons/rake.tscn"},
+	# Every world's way to throw things away (world/inventory/assets/rubbish_bucket_item.gd).
+	"rubbish-bucket": {"name": "Rubbish bucket", "description": "Set it down; at home it stands where you place it. Drop or throw a thing into it to throw it away for good.", "stack": 1},
 }
 ## Letters (world/letters/, docs/LETTERS_PLAN_2026_10_29.md) are "letter:<row id>", one per letter,
 ## stack 1; the name comes from the letter's row in the world's post (letter_post.gd). The id

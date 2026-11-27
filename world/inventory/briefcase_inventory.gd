@@ -315,7 +315,7 @@ func _build_wrist():
 func _tell_time() -> void:
 	# Looked up, not named: fixtures load this script without the autoloads.
 	var clock: Node = get_node_or_null("/root/TimeOfDay")
-	if _watch != null and clock != null: _watch.text = "Day %d   %s" % [int(clock.day) + 1, clock.time_string()]
+	if _watch != null and clock != null: _watch.text = "Day %d   %s" % [int(clock.call("day_number")), clock.time_string()]
 
 func _wrist_input(side: String, sample: Dictionary) -> bool:
 	return _wrist_part._wrist_input(side, sample)
@@ -751,6 +751,13 @@ func _error():
 	if hotbar != null: hotbar.set_message(case.ui.message, insufficient)
 	if insufficient: case.ui.flash_message()
 	case.ui.refresh()
+	_expire_panel_message()
+
+## A short refusal on the briefcase panel that clears itself like _error's (player board #58/#60).
+func _panel_note(text: String) -> void:
+	case.ui.message = text; case.ui.refresh(); _expire_panel_message()
+
+func _expire_panel_message() -> void:
 	# The open panel's line expires with the hotbar's (W1-INPUT-UI), unless something replaced it.
 	_error_serial += 1
 	var serial := _error_serial

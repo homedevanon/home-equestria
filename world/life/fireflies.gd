@@ -7,6 +7,11 @@ extends Node3D
 ## live a few minutes, then fade out; a new one takes their place while the night lasts.
 ## Each swarm is one MultiMeshInstance3D; all motion and blinking run in firefly.gdshader.
 
+## Rollback (2026-11-18): false runs the full frame by day again. Measured before: 8 µs a frame by
+## day with no swarms (script profiler, town street, ~470 FPS). By day with no swarm left, the spawn
+## timer already run out and the density reading already dropped, a frame returns after the night
+## test: nothing else in _process can change then (see _process).
+const FRAME_TRIM := true
 const SHADER := preload("res://world/life/firefly.gdshader")
 const MAX_SWARMS := 10
 const SPAWN_MIN := 12.0
@@ -41,6 +46,13 @@ func _ready() -> void:
 	_quad = QuadMesh.new(); _quad.size = Vector2.ONE; _quad.material = _material
 
 func _process(delta: float) -> void:
+	# FRAME_TRIM (2026-11-18): _night() 0 makes share 0 whatever the other factors (0 * inf or NaN
+	# is NaN, also not > 0), so the full path would only decrement a spawn timer already <= 0 (it is
+	# only ever compared with <= 0 and then reset), walk no swarm and set _density_eye to INF. The
+	# night test runs every frame as before, so the first dusk frame is the same frame. Until
+	# _density_eye is INF the full path runs (it sets INF only with a camera, as before).
+	if FRAME_TRIM and _swarms.is_empty() and _spawn_in <= 0.0 and _density_eye == Vector3.INF and _night() <= 0.0:
+		return
 	var camera := _camera()
 	if camera == null: return
 	var eye := camera.global_position

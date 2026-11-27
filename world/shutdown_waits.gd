@@ -9,6 +9,8 @@ extends RefCounted
 ##   if not await SHUTDOWN.frame(self): return          # next process frame
 ##   if not await SHUTDOWN.physics_frame(self): return
 
+const RT := preload("res://world/perf/render_thread.gd")
+
 class Waiter extends RefCounted:
 	signal done
 	var finished := false
@@ -45,6 +47,14 @@ static func physics_frame(owner: Node) -> bool:
 ## RenderingServer outlives a world, so disconnect even when shutdown wins the race.
 static func rendered_frame(owner: Node) -> bool:
 	if not _usable(owner): return false
+	if RT.active():
+		# Trial render_thread: frame_post_draw is deferred to the main thread in this mode and can
+		# belong to a draw from before the caller's change; wait for this frame's own draw instead.
+		var f := Engine.get_process_frames()
+		while Engine.get_process_frames() <= f:
+			if not await frame(owner): return false
+		RenderingServer.force_sync()
+		return _usable(owner)
 	var waiter := _waiter(owner)
 	RenderingServer.frame_post_draw.connect(waiter.finish, CONNECT_ONE_SHOT)
 	var usable := await _finish(waiter, owner)

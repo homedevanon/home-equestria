@@ -230,10 +230,10 @@ func frame_for(speaker: String) -> String:
 	elif not current.is_empty():
 		lines.append("RESPONSE: Stay with the encounter; react briefly to anything that just happened.")
 	if claimed(speaker) and _holds(keys[0]):
-		lines.append("PRESENCE: " + str(row.get("allowed", "Stay with the encounter; its controller owns your movement and posture until this is finished.")))
-		lines.append("MODEL ACTIONS: [look_at: TARGET] may direct your gaze. Do not issue stay, approach, posture, flight or cancel tags; the encounter controller owns those actions. Being touched or answering a question does not cancel your purpose.")
+		lines.append("PRESENCE: " + str(row.get("allowed", "Stick with the encounter until it is done. The controller is handling your movement and posture.")))
+		lines.append("MODEL ACTIONS: You can use [look_at: TARGET] to look at something. Leave stay, approach, posture, flight, and cancel tags to the encounter controller. Answering a question or being touched does not drop your current goal.")
 	elif claimed(speaker):
-		lines.append("PRESENCE: You may follow, lead or go places with Anon when it fits; keep your purpose here in mind and come back to it.")
+		lines.append("PRESENCE: You can lead, follow, or go places with Anon when it fits, just remember why you're here and get back to it.")
 	return "\n".join(lines)
 
 ## Director: a turn finished speaking to the end (not interrupted).
@@ -288,7 +288,7 @@ func _intent(row: Dictionary, beat: Dictionary) -> String:
 	if str(beat.get("intent","")) != "": return str(beat.intent)
 	# Saved pre-migration scripts remain semantic obligations, never dialogue drafts.
 	if str(beat.get("text","")) == "": return ""
-	return "Explain the unfinished encounter beat: %s. Your responsibility: %s. Generate your own words from the established encounter facts; never assume this explanation was already heard." % [str(beat.get("label",beat.id)),str((row.get("commitment",{}) as Dictionary).get(str(beat.get("speaker","")),row.get("title","")))]
+	return "Explain this unfinished part of the encounter: %s. Your role: %s. Put it in your own words from the known facts, and do not assume it was already said." % [str(beat.get("label",beat.id)),str((row.get("commitment",{}) as Dictionary).get(str(beat.get("speaker","")),row.get("title","")))]
 
 func _cancel_pending(id: String) -> void:
 	var waiting: Dictionary = _pending.get(id,{})

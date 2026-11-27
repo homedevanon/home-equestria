@@ -38,7 +38,7 @@ const PRESETS:=[
 	{"name":"llama.cpp server (local)","provider":"openai","base_url":"http://127.0.0.1:8080/v1","model":"any name; the server uses its loaded model"},
 	{"name":"Custom","provider":"","base_url":"","model":"Model ID from your provider"},
 ]
-const STT_PROVIDERS:=[["builtin","Built-in Whisper (offline, no server)"],["off","Off (type to talk)"],["local","Local Whisper server"],["openai","OpenAI-compatible Whisper API"]]
+const STT_PROVIDERS:=[["builtin","Built-in Whisper (offline, no server)"],["off","Off (type to talk)"],["local","Local speech server (Parakeet or Whisper)"],["openai","OpenAI-compatible Whisper API"]]
 const TTS_PROVIDERS:=[["none","None (ponese)"],["openai","OpenAI-compatible /audio/speech"],["gradio","Gradio MOSS-TTS host"],["moss","Local moss-tts"]]
 const VOICE_MODES:=[["ponese","Ponese only"],["auto","Character voices via server"]]
 const STT_MODES:=[["ptt","Push to talk (hold T / left B)"],["vad","Open microphone"]]
@@ -206,7 +206,7 @@ func setup(surface:Node, in_tab := false)->void:
 	field("tts_url","moss-tts URL","http://127.0.0.1:8000/tts")
 	label("Speech to text",27)
 	_buttons.stt=choice("Speech to text",STT_PROVIDERS,_set_to.bind("stt_provider"))
-	field("stt_url","Whisper server URL","http://127.0.0.1:8790/transcribe")
+	field("stt_url","Speech server URL","http://127.0.0.1:8790/transcribe")
 	field("stt_base_url","Whisper API base URL","https://api.openai.com/v1")
 	field("stt_api_key","Whisper API key","",true)
 	field("stt_model","Whisper model","whisper-1")

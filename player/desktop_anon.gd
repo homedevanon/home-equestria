@@ -4,6 +4,13 @@ extends Node3D
 const BODY := preload("res://player/anon_body.tscn")
 const PUNCH := preload("res://player/animations/desktop_punch.tres")
 const FORM := preload("res://world/life/player_form.gd")
+## Rollback (2026-11-18): false restores the old frame path of advance(). Measured before: 27 µs a
+## frame for _process -> advance (script profiler, town street, ~470 FPS). Same pose every frame:
+## with no pony-form driver in the tree the form test answers "human" without building a
+## dictionary (FORM.active would return FORM.human()); the camera transform is read once; the
+## avatar's couch frame and "has motion_hand_marker" are read once a frame / once per avatar
+## instead of once per hand.
+const FRAME_TRIM := true
 const CONTACT_TIME := .28
 ## A boop is unhurried (dev 2026-10-29: "slower than an instant boop teleport"): the finger takes
 ## BOOP_REACH to arrive, rests a moment and takes BOOP_RETURN to go back to his side.
@@ -181,7 +188,14 @@ func cancel_action() -> void:
 func _process(delta: float) -> void:
 	advance(delta)
 
+## FRAME_TRIM: the avatar has_method("motion_hand_marker") was last asked of.
+var _marker_avatar: Node3D
+var _avatar_has_marker := false
+
 func advance(delta: float) -> void:
+	if FRAME_TRIM:
+		_advance_trimmed(delta)
+		return
 	if not is_instance_valid(camera) or not is_instance_valid(avatar) or not camera.global_transform.is_finite(): return
 	var human := not FORM.is_pony(FORM.active(get_tree()))
 	var shown := _enabled and human
@@ -320,6 +334,151 @@ func advance(delta: float) -> void:
 		var marker: Node3D = _hands[side]
 		# Reading support is assigned after the loop below, so it is not
 		# accidentally overwritten by the helper's ordinary rest pose.
+		marker.global_transform = Transform3D(hand_basis, palm)
+		avatar.set_grip(side, grip)
+		avatar.set_trigger(side, trigger)
+	for side: String in _holds:
+		var held: Dictionary = _holds[side]
+		var helper_side := "left" if side == "right" else "right"
+		if held.kind == "read" and not _holds.has(helper_side) and not busy:
+			var held_frame: Transform3D = held.frame
+			var helper: Node3D = _hands[helper_side]
+			helper.global_transform = Transform3D(held_frame.basis.orthonormalized(), held_frame.origin - held_frame.basis.x * (1.0 if side == "right" else -1.0) * .20 * scale)
+			avatar.set_grip(helper_side, .4)
+	if busy and not _contact_done and _elapsed >= (BOOP_REACH if _kind == "boop" else CONTACT_TIME):
+		_contact_done = true
+		action_contact.emit(_kind, _target, active_side)
+	if busy and _elapsed >= _duration: cancel_action()
+
+## FRAME_TRIM path of advance(), line for line the same pose. Differences, all exact:
+## - FORM.active() returns FORM.human() when no node is in its group, and is_pony(human()) is
+##   false, so an empty group means human without building that dictionary; otherwise the old call.
+## - The camera's global_basis and global_position are global_transform's basis and origin, read
+##   once after this node moved (the camera is not under it; nothing before the loop moves it).
+## - avatar.couch_rest_frame and motion_amount() cannot change during the hand loop (set_grip,
+##   set_trigger, interaction_hand and motion_hand_marker do not write them): read once per frame,
+##   motion_amount only on the first hand that uses it.
+## - has_method("motion_hand_marker") is asked once per avatar node (its script does not change).
+func _advance_trimmed(delta: float) -> void:
+	if not is_instance_valid(camera) or not is_instance_valid(avatar) or not camera.global_transform.is_finite(): return
+	var tree := get_tree()
+	var form_driver: Node = tree.get_first_node_in_group(FORM.PONY_FORM_GROUP) if tree != null else null
+	var human := true if form_driver == null else not FORM.is_pony(FORM.active(tree))
+	var shown := _enabled and human
+	if avatar.visible != shown: avatar.visible = shown
+	if _avatar_processing != shown:
+		_avatar_processing = shown
+		avatar.process_mode = Node.PROCESS_MODE_INHERIT if _avatar_processing else Node.PROCESS_MODE_DISABLED
+		if _avatar_processing: avatar.reset_desktop_pose()
+	if not avatar.visible:
+		cancel_action()
+		return
+	if is_instance_valid(player_body): global_position = player_body.global_position
+	var view := camera.global_transform
+	var flat_right := Vector3(view.basis.x.x, 0, view.basis.x.z).normalized()
+	var forward := Vector3.UP.cross(flat_right).normalized()
+	var frame := Basis(flat_right, Vector3.UP, -forward)
+	var scale: float = avatar.model_scale
+	var eye := view.origin
+	var busy := is_busy()
+	if busy:
+		if eye.distance_to(_start_eye) > .2 * scale or (-view.basis.z).dot(_start_forward) < .70 or (is_instance_valid(player_body) and player_body.get("controls_locked") == true):
+			cancel_action()
+			busy = false
+		else:
+			_elapsed += maxf(delta, 0.0)
+	var contact_amount := 0.0
+	var active_offset := Vector3.ZERO
+	var helper_offset := Vector3.ZERO
+	_torso_yaw = 0.0
+	_torso_forward = 0.0
+	if busy and _kind in ["punch", "slap"]:
+		contact_amount = float(PUNCH.value_track_interpolate(0, _elapsed))
+		active_offset = PUNCH.value_track_interpolate(1, _elapsed)
+		helper_offset = PUNCH.value_track_interpolate(2, _elapsed)
+		_torso_yaw = float(PUNCH.value_track_interpolate(3, _elapsed)) * (1.0 if active_side == "right" else -1.0)
+		_torso_forward = float(PUNCH.value_track_interpolate(4, _elapsed)) * scale
+	elif busy:
+		var reach := BOOP_REACH if _kind == "boop" else .25
+		var back := BOOP_RETURN if _kind == "boop" else .20
+		contact_amount = smoothstep(0.0, reach, _elapsed) * (1.0 - smoothstep(_duration - back, _duration, _elapsed))
+		_torso_forward = contact_amount * .018 * scale
+	if avatar != _marker_avatar:
+		_marker_avatar = avatar
+		_avatar_has_marker = avatar.has_method("motion_hand_marker")
+	var couch_frame: Variant = avatar.couch_rest_frame
+	var couch_resting := is_instance_valid(couch_frame)
+	var animated_weight := NAN
+	for side: String in ["left", "right"]:
+		var sign_side := 1.0 if side == "right" else -1.0
+		if not _point_forward.has(side) and not busy:
+			var visible_hand: Dictionary = avatar.interaction_hand(side)
+			var previous_marker: Node3D = _hands[side]
+			if visible_hand.has("tip") and visible_hand.has("wrist"):
+				var actual_forward: Vector3 = Vector3(visible_hand.tip) - Vector3(visible_hand.wrist)
+				if actual_forward.length_squared() > .0001:
+					_point_forward[side] = (previous_marker.global_basis.inverse() * actual_forward).normalized()
+					_point_tip_local[side] = previous_marker.to_local(Vector3(visible_hand.tip)) / maxf(scale, .001)
+		var rest := Vector3(sign_side * .22, -.88, .01)
+		var palm := eye + frame * rest * scale
+		var hand_basis := frame
+		var finger: Vector3 = _point_forward.get(side, Vector3.FORWARD)
+		var finger_world := (frame * finger).normalized()
+		if finger_world.cross(Vector3.DOWN).length_squared() > .000001:
+			hand_basis = Basis(Quaternion(finger_world, Vector3.DOWN)) * frame
+		var animated_hand: Variant = avatar.motion_hand_marker(side) if _avatar_has_marker else null
+		if animated_hand is Transform3D and (animated_hand as Transform3D).is_finite():
+			if is_nan(animated_weight): animated_weight = avatar.motion_amount()
+			palm = palm.lerp((animated_hand as Transform3D).origin, animated_weight)
+			hand_basis = hand_basis.orthonormalized().slerp((animated_hand as Transform3D).basis.orthonormalized(), animated_weight)
+		var grip := .0
+		var trigger: Variant = null
+		var supported: Node3D = _rest_hands.get(side) as Node3D
+		if couch_resting and is_instance_valid(supported) and supported.global_transform.is_finite():
+			palm = supported.global_position
+			hand_basis = supported.global_basis.orthonormalized()
+		if busy:
+			if side == active_side:
+				var clearance := .125 if _kind == "boop" else (.055 if _kind == "punch" else .035)
+				var surface := _target + _normal * clearance * scale
+				var boop_direction := Vector3.ZERO
+				if _kind == "boop":
+					boop_direction = (Vector3(-_normal.x, 0.0, -_normal.z).normalized() + Vector3.UP * BOOP_TILT).normalized()
+					surface = _target - boop_direction * clearance * scale
+				if _kind == "pet": surface += flat_right * sin((_elapsed - .25) * TAU * 2.0) * .045 * contact_amount * scale
+				var variation := Vector3(0, float((_sequence % 3) - 1) * .012, 0)
+				palm = (palm + frame * (active_offset + variation) * scale).lerp(surface, contact_amount)
+				var toward: Vector3
+				if _kind == "boop":
+					toward = boop_direction
+				else:
+					toward = (surface - palm).normalized()
+					if toward.length_squared() < .5: toward = -_normal
+				if absf(toward.dot(Vector3.UP)) < .95:
+					var contact_basis := Basis.looking_at(toward, Vector3.UP)
+					if _kind == "boop" and _point_forward.has(side):
+						contact_basis *= Basis(Quaternion(Vector3(_point_forward[side]), Vector3.FORWARD))
+						contact_basis = Basis(toward.normalized(), BOOP_ROLL) * contact_basis
+						if _point_tip_local.has(side):
+							var finger_contact: Vector3 = _target - contact_basis*Vector3(_point_tip_local[side])*scale
+							palm += (finger_contact-surface)*contact_amount
+					if _kind == "slap":
+						var fingers := (Vector3.UP - _normal * _normal.dot(Vector3.UP)).normalized()
+						var across := _normal * (1.0 if side == "right" else -1.0)
+						contact_basis = Basis(across, -fingers.cross(across), -fingers)
+					hand_basis = hand_basis.slerp(contact_basis, contact_amount)
+				grip = 1.0 if _kind in ["punch", "boop"] else .0
+				if _kind == "boop": trigger = 0.0
+			else:
+				palm += frame * helper_offset * scale
+				grip = .65 if _kind == "punch" else .15
+		if _holds.has(side):
+			var held: Dictionary = _holds[side]
+			var held_frame: Transform3D = held.frame
+			palm = held_frame.origin
+			hand_basis = held_frame.basis.orthonormalized()
+			grip = .0 if held.kind == "rub" else .55
+		var marker: Node3D = _hands[side]
 		marker.global_transform = Transform3D(hand_basis, palm)
 		avatar.set_grip(side, grip)
 		avatar.set_trigger(side, trigger)

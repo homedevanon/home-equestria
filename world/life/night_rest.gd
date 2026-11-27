@@ -14,6 +14,7 @@ const HOUSEHOLDS = preload("res://world/population/pony_households.gd")
 const FILLIES = preload("res://world/population/pony_population_config.gd").FILLIES
 const OWNER := "sleep:"
 const ESSENCE := preload("res://world/life/essence.gd")
+const BED_FIT := preload("res://world/life/bed_fit.gd")
 const CHECK_SECONDS := 1.0
 ## Ponies who live up on a cloud (dev 2026-09-23: Rainbow Dash lives in the Cloudominium):
 ## resident id -> scenery node of her home. With its walk-in interior built (dev 2026-09-28:
@@ -423,12 +424,19 @@ func _in_view(actor: Node3D) -> bool:
 	var query := PhysicsRayQueryParameters3D.create(camera.global_position, chest, 1, skip)
 	return actor.get_world_3d().direct_space_state.intersect_ray(query).is_empty()
 
+## Her rest in that bed, moved along and across the mattress for her own body (bed_fit.gd: at a big
+## size setting the bed's canon spot put her head through the headboard). Unchanged for a canon mare.
+func _fitted_rest(house: Node3D, id: String, actor: Node3D) -> Transform3D:
+	var rest: Transform3D = house.bed_rest(id)
+	var bed: Node3D = house.ensure_bed(id) if house.has_method("ensure_bed") else null
+	return BED_FIT.fit_actor(bed, rest, actor) if bed != null else rest
+
 ## A short hop onto the mattress, then lie down.
 func _climb(id: String, entry: Dictionary, actor: Node3D, house: Node3D) -> void:
 	entry.phase = "climbing"
 	_nav(actor).stay()
 	actor.motion_paused = true
-	var rest: Transform3D = house.bed_rest(id)
+	var rest: Transform3D = _fitted_rest(house, id, actor)
 	var start := actor.global_position
 	var turn_from := actor.global_basis.get_rotation_quaternion()
 	var turn_to := rest.basis.get_rotation_quaternion()
@@ -443,7 +451,7 @@ func _climb(id: String, entry: Dictionary, actor: Node3D, house: Node3D) -> void
 	tween.tween_callback(func(): _settle(entry, actor, rest))
 
 func _tuck_in(id: String, entry: Dictionary, actor: Node3D, house: Node3D) -> void:
-	_settle(entry, actor, house.bed_rest(id))
+	_settle(entry, actor, _fitted_rest(house, id, actor))
 
 
 ## A refused lie-down (still held, carry blend, falling) is not sleep. Retry after
@@ -792,11 +800,14 @@ func _wake(id: String, entry: Dictionary, actor: Node3D) -> void:
 	var bed_key := id
 	if entry.has("bed") and is_instance_valid(entry.get("house")):
 		house = entry.house; bed_key = str(entry.bed)
+	# A big mare's fitted rest lies further toward the foot (bed_fit.gd): on the mattress counts too.
 	var in_bed: bool = entry.phase == "asleep" and house != null and (is_instance_valid(house.get("bed")) or entry.has("bed")) \
-		and actor.global_position.distance_to(house.bed_rest(bed_key).origin) < 1.2
+		and (actor.global_position.distance_to(house.bed_rest(bed_key).origin) < 1.2 or house.on_mattress(actor.global_position, bed_key))
 	actor.sleeping = false
 	actor.request_posture("stand")
 	if in_bed:
+		# Her AI hears she just got up out of that bed (bed_fit.gd, board #304: "woke on the floor").
+		BED_FIT.mark_left_bed(actor, house.ensure_bed(bed_key))
 		# Stand up on the mattress, then hop back down beside the bed.
 		var side: Vector3 = house.bed_side(bed_key)
 		var from := [Vector3.ZERO]
@@ -984,6 +995,9 @@ func send_to_bed(id: String, house: Node3D, bed: String) -> bool:
 	if nav == null or house.ensure_bed(bed) == null: return false
 	var side: Vector3 = house.bed_side(bed)
 	if not side.is_finite(): return false
+	if not door_fits(house, actor) and _seen(actor):
+		print("[night] %s is too big for the doorway of %s: not going to bed there" % [id, str(house.name)])
+		return false
 	# M-AI-19 (thread 43686931: "she doesn't realise I'm already in bed"): Anon lies in that very bed.
 	# Getting in is joining him (the bed's cuddle rest, shared_bed.gd accept), never climbing into a
 	# lane he lies in. If she cannot join him there (unwilling, too far, no room), the request fails.
@@ -1007,6 +1021,54 @@ func send_to_bed(id: String, house: Node3D, bed: String) -> bool:
 	else: nav.go_to(side, nav.Gait.WALK)
 	print("[night] %s going to bed (%s)" % [id, "own bed" if bed == id else "bed in " + str(house.name)])
 	return true
+
+## Thread fix "beds" (post 43717764: "I can't put her in bed, the only one that can do that is her"):
+## Anon carried her and set her down on this bed, awake (cradle_rest.gd lay_down). She lies there as
+## after an AI [go_to_bed], held by the same request: awake by day, asleep in her night, up again on
+## [wake_up], a pickup, another command, by day after BED_REQUEST_SECONDS, or in her morning, then she
+## hops down beside the bed. `at` is her fitted rest on the mattress. False when she cannot be held.
+func placed_in_bed(id: String, house: Node3D, bed: String, at: Transform3D) -> bool:
+	if population == null or not population.live.has(id) or not is_instance_valid(house) or not house.has_method("bed_side"): return false
+	var actor: Node3D = population.live[id].get("actor")
+	var nav := _nav(actor) if is_instance_valid(actor) else null
+	if nav == null or not at.origin.is_finite(): return false
+	var times := _bedtime(id, _night_key())
+	var night_now := _is_night({"bed_time": times.x, "wake_time": times.y})
+	var request := {"house": house, "bed": bed, "phase": "asleep", "retries": 0, "until": 0.0, "sleep": night_now,
+		"shared_bed": not bed.is_empty() and house.bed_shared(bed), "placed": true}
+	_bed_requests[id] = request
+	nav.stay(); nav.command_owner = OWNER + id
+	actor.motion_paused = false
+	actor.reset_motion(at)
+	actor.sleeping = night_now
+	# She lands lying (posture.impact_flop: the native prone pose, then the ordinary rise later),
+	# as a sleeper laid in bed does; no stand-up-and-lie-down on the mattress.
+	if actor.request_posture("lie_down") and actor.get("posture") != null: actor.posture.impact_flop()
+	print("[night] %s laid in bed by Anon (%s, %s)" % [id, "own bed" if bed == id else "bed in " + str(house.name), "asleep" if night_now else "awake"])
+	return true
+
+## Thread fix "beds" (size JRHNBR and up, posts 43717764/43714939): a pony outside `house` whose route
+## footprint is wider than its doorway (house_travel.gd refuses her: "cannot fit through the house
+## doorway") cannot walk in to its bed; [go_to_bed] is then not offered (pony_action_executor.gd) and
+## refused, so she says she can't instead of agreeing and never moving. Already inside, she can.
+## Rollback: DOOR_FIT_CHECK false offers and accepts it as before.
+const DOOR_FIT_CHECK := true
+static func door_fits(house: Node3D, actor: Node3D) -> bool:
+	if not DOOR_FIT_CHECK or not is_instance_valid(house) or not is_instance_valid(actor) or not house.has_method("fits"): return true
+	if house.has_method("contains") and house.contains(actor.global_position): return true
+	var profile: Variant = actor.get("profile")
+	return profile == null or bool(house.fits(profile))
+
+## The bed key in `house` that names `bed` (a sleeper's id, or "" for its first bed), or null-like
+## "\n" when none of its keys does.
+static func bed_key_for(house: Node3D, bed: Node3D) -> String:
+	if not is_instance_valid(house) or not house.has_method("ensure_bed"): return "\n"
+	var sleepers: Variant = house.get("_sleepers")
+	var keys: Array = [""]
+	if sleepers is Array: keys.append_array(sleepers as Array)
+	for key: Variant in keys:
+		if house.ensure_bed(str(key)) == bed: return str(key)
+	return "\n"
 
 ## True while Anon lies in her bed and this tick is handled: she joined him, walks over, or waits
 ## beside the bed (an offer every few seconds) instead of climbing in on top of him.

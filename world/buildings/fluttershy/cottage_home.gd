@@ -3,6 +3,13 @@ const ROUTE_GRAPH := preload("res://world/buildings/indoor_route_graph.gd")
 ## Authored ground floor in the measured cottage, using the shared bed/door APIs.
 ## Home coordinates use the existing 10 cm convention; no generic shell repairs.
 const PLACE := "house:fluttershy_cottage"
+## 2026-11-18 perf (town street, 8 s: local_waypoint 15.6 ms / 86 calls, _segment_clear 14.7 ms /
+## 327 calls). One _route() call swept some legs twice: the direct leg (known blocked) again as the
+## first graph edge, and every leg it had just swept live again while confirming the chosen route.
+## Answers swept live inside the same _route() call are reused within that call only (nothing moves
+## between them). Legs that came from the older _links cache are still re-swept live, as before.
+## Key: both ends (exact). Rollback: ROUTE_LIVE_MEMO = false.
+const ROUTE_LIVE_MEMO := true
 var boundary := PackedVector2Array()
 var room_center := Vector3.ZERO
 var waypoints: Array[Vector3] = []
@@ -73,6 +80,9 @@ func local_waypoint(from: Vector3, to: Vector3) -> Vector3:
 
 func _route(from: Vector3, to: Vector3, retry: bool) -> Vector3:
 	if _segment_clear(from, to): return to
+	# ROUTE_LIVE_MEMO: [a, b] -> _segment_clear(a, b) swept in this call.
+	var live := {}
+	if ROUTE_LIVE_MEMO: live[[from, to]] = false
 	var points: Array[Vector3] = [from, to, center(), inside()]
 	for point in waypoints: points.append(to_global(point))
 	var distance: Array[float] = []
@@ -93,7 +103,9 @@ func _route(from: Vector3, to: Vector3, retry: bool) -> Vector3:
 			var first := 1
 			while previous[step] >= 0:
 				var before: int = previous[step]
-				if not _segment_clear(points[before], points[step]):
+				var leg := [points[before], points[step]]
+				var leg_clear: bool = bool(live[leg]) if live.has(leg) else _segment_clear(points[before], points[step])
+				if not leg_clear:
 					_links[[points[before], points[step]]] = false
 					_links[[points[step], points[before]]] = false
 					return _route(from, to, false) if retry else from
@@ -106,8 +118,15 @@ func _route(from: Vector3, to: Vector3, retry: bool) -> Vector3:
 			var clear: bool
 			if next >= 2 and i >= 2:
 				var key := [points[next], points[i]]
-				if not _links.has(key): _links[key] = _segment_clear(points[next], points[i])
+				if not _links.has(key):
+					_links[key] = _segment_clear(points[next], points[i])
+					if ROUTE_LIVE_MEMO: live[key] = _links[key]
 				clear = bool(_links[key])
-			else: clear = _segment_clear(points[next], points[i])
+			else:
+				var edge := [points[next], points[i]]
+				if live.has(edge): clear = bool(live[edge])
+				else:
+					clear = _segment_clear(points[next], points[i])
+					if ROUTE_LIVE_MEMO: live[edge] = clear
 			if clear: distance[i] = cost; previous[i] = next
 	return from # Real obstruction: wait rather than walking through a wall or furniture.

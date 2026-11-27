@@ -1,0 +1,7 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+[resource]
+resource_name = "clean_cream"
+albedo_color = Color(0.99, 0.96, 0.84, 1)
+roughness = 0.8
+texture_filter = 5

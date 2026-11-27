@@ -17,7 +17,19 @@ extends "res://world/life/couch.gd"
 const MATTRESS := preload("res://world/life/couch/mattress.gd")
 const SEAT_SCRIPT := preload("res://world/life/seat.gd")
 const EXIT := preload("res://world/life/couch/exit_space.gd")
+const BED_FIT := preload("res://world/life/bed_fit.gd")
 const BED_OWNER := "leisure:bed:"
+## Thread fix "beds" (2026-11-19, posts 43717764/43717774: a JRHNBR mare could not get into bed with
+## him; at "Same height" and "Hoers" every mare was refused, at JRHNBR every princess). A mare of any
+## size now joins him: Anon lies toward the wall side as far as his own body allows, and her spot is
+## fitted to the mattress for her own body (bed_fit.gd). Her floor spot, hop and exit are measured
+## with her real collision capsule, not her navigation footprint (0.45 m x size, wider than a bed's
+## floor margin from x1.7). Rollback: SIZE_GATE true refuses by scale_fits() as before.
+const SIZE_GATE := false
+## A mare walking to her spot who stands still this long within HOP_REACH x her body scale of it
+## hops in from there (canon 1.8 m: NightRest's "climb in from anywhere reasonably near the bed").
+const HOP_REACH := 1.8
+const STALL_SECONDS := 2.0
 ## Anon's reclined head, in from the headboard end (pony bed: 0.62 m toward it from the middle).
 const HEAD_IN := 0.43
 ## Head to hips along the mattress for the reclined avatar (anon_body hip_drop 0.652, 15 degrees).
@@ -60,6 +72,8 @@ var _mare_scale := 1.0
 var _anon := 1.0
 var _mare_rest := Transform3D.IDENTITY
 var _mare_front := Vector3.INF
+## The floor she hops from and back to when no measured spot fits her (_hop_spot); INF otherwise.
+var _fallback_front := Vector3.INF
 var _eye := Vector3.INF
 var _eye_floor := -INF
 var _top_y := 0.0
@@ -186,7 +200,8 @@ func _layout() -> void:
 		_lane = -_side * minf(0.48, maxf(_half.x - 0.3, 0.0))
 	else:
 		_lane = -_side * _beside() * 0.5
-	_mare_fits = not is_instance_valid(_sleeper) and scale_fits(_mare_scale)
+		if not SIZE_GATE: _lane = _lane_for(_mare_scale)
+	_mare_fits = not is_instance_valid(_sleeper) and (not SIZE_GATE or scale_fits(_mare_scale))
 	if not _mare_fits and not is_finite(shared_lane) and not is_instance_valid(_sleeper): _lane = 0.0
 	var sit_z := _sit_z()
 	var seat_at := _frame * Vector3(_lane, 0.0, sit_z)
@@ -227,12 +242,31 @@ func scale_fits(scale: float) -> bool:
 	if absf(_lane + _side * _beside(scale)) + MARE_HALF_WIDTH * scale > _half.x: return false
 	return scale <= 1.05 or absf(_head_z() + 0.55) + MARE_HALF_LENGTH * scale <= _half.z
 
-## Her spot beside his lane for body scale `scale`: the layout's size, or a joining pony's own.
-func _lay_mare(scale: float) -> void:
+## Her spot beside his lane for body scale `scale`: the layout's size, or a joining pony's own
+## (`actor`: fitted for her own body's reach, bed_fit.gd).
+## Anon's lane was laid out before he lay down (_layout, for a mare at the size setting) and is
+## never moved under him; a longer body (a princess) is fitted beside it.
+func _lay_mare(scale: float, actor: Node3D = null) -> void:
 	var mare_at := _frame * Vector3(_lane + _side * _beside(scale), 0.0, _head_z() + 0.55)
 	# She lands on the physics mattress; pony_posture then sinks her into the drawn bedding.
 	_mare_rest = Transform3D(Basis.looking_at(-_frame.basis.z, Vector3.UP), Vector3(mare_at.x, _top_at(mare_at) + 0.02, mare_at.z))
+	_mare_rest = BED_FIT.fit_actor(_bed, _mare_rest, actor) if actor != null else BED_FIT.fit(_bed, _mare_rest, BED_FIT.mare_reach(scale))
 	if seats.size() > 1 and is_instance_valid(seats[1]): seats[1].global_transform = _mare_rest
+
+## Anon's lane on a bed he does not share by household: half of BESIDE toward the wall side, as
+## before, and further toward it while her outer side (her back, or her folded legs) would hang off
+## the open side; never further than his own body (MARE_HALF_WIDTH x his height) allows. A canon
+## mare's lane is the old one exactly.
+func _lane_for(scale: float) -> float:
+	var lane := -_side * _beside(scale) * 0.5
+	var reach: Dictionary = BED_FIT.mare_reach(scale)
+	var her_x := lane + _side * _beside(scale)
+	# Her body's +x side is the bed's +x (she faces the headboard): her back (right) on +x.
+	var outer := (her_x + float(reach.right)) if _side > 0.0 else (-her_x + float(reach.left))
+	var over := outer - (_half.x - BED_FIT.EDGE_GAP)
+	if over <= 0.0: return lane
+	var wall_most := maxf(0.0, _half.x - BED_FIT.EDGE_GAP - MARE_HALF_WIDTH * _anon)
+	return -_side * minf(absf(lane) + over, maxf(absf(lane), wall_most))
 
 ## Anon's height setting over the 6 ft Anon (1.0 when the Settings autoload is absent, fixtures).
 func _anon_scale() -> float:
@@ -321,6 +355,30 @@ func touch_zone(point: Vector3) -> bool:
 	var local := _frame.affine_inverse() * point
 	return absf(local.x) <= _half.x + 0.1 and absf(local.z) <= _half.z + 0.1 and absf(point.y - _top_y) <= 0.3
 
+## Her standing collision capsule (radius, height): the body that really moves through the room.
+## Her navigation profile's radius (0.45 m x size) is a route footprint, a whole bed-side margin wide
+## from x1.7 (thread fix "beds"); it stays the fallback for actors without a capsule.
+static func body_capsule(actor: Node3D) -> Vector2:
+	if actor == null: return Vector2(.19, .85)
+	var posture: Variant = actor.get("posture")
+	var shape: Variant = posture.get("_standing_shape") if posture != null else null
+	if not shape is CapsuleShape3D:
+		var holder: Variant = actor.get("_collision")
+		shape = (holder as CollisionShape3D).shape if holder is CollisionShape3D else null
+	if shape is CapsuleShape3D: return Vector2((shape as CapsuleShape3D).radius, (shape as CapsuleShape3D).height)
+	return Vector2(float(actor.profile.radius), float(actor.profile.clearance))
+
+## A hop-down spot that is still this bed's mattress, not the floor beside it (seating.gd _hop_off).
+func exit_on_bed(point: Vector3) -> bool:
+	if not is_instance_valid(_bed) or not point.is_finite(): return false
+	var local := _frame.affine_inverse() * point
+	return absf(local.x) <= _half.x + 0.1 and absf(local.z) <= _half.z + 0.1 and local.y > 0.25
+
+## Seating's hop down off this bed measures the floor beside it with this capsule when her profile's
+## size finds no floor there (seating.gd _hop_off). Rollback SIZE_GATE: the profile's size only.
+func exit_size(actor: Node3D) -> Vector2:
+	return body_capsule(actor) if not SIZE_GATE else Vector2(float(actor.profile.radius), float(actor.profile.clearance))
+
 func approach(seat: Node3D) -> Vector3:
 	if seats.size() > 1 and seat == seats[1] and _mare_front.is_finite(): return _mare_front
 	return _exit if _exit.is_finite() else _frame * Vector3(0.0, 0.02, _half.z + 0.6)
@@ -334,12 +392,20 @@ func pony_transform(_seat: Node3D, actor: Node3D = null) -> Transform3D:
 		rest.basis *= Basis(Vector3.UP,_side*.5)
 	elif mode == "snuggle":
 		if is_instance_valid(_body_support):
-			# The torso is physical support, so the mattress never substitutes for it.
-			rest.origin += _frame.basis * Vector3(-_side*.35,0,-.12)
+			# The torso is physical support, so the mattress never substitutes for it. Her spot beside
+			# him is wider for a bigger mare or a taller Anon (_beside); she still moves onto his torso
+			# (player board #56; the same .35 m at canon sizes).
+			var wider := maxf(0.0, _beside(_body_scale(actor)) - BESIDE)
+			rest.origin += _frame.basis * Vector3(-_side*(.35 + wider),0,-.12)
 			rest.origin.y=maxf(rest.origin.y,_body_support.landing_height())
 		else:
 			rest.origin += _frame.basis * Vector3(-_side*.17,0,-.33)
 			rest.basis *= Basis(Vector3.UP,_side*.5)
+	# Closer company turns and moves her: her head stays off the headboard (bed_fit.gd). A bigger body
+	# lies back by its extra reach so her head lands at his shoulder, not past his head (board #56).
+	if mode in ["shoulder", "snuggle"]:
+		rest.origin -= BED_FIT.extra_head_reach(rest, actor)
+		rest = BED_FIT.fit_actor(_bed, rest, actor)
 	return rest
 
 ## The one beside you: from your seat, the mare lying here; from hers, you.
@@ -365,7 +431,7 @@ func eligible(actor: Node3D) -> bool:
 	# Her own size, measured against this mattress beside him (an adult stallion is 1.2x the size
 	# setting: refused outright before, player board #56). _invite lays her spot out at her size.
 	var body: Variant = actor.get("body_scale")
-	if not scale_fits(float(body) if body != null else 1.0): return false
+	if SIZE_GATE and not scale_fits(float(body) if body != null else 1.0): return false
 	if Time.get_ticks_msec() < int(_cooldowns.get(actor.get_instance_id(), 0)): return false
 	var nav := actor.get_node_or_null("Navigator")
 	if nav == null: return false
@@ -396,13 +462,25 @@ func accept(actor: Node3D) -> bool:
 	return joined
 
 ## Her capsule's hop from the floor onto her spot clears walls and furniture (the bed never counts).
+## Her navigation profile's capsule first (as before); where that is too big for the room (from about
+## x1.7, thread fix "beds") her real collision capsule, the body that actually makes the hop.
 func hop_clear(actor: CharacterBody3D, from: Vector3, to: Vector3) -> bool:
+	if _hop_clear(actor, from, to, Vector2(float(actor.profile.radius), float(actor.profile.clearance))): return true
+	if SIZE_GATE: return false
+	if _hop_clear(actor, from, to, body_capsule(actor)): return true
+	# No measured spot fits her: the floor she stood on, or the bed's side marker, is her way in and
+	# out, unchecked as NightRest's own climb and wake hop to that marker are.
+	for spot: Vector3 in [_fallback_front, _side_floor(actor)]:
+		if spot.is_finite() and (spot.distance_to(from) < 0.3 or spot.distance_to(to) < 0.3): return true
+	return false
+
+func _hop_clear(actor: CharacterBody3D, from: Vector3, to: Vector3, capsule: Vector2) -> bool:
 	if not is_instance_valid(_bed): return false
 	var exclusions: Array[RID] = [actor.get_rid()]
 	for body: Node in _bed.find_children("*", "CollisionObject3D", true, false): exclusions.append((body as CollisionObject3D).get_rid())
 	var shape := CapsuleShape3D.new()
-	shape.radius = float(actor.profile.radius)
-	shape.height = maxf(float(actor.profile.clearance), shape.radius * 2.0)
+	shape.radius = capsule.x
+	shape.height = maxf(capsule.y, shape.radius * 2.0)
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = shape
 	query.collision_mask = 1
@@ -452,6 +530,7 @@ func _tend(delta: float) -> void:
 			elif done or float(_guest.clock) > 45.0:
 				if phase == "approach": _finish_guest()
 				else: _leave()
+			elif phase == "approach" and not SIZE_GATE: _hop_when_stalled(actor, seating, delta)
 		"resting":
 			if phase == "": _finish_guest()
 			elif done: _leave()
@@ -474,13 +553,38 @@ func _pick_companion() -> Node3D:
 			best_score = score
 	return best
 
-func _invite(actor: Node3D) -> bool:
+## Anon carried her here and set her down on the mattress beside him (cradle_rest.gd lay_down, thread
+## fix "beds"): she stays as his bed company without walking round and climbing in. Her own will
+## decides as for an invitation (she welcomes resting with him); false leaves her to the caller.
+func place_guest(actor: Node3D) -> bool:
+	if not can_open() or seats.size() < 2 or not is_instance_valid(seats[1]): return false
+	var who: Variant = seats[0].get_meta("occupant") if seats[0].has_meta("occupant") else null
+	if not is_instance_valid(who) or not bool((who as Node).get_meta("couch_sleeping", false)): return false
+	if not _guest.is_empty() or is_instance_valid(_sleeper) or not _willing(actor) or not actor.has_node("Navigator"): return false
+	var seating := get_tree().get_first_node_in_group("pony_seating")
+	if seating == null or not seating.has_method("seat_at_rest"): return false
+	if not _invite(actor, true): return false
+	if not bool(seating.call("seat_at_rest", actor)):
+		_finish_guest()
+		return false
+	return true
+
+func _invite(actor: Node3D, placed := false) -> bool:
 	var seating := get_tree().get_first_node_in_group("pony_seating")
 	if seating == null or not bool(seating.get("_ready_done")) or not _mare_fits: return false
 	if not seats[1].free_for(actor) or not actor is CharacterBody3D: return false
 	var body: Variant = actor.get("body_scale")
-	_lay_mare(float(body) if body != null else _mare_scale)
+	_lay_mare(float(body) if body != null else _mare_scale, actor)
 	var front := _front_for(actor as CharacterBody3D)
+	_fallback_front = Vector3.INF
+	if not SIZE_GATE and not front.is_finite():
+		# No measured floor spot fits her (a princess at Hoers is 2.9 m tall and 1 m wide by her route
+		# footprint): the floor she stands on now, when she is within a hop of her spot, else the bed's
+		# own side marker, NightRest's climb-in and wake-up spot for this bed.
+		front = _hop_spot(actor)
+		_fallback_front = front
+	# Laid here by Anon she needs no floor spot to walk to: the exit beside the bed is her way off.
+	if placed and not front.is_finite(): front = _exit
 	if not front.is_finite() or not open(): return false
 	var nav: Node = actor.get_node("Navigator")
 	var follow := _spoken_follow(actor, nav)
@@ -506,20 +610,79 @@ func _invite(actor: Node3D) -> bool:
 		elif is_instance_valid(previous.follow): nav.follow(previous.follow)
 		return false
 	_mare_front = front
+	actor.set_meta("bed_fit_bed", _bed)   # bed_fit.gd lying_words, while she is his bed company
 	_guest = {"actor": actor, "token": token, "previous": previous, "follow": follow, "state": "joining", "clock": 0.0, "willing": true}
 	return true
 
+## Thread fix "beds": the floor a big mare is allowed to hop from or to when no measured spot fits
+## her: where she stands, if within HOP_REACH x her size of her spot on the mattress and on the floor
+## the bed stands on, else the bed's side marker on that floor. INF when neither is.
+func _hop_spot(actor: Node3D) -> Vector3:
+	var here := actor.global_position
+	var to_rest := Vector2(here.x - _mare_rest.origin.x, here.z - _mare_rest.origin.z).length()
+	if not exit_on_bed(here) and absf(here.y - _frame.origin.y) < 0.5 and to_rest <= HOP_REACH * _body_scale(actor): return here
+	return _side_floor(actor)
+
+## The bed's side marker (house_beds.gd bed_side: NightRest's climb-in and wake-up spot) dropped onto
+## the floor the bed stands on; INF without a marker or floor there.
+func _side_floor(actor: Node3D) -> Vector3:
+	if not is_instance_valid(_bed) or not _bed.has_meta("side_local"): return Vector3.INF
+	var side := _bed.to_global(Vector3(_bed.get_meta("side_local")))
+	var skip: Array[RID] = []
+	if actor is CollisionObject3D: skip.append((actor as CollisionObject3D).get_rid())
+	for body: Node in _bed.find_children("*", "CollisionObject3D", true, false): skip.append((body as CollisionObject3D).get_rid())
+	if _bed is CollisionObject3D: skip.append((_bed as CollisionObject3D).get_rid())
+	var hit := get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(side + Vector3.UP * 0.45, side + Vector3.DOWN * 1.2, 1, skip))
+	if hit.is_empty() or absf(float(hit.position.y) - _frame.origin.y) >= 0.5: return Vector3.INF
+	return hit.position + Vector3.UP * 0.04
+
+## Seating's hop down off this bed when no measured floor fits her (seating.gd _hop_off): the floor
+## she came up from, else the side marker. Only without SIZE_GATE.
+func exit_fallback(actor: Node3D) -> Vector3:
+	if SIZE_GATE: return Vector3.INF
+	if _fallback_front.is_finite(): return _fallback_front
+	return _side_floor(actor)
+
+func _body_scale(actor: Node3D) -> float:
+	var body: Variant = actor.get("body_scale")
+	return float(body) if body != null else _mare_scale
+
+## While she walks to her spot: stalled (a big mare turning on the spot in a furnished room, or a
+## route that ends short) within a hop of her spot, she hops in from where she stands, as NightRest
+## climbs in from anywhere near her own bed.
+func _hop_when_stalled(actor: Node3D, seating: Node, delta: float) -> void:
+	var here := actor.global_position
+	var last: Vector3 = _guest.get("last_at", Vector3.INF)
+	if last.is_finite() and here.distance_to(last) < 0.05: _guest.still = float(_guest.get("still", 0.0)) + delta
+	else: _guest.still = 0.0
+	_guest.last_at = here
+	if float(_guest.still) < STALL_SECONDS or not seating.has_method("hop_from_here"): return
+	_guest.still = 0.0
+	var spot := _hop_spot(actor)
+	if not spot.is_finite() or spot.distance_to(here) > 0.3: return
+	_fallback_front = spot
+	if bool(seating.call("hop_from_here", actor)): _mare_front = spot
+
 ## Clear floor beside her spot on the open side, else the bed's own side marker, else the foot.
+## Thread fix "beds": the three spots measured with her navigation profile, as before; a bigger mare's
+## profile (0.45 m x size) overlapped the bed itself at those spots from x1.7, so the same sides again
+## a profile radius out from the mattress; last, with her real collision capsule.
 func _front_for(actor: CharacterBody3D) -> Vector3:
 	var local := _frame.affine_inverse() * _mare_rest.origin
-	var candidates: Array[Vector3] = [_frame * Vector3(_side * (_half.x + 0.55), 0.0, local.z)]
-	if _bed.has_meta("side_local"): candidates.append(_bed.to_global(Vector3(_bed.get_meta("side_local"))))
-	candidates.append(_frame * Vector3(local.x, 0.0, _half.z + 0.6))
-	var clearance := float(actor.profile.clearance)
 	var radius := float(actor.profile.radius)
-	for at: Vector3 in candidates:
-		var floor_at: Vector3 = EXIT.clear_floor(actor, at, clearance, radius)
-		if floor_at.is_finite() and absf(floor_at.y - actor.global_position.y) < 0.5: return floor_at
+	var sizes: Array[Vector2] = [Vector2(radius, float(actor.profile.clearance))]
+	if not SIZE_GATE: sizes.append(body_capsule(actor))
+	for size: Vector2 in sizes:
+		var candidates: Array[Vector3] = [_frame * Vector3(_side * (_half.x + 0.55), 0.0, local.z)]
+		if _bed.has_meta("side_local"): candidates.append(_bed.to_global(Vector3(_bed.get_meta("side_local"))))
+		candidates.append(_frame * Vector3(local.x, 0.0, _half.z + 0.6))
+		if not SIZE_GATE and size.x + 0.1 > 0.55:
+			candidates.append(_frame * Vector3(_side * (_half.x + size.x + 0.1), 0.0, local.z))
+			candidates.append(_frame * Vector3(local.x, 0.0, _half.z + size.x + 0.1))
+		for at: Vector3 in candidates:
+			var floor_at: Vector3 = EXIT.clear_floor(actor, at, size.y, size.x)
+			# The floor the bed stands on (she may already lie on the mattress, set down there).
+			if floor_at.is_finite() and absf(floor_at.y - _frame.origin.y) < 0.5: return floor_at
 	return Vector3.INF
 
 func _leave() -> void:
@@ -527,18 +690,22 @@ func _leave() -> void:
 	_guest.clock = 0.0
 	var actor: Node3D = _guest.actor
 	_unmark(actor)
+	if actor.has_meta("bed_fit_bed"): actor.remove_meta("bed_fit_bed")
+	BED_FIT.mark_left_bed(actor, _bed)
 	actor.request_posture("stand")
 
 ## Hand her back: her previous owner and wander, then a paused spoken follow or her follow target.
 func _finish_guest() -> void:
 	var entry := _guest
 	_guest = {}
+	_fallback_front = Vector3.INF
 	# Her spot was laid out at her size (_invite): lay the bed out again for the size setting.
 	_laid_for = []
 	if not is_instance_valid(entry.get("actor")):
 		_clear_body_support(null)
 		return
 	var actor: Node3D = entry.actor
+	if actor.has_meta("bed_fit_bed"): actor.remove_meta("bed_fit_bed")
 	_clear_body_support(actor)
 	_unmark(actor)
 	_cooldowns[actor.get_instance_id()] = Time.get_ticks_msec() + 20000

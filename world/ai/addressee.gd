@@ -259,7 +259,7 @@ static func hint(address: Dictionary, partner: Dictionary) -> String:
 		"everyone": return "Anon is speaking to everyone here."
 		"follow_up":
 			var said := str(partner.get("text", "")).strip_edges()
-			if said == "": return "Anon is continuing his conversation with %s; she answers first." % id
-			return "Anon is answering %s's last line to him (\"%s\"); she answers first." % [id, said.left(100)]
+			if said == "": return "Anon is carrying on his talk with %s, so she will answer first." % id
+			return "Anon is replying to %s's last line to him (\"%s\"), so she goes first." % [id, said.left(100)]
 		"gaze": return "Anon is looking at %s as he speaks." % id
 	return ""

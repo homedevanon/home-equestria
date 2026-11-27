@@ -1,0 +1,10 @@
+[gd_resource type="StandardMaterial3D" load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://world/buildings/clean/textures/clean_stone.res" id="1_52xfv"]
+
+[resource]
+resource_name = "clean_mortar"
+albedo_color = Color(0.5, 0.47, 0.43, 1)
+albedo_texture = ExtResource("1_52xfv")
+roughness = 0.95
+texture_filter = 5

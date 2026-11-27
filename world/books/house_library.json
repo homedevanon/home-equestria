@@ -1,0 +1,249 @@
+{
+	"version": 1,
+	"about": "The house library: books written for the game, on the shelves of every install that has no personal library (world/books/book_library.gd HOUSE_LIBRARY). Ids from 1900000001 up stay clear of story ids.",
+	"books": [
+		{
+			"id": 1900000001,
+			"title": "A Visitor’s Guide to Ponyville",
+			"author": "the Ponyville Town Hall",
+			"color": "6f9447",
+			"short": "Where to eat, where to shop, where to find a friend, and where not to wander after dark. Free to every newcomer; please do not draw moustaches on the map.",
+			"credit": "A Golden Oak Library copy. Read it anywhere you like, and put it back on any shelf with a gap.",
+			"chapters": [
+				{
+					"title": "Welcome, Neighbor",
+					"paragraphs": [
+						"If you are holding this book, you have either just arrived in Ponyville or you have been here a while and want to know what everypony else already seems to know. Either way, welcome. The Town Hall is glad to have you, and so, once they get used to you, will be everypony else.",
+						"Ponyville is a small town with a large heart and, on most days, a larger amount of noise than its size would suggest. It was founded by earth ponies who came to grow food, and growing things is still what we do best. You will find that the ground here is good, the weather is arranged on a sensible schedule, and the neighbors are quick to wave and quicker to talk.",
+						"There are three things every newcomer should know. First: if a pink pony appears beside you without warning, there is very likely going to be a party, and it is very likely going to be for you. Do not try to escape it. Nopony has managed yet.",
+						"Second: the forest to the east of town is the Everfree. It is beautiful, it is old, and it does not behave the way a forest ought to. The trees grow on their own, the weather moves on its own, and the animals do not always agree to stay the size they started. Visit it with a friend who knows the way, or not at all.",
+						"Third: if you are ever lost, confused, or simply curious, go to the big tree in the middle of town. That is the Golden Oak Library. There is always a light on, there is always somepony willing to help, and there is a very good chance the answer to your question is on a shelf somewhere inside.",
+						"The rest of this guide walks you through the town, the year, and a few of our customs. Read it slowly. Ponyville is not a town to be rushed."
+					]
+				},
+				{
+					"title": "Around the Town",
+					"paragraphs": [
+						"Sugarcube Corner is the bakery that looks a little like a gingerbread house, because that is what it was built to look like. The Cakes run it, and their cupcakes are, in the considered opinion of the Town Hall, the best in Equestria. Go early. The cinnamon buns are gone by ten.",
+						"Carousel Boutique is the tall building with the round roof and the very clean windows. It belongs to a dressmaker of real talent. If you need anything mended, fitted, or simply made more beautiful, she will be delighted to help, and she will notice your mane before you have finished saying hello.",
+						"The Golden Oak Library is a hollow tree with rooms carved into it, books on every wall, and a balcony at the top for looking at the stars. It is free to borrow any book you see. Take one down, read it in the chair by the window or carry it home, and put it back on any shelf with a gap when you are done. The librarian keeps careful track, and she will be thrilled that somepony is reading.",
+						"Sweet Apple Acres lies to the south. The Apple family have farmed that land since the town was young, and they will sell you a bushel of apples, a jug of cider in season, or an honest opinion on almost anything. If you offer to help at harvest you will be fed very well.",
+						"The cottage at the edge of the woods, with the birdhouses and the stream, belongs to a very gentle pony who looks after animals. Please speak softly there, and please do not chase the rabbits. One of them in particular remembers faces.",
+						"The town square, the market stalls and the Town Hall itself are all within a short walk of each other. If you need to find a particular pony, ask at any stall. Somepony will know, and somepony else will offer to walk you there."
+					]
+				},
+				{
+					"title": "The Ponyville Year",
+					"paragraphs": [
+						"In Ponyville the seasons do not change by themselves. We change them, together, and we are rather proud of it.",
+						"Winter Wrap Up comes at the end of the cold months. Every pony in town joins a team: the weather team clears the clouds, the animal team wakes the creatures that sleep through the snow, and the plant team softens the ground and plants the first seeds. Newcomers are welcome on any team. You will be given a vest. Please wear the vest.",
+						"Summer is long and warm and full of picnics. The weather team schedules rain for the early hours, so the afternoons are usually clear. If you are caught in an unscheduled shower, it is polite not to complain to any pegasus you happen to see; it is probably not their fault, and if it is, they already know.",
+						"In autumn comes the Running of the Leaves, a great race through the Whitetail Woods that shakes the last leaves from the trees. Anypony can run. Most of us do not win. Everypony enjoys it anyway.",
+						"Then the snow comes back, and with it Hearth’s Warming, when we remember how the three tribes of ponies learned to share one land and one fire. There are songs, there is a pageant, and there is hot cocoa in every kitchen in town.",
+						"Whenever you arrived, and whatever season it is as you read this, there is something happening in Ponyville that would be better with you in it. Go and find it."
+					]
+				}
+			]
+		},
+		{
+			"id": 1900000002,
+			"title": "The Care and Feeding of Woodland Friends",
+			"author": "Fluttershy",
+			"color": "d690b3",
+			"short": "A small, kind book about saying hello to animals, what they like to eat, and what to do when one of them needs help. With apologies to anyone who expected more pictures.",
+			"credit": "A Golden Oak Library copy. Read it anywhere you like, and put it back on any shelf with a gap.",
+			"chapters": [
+				{
+					"title": "A Quiet Hello",
+					"paragraphs": [
+						"Um, hello. Thank you for opening this book. I hope it is not too boring. I wrote it because ponies sometimes ask me how to make friends with animals, and I always feel I have not explained it very well out loud.",
+						"The most important thing is to be quiet. Not silent, exactly. Animals like to know where you are. But a soft voice and slow steps tell a creature that you are not in a hurry and you are not going to pounce, and that is the first thing any of them wants to know.",
+						"The second thing is to let them come to you. If you walk straight up to a squirrel, the squirrel will leave, and it will be right to. If you sit down near the squirrel, and look at something else for a while, and perhaps have a few seeds beside you, the squirrel will make up its own mind. Most of them decide that you are very interesting.",
+						"The third thing is to listen. Every animal says what it needs, if you pay attention. A bird that fluffs its feathers is cold. A rabbit that thumps its foot is upset, and probably with you. A bear that sits down and sighs usually has a thorn somewhere, and is too proud to say so.",
+						"I know some ponies feel silly talking to animals. Please don’t. They may not answer in words, but they always understand when somepony is being kind to them. That is enough to start a friendship."
+					]
+				},
+				{
+					"title": "Bunnies, Birds and Bears",
+					"paragraphs": [
+						"Bunnies eat clover, dandelion leaves, carrot tops and a little hay. They should not have too many carrots, even though they will tell you otherwise. A bunny who has decided that he is in charge of your house may refuse anything that has not been cut into neat slices. It is all right to say no to him. Sometimes.",
+						"Small birds like seeds, crumbs of plain bread and, in winter, a little suet. Put the feeder somewhere high and clear, so nothing can creep up on them while they eat. Please keep the water dish fresh. Birds notice, and they will sing for you in the mornings to say thank you.",
+						"Ducks enjoy oats, peas and chopped lettuce. They do not need bread, whatever the foals at the pond say. If a duck follows you home, she is not lost. She has simply decided you are hers.",
+						"Bears are bigger than they look, and they look very big. A bear who is grumpy is usually hungry, tired, or hurt, and once you find out which, he is usually very gentle. Berries, honey and fish are all good things to bring. Never wake a bear in winter unless it is Winter Wrap Up and you have asked first.",
+						"Some creatures in the Everfree are not ordinary animals at all. Cockatrices, manticores and timberwolves deserve a great deal of respect and a great deal of distance. I have met all three. I would not recommend it to a beginner."
+					]
+				},
+				{
+					"title": "When a Friend Is Hurt",
+					"paragraphs": [
+						"Sooner or later you will find an animal who needs help: a bird with a bent wing, a fox with a thorn in its paw, a frog who has somehow got stuck in a teapot. It happens more than you would think.",
+						"First, stay calm. A frightened animal can tell when you are frightened too, and then you are both frightened, and nothing gets better. Take a breath. Speak softly. Move slowly.",
+						"Second, keep them warm and quiet. A box lined with a soft cloth, set somewhere dim and still, is often the best medicine of all. Most small creatures heal faster when nothing is staring at them.",
+						"Third, do only what you know how to do. A splint for a little wing is simple once you have been shown, but please ask somepony who has done it before. You are very welcome to knock on my door. I will put the kettle on.",
+						"And last, let them go when they are ready. It is the hardest part, and I still cry a little every time. But a friend you have helped back to the sky never really leaves. They come back to visit. Usually at breakfast."
+					]
+				}
+			]
+		},
+		{
+			"id": 1900000003,
+			"title": "Daring Do and the Lantern of the Lost Valley",
+			"author": "A. K. Yearling",
+			"color": "8a6a3b",
+			"short": "A torn map, a valley no pony has seen in a thousand years, and a lantern that some very unpleasant characters would like very much to own. Daring Do would like them not to.",
+			"credit": "A Golden Oak Library copy, well loved. Read it anywhere you like, and put it back on any shelf with a gap.",
+			"chapters": [
+				{
+					"title": "A Map With a Missing Corner",
+					"paragraphs": [
+						"The map had been folded so many times that the creases had become roads of their own. Daring Do smoothed it flat across the crate with one hoof and held her lantern close. Mountains. A river. A valley drawn in faded ink, ringed by a careful line of little stars. And then, where the most important part ought to be, nothing at all. The corner had been torn away.",
+						"“Of course it has,” she muttered. “It never once has been the useless corner.”",
+						"Outside the warehouse, rain drummed on the roof of the dock at Mareseilles. Somewhere out there were the three hired thugs who had been following her since the train station, and somewhere beyond them was the pony who had paid them. Daring had a good idea who that was. Only one collector in Equestria wanted the Lantern of the Lost Valley badly enough to rent muscle by the hour.",
+						"She turned the map over. On the back, in a different hand, somepony had written a single line: Follow the echo, not the river.",
+						"A board creaked behind her. Daring folded the map in one practised motion, slid it into her saddlebag, and blew out the lantern. In the dark she heard heavy hooves, a whispered argument about whose turn it was to go first, and then nothing, because she was already on the roof.",
+						"By morning she was three valleys away, and the thugs were still arguing."
+					]
+				},
+				{
+					"title": "The Bridge of Echoes",
+					"paragraphs": [
+						"The gorge was a mile deep and a stone’s throw wide, and across it ran a bridge of rope and planks that had clearly been built by somepony who did not expect it to be used. Daring Do stood at the near end and listened.",
+						"Follow the echo, not the river. The river ran along the bottom of the gorge, roaring white. But when she called out, her voice did not come straight back. It came back twice: once from the far cliff, and once, fainter, from somewhere above and to the left, where the cliff face looked solid and blank.",
+						"She called again. The second echo came from the same place, as steady as a bell.",
+						"Daring flew. Her wing was still stiff from the business with the temple crocodiles, and the wind in the gorge was strong and contrary, but she reached the blank stretch of cliff and found, exactly where the echo lived, a crack just wide enough for a determined pegasus. Behind it, a stairway climbed into the rock, cut by hooves long gone.",
+						"Far below, the rope bridge shook. Three heavy shapes were starting across it, one plank at a time, with a great deal of complaining.",
+						"“Not today, gentlecolts,” said Daring Do, and loosened one very old, very important-looking peg as she passed."
+					]
+				},
+				{
+					"title": "Light in the Valley",
+					"paragraphs": [
+						"The stairway ended in sunlight. Below lay a valley so green it hardly seemed real: orchards gone wild, a lake as still as glass, and in the middle of the lake a small island with a small stone tower. Ringed around the valley, carved into the cliffs, were the little stars from the map.",
+						"The lantern sat at the top of the tower on a plain stone shelf. It was not gold. It was not jewelled. It was brass, a little dented, with a handle worn smooth by many hooves. Daring almost laughed. Then she looked through its glass and stopped laughing, because through the glass the valley was full of ponies: farmers, weavers, foals, ghosts of a town that had lived here long ago, going about an ordinary day.",
+						"The lantern did not grant wishes or win wars. It remembered. Whatever it shone upon, it showed as it had been when it was happiest.",
+						"She heard the collector before she saw him, wheezing up the tower stairs with his last remaining thug. Daring Do considered the lantern, and the valley, and the ponies in the glass who had been forgotten by everyone except this one dented thing.",
+						"When the collector reached the top, the shelf was empty and the window was open. He searched the valley for a week. He never found the lantern. Nopony ever has, though some say that on clear nights a small warm light can be seen moving between the ruined houses, as if somepony were making sure the valley still remembers itself.",
+						"Daring Do kept the map. She left the lantern where it belonged."
+					]
+				}
+			]
+		},
+		{
+			"id": 1900000004,
+			"title": "Apples Through the Year",
+			"author": "Applejack of Sweet Apple Acres",
+			"color": "b5402f",
+			"short": "Plain talk about apple trees from somepony who has bucked more of them than she can count. No fancy words, no shortcuts, and a recipe if you make it to the end.",
+			"credit": "A Golden Oak Library copy. Read it anywhere you like, and put it back on any shelf with a gap.",
+			"chapters": [
+				{
+					"title": "Spring: Blossom Time",
+					"paragraphs": [
+						"Now, Twilight asked me to write down what we do on the farm, on account of she says folks are curious. I told her it ain’t complicated. She told me to write it anyhow. So here it is, plain as I can make it.",
+						"An apple year starts in spring, when the blossoms come. Pink and white, the whole orchard, and the smell of it about knocks you over. It is the prettiest week on the farm, and it is also the week you worry most, because every one of those little flowers is an apple that might be, if nothing goes wrong.",
+						"Late frost is the worst thing. A cold snap on blossom night can lose you half a crop. We keep an eye on the sky and a word with the weather team, and if it turns cold we light smudge pots all down the rows and stay up keeping them going. Big Mac sings while he does it. He thinks nopony can hear him. Everypony can hear him.",
+						"The bees do the real work in spring. We keep hives at the end of the north rows, and we leave the clover long between the trees so the bees have somewhere to rest. You look after the bees, the bees look after the orchard.",
+						"And you prune. Not a lot, mind. A tree likes light and air through its middle, same as a pony likes an open window. Take out the dead wood and the branches that cross, and leave the rest be."
+					]
+				},
+				{
+					"title": "Summer: Patience",
+					"paragraphs": [
+						"Summer is the long middle part, and the trick to it is patience, which Granny Smith says I ain’t got enough of and which I say I got plenty of, thank you.",
+						"The little apples come on after the blossom falls. Too many, mostly. A tree will try to grow every last one and end up with a thousand sour marbles. So you thin them: pick off the small ones and leave the strong, a hoof’s width apart or so. It feels wrong, throwing away apples. It ain’t. The ones you leave grow bigger and sweeter for it.",
+						"Water matters most in the dry weeks. The weather team does right by us, but a young tree with shallow roots needs a bucket at its foot now and again. Old trees go deeper and mostly look after themselves. Kind of like old ponies.",
+						"Keep an eye out for pests. Caterpillars, mostly, and the odd bird that’s decided an apple looks better than a worm. Fluttershy has a way of asking the birds nicely to eat somewhere else, and I’ll admit it works better than any scarecrow we ever built.",
+						"Mostly, in summer, you walk the rows. Every day, every row. You look at the trees, and the trees, I swear, look back at you. There ain’t no book in the world that teaches that part. You just got to be there."
+					]
+				},
+				{
+					"title": "Autumn: Applebucking Season",
+					"paragraphs": [
+						"Then it comes. Applebucking season, the whole reason for the rest of it.",
+						"You know an apple is ready when it comes off the branch with a gentle twist, the seeds inside have gone brown, and it tastes like it’s supposed to. Don’t go by colour alone; some kinds are red as a fire truck weeks before they’re sweet.",
+						"To buck a tree you turn your back to it, plant your front hooves, and kick the trunk square and firm with both back legs. Not too hard. You ain’t angry at the tree. A good buck brings every ripe apple down into the baskets at once and leaves the rest hanging. It takes practice. I’ve been practising since I was a filly, and I still get a bonk on the head now and then.",
+						"The best apples go to market fresh. The bruised ones go to cider, the little ones go to sauce, and the ones too far gone go back on the ground for the soil. Nothing wasted. That’s the Apple family way.",
+						"And here’s the recipe I promised. Granny’s apple crumble: slice six good apples, toss them with cinnamon and a little honey, put them in a dish, then rub together oats, flour and butter till it looks like sand and pile that on top. Bake it till it’s golden and the kitchen smells like autumn. Share it. That last part ain’t optional."
+					]
+				}
+			]
+		},
+		{
+			"id": 1900000005,
+			"title": "Weather Patrol Field Manual (Abridged)",
+			"author": "the Ponyville Weather Team",
+			"color": "34729e",
+			"short": "Everything a new pegasus on the Ponyville weather team needs to know: clouds, schedules, storms and the correct way to apologise for rain on a picnic. With a foreword by Rainbow Dash, who says the unabridged version is longer and much less awesome.",
+			"credit": "A Golden Oak Library copy. Read it anywhere you like, and put it back on any shelf with a gap.",
+			"chapters": [
+				{
+					"title": "Foreword (Read This One)",
+					"paragraphs": [
+						"Okay. So the original manual was four hundred pages long and nopony read it, including me, and I’m the one who has to clear the sky every morning. So this is the short version. You’re welcome.",
+						"Here’s the deal. Weather doesn’t just happen in Ponyville. We make it happen. Every cloud you see, a pegasus put there. Every sunny afternoon, a pegasus cleared. If it rains on your picnic, a pegasus scheduled that rain, and it was probably on the calendar at the Town Hall, so you should probably check the calendar.",
+						"Being on the weather team means you’re fast, you’re reliable, and you show up. Being fast is the fun part. Being reliable is the part that matters. If you’re supposed to clear the sky by nine, the sky is clear by nine. I clear it in ten seconds flat. You don’t have to. But you do have to finish.",
+						"The rest of this book was written by ponies who are very good at writing things down. I checked it. It’s right. Mostly. Read it, then go fly."
+					]
+				},
+				{
+					"title": "Clouds and How to Move Them",
+					"paragraphs": [
+						"A cloud is lighter than it looks and heavier than you hope. To move one, approach from the side opposite to where you want it to go, set your forehooves firmly into the cloud, and push with steady wingbeats. Do not kick a cloud unless you mean to break it up, because kicking breaks it up.",
+						"To make a cloud rain, gather it over the target and press down on it from above. The harder you press, the harder it rains. New team members are reminded that the target is the field, the garden or the reservoir, and not the pony who beat you in a race last week.",
+						"To clear a sky, break the clouds into small pieces and scatter them beyond the town limits, or gather them into the cloud storage beds above the reservoir for later use. Storage is preferred. Clouds are not free.",
+						"Rainbows are made at the weather factory in Cloudsdale and are delivered in barrels. They are not to be opened in the clubhouse. We are aware that the clubhouse is still slightly striped.",
+						"Snow clouds are heavier and colder than rain clouds, and must be handled in pairs. Wear a scarf. Yes, even you."
+					]
+				},
+				{
+					"title": "Keeping to the Schedule",
+					"paragraphs": [
+						"The weather schedule is posted at the Town Hall at the start of every week and agreed with the farmers, the market and the Mayor. Rain is normally scheduled for the early morning so that it does not interfere with the day. Storms are rare, planned well in advance and announced in the square.",
+						"If weather drifts in from the Everfree Forest, it is not on the schedule, because nothing from the Everfree is ever on the schedule. Report it to the team captain at once and do not attempt to tackle a wild storm alone. Wild weather is fast, stubborn and does not care how cool you are.",
+						"At the change of seasons the whole team works together. In Winter Wrap Up we clear every cloud from the sky in a single morning. In autumn we help the leaf-turning along. It is hard work and it is the best day of the year, and the cocoa afterwards is free.",
+						"Finally: if you make a mistake, own it. Say sorry, fix it, and fly on. Every pegasus has rained on somepony who did not deserve it. The good ones bring that pony a towel."
+					]
+				}
+			]
+		},
+		{
+			"id": 1900000006,
+			"title": "A Short History of Equestria",
+			"author": "Twilight Sparkle",
+			"color": "6b4c9a",
+			"short": "From the cold years and the first Hearth’s Warming to the two royal sisters and the return of the night. Short, because a long one already fills the whole third floor.",
+			"credit": "A Golden Oak Library copy. Read it anywhere you like, and put it back on any shelf with a gap. Corrections welcome, with sources.",
+			"chapters": [
+				{
+					"title": "Three Tribes and the Cold",
+					"paragraphs": [
+						"Long ago, before Equestria had a name, three tribes of ponies lived apart and did not trust one another. The earth ponies grew the food. The pegasi ruled the sky and its weather. The unicorns raised the sun and the moon with their magic. Each believed the other two could not manage without them, and each was perfectly right, and none of them would say so.",
+						"Then the winters came and did not end. The histories disagree on many details, but they agree that the cold was not natural. It was fed by windigos, spirits of winter that grow strong wherever ponies quarrel. The more the tribes argued over who was to blame, the deeper the snow became.",
+						"At last the leaders of the three tribes each set out alone to find a new land. By chance, or by something kinder than chance, they arrived in the same place, and promptly began to argue about who had found it first. The cold followed them there, and their own fire froze.",
+						"What saved them was their companions: one from each tribe, who had come to know each other on the road and had become friends. When those three spoke kindly to one another, their friendship lit a flame that the windigos could not abide. The storm broke. The three tribes agreed to share the land, and they named it Equestria.",
+						"That is the story we tell at Hearth’s Warming, and as far as I can find it is substantially true. The pageant version has more jokes."
+					]
+				},
+				{
+					"title": "Two Sisters",
+					"paragraphs": [
+						"In time, Equestria came to be ruled by two royal sisters, alicorns, with wings, horn and the strength of all three tribes. The elder raised the sun each morning, and the younger raised the moon each night. For many years they ruled together, and the land was at peace.",
+						"But the younger sister came to feel that the ponies loved the day and slept through the night she made for them. Her sorrow grew into bitterness, and her bitterness into something darker, until she refused to lower the moon at all and would have kept Equestria in endless night.",
+						"Her elder sister, with the help of six ancient relics called the Elements of Harmony, banished her to the moon. It was the hardest thing she ever did. For a thousand years after, she raised both the sun and the moon herself, and for a thousand years the face of a mare could be seen in the moon by anypony who looked.",
+						"Most ponies came to believe it was only a legend. Most ponies, I must admit, did not spend enough time in libraries."
+					]
+				},
+				{
+					"title": "Harmony",
+					"paragraphs": [
+						"The legend foretold that on the longest day of the thousandth year, the stars would aid in her escape, and the night would last forever. On that day, in Ponyville, it very nearly came true.",
+						"The Elements of Harmony were found again, in the ruins of the old castle deep in the Everfree Forest. They did not answer to strength or to study. They answered to friendship: honesty, kindness, laughter, generosity, loyalty, and the spark of magic that appears when ponies care for one another. I did not believe that when I first read it. I have since had to revise my position.",
+						"The night was lifted, and the younger sister was freed from the darkness that had taken hold of her. She has returned to her place beside her sister, and once again raises the moon over Equestria. If you look up on a clear night, you will see that the face is gone.",
+						"History is not finished. It never is. It is being written every day, in towns like this one, by ponies who decide to be kind to one another when it would be easier not to. That is the most important thing I have learned in this library, and I learned most of it outside it.",
+						"If you would like to know more, the long version is upstairs. Please ask before taking it down; it is very heavy."
+					]
+				}
+			]
+		}
+	]
+}

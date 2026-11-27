@@ -86,7 +86,86 @@ static func clear_release(actor: CharacterBody3D, head: Vector3, fallback := Vec
 		return true
 	return false
 
+## Under the ground (thread fix "sunk", 2026-11-19; docs/THREAD_FIX_SUNK_2026_11_19.md): a pony whose
+## root is more than SUNK_GAP under the terrain heightmap, outside every house and with no floor of
+## any kind under her hooves, is put back on the ground above her. Nothing else brings back a pony on
+## the clip tiers that is more than ~0.9 m under (pony_locomotion.gd _clip_step follows only floors
+## within 1.5 hip heights, a lying or sitting clip-tier pony follows none) and the solver's own
+## re-seat (pony_support_recovery.gd) only runs once the crowd makes her HERO, which needs his eyes
+## within 4 m of her root: a pony a metre under the road right beside him stays on NEAR, sunk.
+## Every SUNK_EVERY seconds per pony (staggered), on the watchers' beat: one heightmap read and a
+## compare; the house test and one short ray only for a pony already found that deep. Rollback:
+## SUNK_RESCUE = false.
+const SUNK_RESCUE := true
+const SUNK_GAP := 0.35
+## A lying, sitting or sleeping pony does not move, so no slope lag: anything this deep is a sink.
+const SUNK_GAP_RESTING := 0.2
+const SUNK_EVERY := 2.0
+## Floor rays down from just above her root: a cellar, tunnel or deck under her is a floor.
+const SUNK_FLOOR_ABOVE := 0.3
+const SUNK_FLOOR_BELOW := 0.6
+var _sunk_timer := -1.0
+
+func _check_sunk(pony: CharacterBody3D, delta: float) -> void:
+	if _sunk_timer < 0.0:
+		_sunk_timer = float(pony.get_instance_id() % 97) / 97.0 * SUNK_EVERY
+		return
+	_sunk_timer -= delta
+	if _sunk_timer > 0.0: return
+	_sunk_timer = SUNK_EVERY
+	if pony._held or pony.motion_paused or is_instance_valid(pony.moving_support) or not pony.is_inside_tree(): return
+	if pony.thrown != null and pony.thrown.active(): return
+	if not is_instance_valid(WorldTerrain.instance): return
+	var at := pony.global_position
+	var ground: float = WorldTerrain.instance.height_at(at)
+	if not is_finite(ground): return
+	var posture: Object = pony.get("posture")
+	var resting: bool = posture != null and posture.active()
+	if at.y > ground - (SUNK_GAP_RESTING if resting else SUNK_GAP) * pony.body_scale: return
+	if _indoors(pony, at): return
+	var space := pony.get_world_3d().direct_space_state
+	var exclude: Array[RID] = [pony.get_rid()]
+	# Started under the surface, so the terrain itself (crossed only from above) is never hit here.
+	var above := minf(SUNK_FLOOR_ABOVE, ground - at.y - 0.1)
+	var under := PhysicsRayQueryParameters3D.create(at + Vector3.UP * above, at - Vector3.UP * SUNK_FLOOR_BELOW, pony.floor_mask, exclude)
+	if not space.intersect_ray(under).is_empty(): return
+	# Where the column has collision, its top near the heightmap (a path or plaza over the terrain);
+	# else the heightmap itself, which the clip tiers and the solver's own support both accept.
+	var surface := ground
+	var column := PhysicsRayQueryParameters3D.create(Vector3(at.x, ground + 0.6, at.z), Vector3(at.x, ground - 0.6, at.z), pony.floor_mask, exclude)
+	var top := space.intersect_ray(column)
+	if not top.is_empty() and not PLACEMENT.building(top.collider): surface = float(top.position.y)
+	var to := Vector3(at.x, surface + 0.02, at.z)
+	var flight: Object = pony.get("flight")
+	var flying: String = str(flight.get("state")) if flight != null and flight.active() else ""
+	print("[pony] %s was %.2f m under the ground (tier %d%s%s); set back on it at %s" % [pony.name, ground - at.y,
+		int(pony.get("sim_tier")), ", flight " + flying if flying != "" else "", ", " + str(posture.get("kind")) if resting else "",
+		str(to.snapped(Vector3.ONE * 0.01))])
+	if resting and flying == "":
+		# Lying, sitting or asleep: the same rest, on the ground. The clip tiers measure their floor
+		# again from here; the solver re-seats on it.
+		pony.global_position = to
+		pony.velocity = Vector3.ZERO
+		pony._clip_floor = NAN
+		pony._clip_probe_logic = 0
+		pony._clip_floor_from_ray = false
+		pony.reset_physics_interpolation()
+		return
+	pony.reset_motion(Transform3D(pony.global_basis, to))
+	pony.reset_physics_interpolation()
+	# Her command, owner and goal stay (stuck_rescue.gd _set_down): only where she stands changed,
+	# so her route is planned again from here.
+	var nav: Node = pony.get_node_or_null("Navigator")
+	if nav != null and "path" in nav and "_needs_path" in nav:
+		var travel: Variant = nav.get("house_travel")
+		if travel is Object and (travel as Object).has_method("clear"): travel.call("clear", pony)
+		nav.set("path", PackedVector3Array())
+		nav.set("_needs_path", true)
+		if "_stuck_time" in nav: nav.set("_stuck_time", 0.0)
+
+
 func update(pony: CharacterBody3D, delta: float) -> void:
+	if SUNK_RESCUE: _check_sunk(pony, delta)
 	if pony._held or pony.motion_paused or is_instance_valid(pony.moving_support) or pony.get("sleeping") == true:
 		stranded = 0.0; return
 	# A story scene or town event placed her (Trixie on her show stage, meta event_placed): the

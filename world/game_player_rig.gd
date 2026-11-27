@@ -99,6 +99,8 @@ func _spawn_player() -> void:
 			render_profiler.name = "RenderProfiler"; host.add_child(render_profiler)
 			var measure: Node = load("res://world/debug/pony_measure.gd").new()
 			measure.name = "PonyMeasure"; host.add_child(measure)
+		# Performance capture (--perf-capture, world/performance/perf_capture.gd): nothing is made unless asked for.
+		preload("res://world/performance/perf_capture.gd").install(host)
 		var interactor: Node = INTERACTOR.new()
 		cam.add_child(interactor)
 		if host.xr_active:

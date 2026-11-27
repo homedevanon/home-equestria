@@ -382,7 +382,7 @@ func set_moment(text: String) -> void:
 
 func _tell(actor: Node3D) -> void:
 	if moment.is_empty(): return
-	actor.set_meta("show_watching", "- You are sitting in the crowd at Trixie's magic show on the schoolhouse stage. On stage just now: %s. The show is on: keep your voice down, keep your eyes on the stage, answer in a short whisper." % moment)
+	actor.set_meta("show_watching", "- You're in the crowd watching Trixie's magic show at the schoolhouse stage. Right now on stage: %s. Since the show is going on, keep your eyes up front and only answer in a brief whisper." % moment)
 
 ## Watchers with a body (faces, applause, the picked card).
 func watchers() -> Array[Node3D]:

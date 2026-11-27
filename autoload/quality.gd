@@ -440,6 +440,30 @@ const SEASON_EFFECT_LEVELS := {"off": 0, "reduced": 1, "full": 2}
 ## Quest/Android: season keys come from the Very Low column at every tier (tests flip it).
 var season_force_very_low := OS.has_feature("android")
 
+## Look and ambience systems that had no quality gate (perf overhaul 2026-11-21, lane card), one
+## column per tier, Very Low .. Ultra, merged into every tier like SEASON_CONFIG. Every value is
+## today's on every tier: the keys exist so a tier can run a system lighter or not at all, and the
+## values that would change what a player sees or hears are the dev's call. Consumers read these
+## with their own defaults (today's), so a missing key never changes them:
+##   town_warmth_pools   most warm light pools under lit windows, 0 = none [world/look/town_warmth]
+##   town_warmth_smokes  most chimney smoke columns, 0 = none [world/look/town_warmth]
+##   air_motes_scale     share of the pollen motes and ice glints, 0 = off [world/vfx/air_motes]
+##   bird_flocks         the flocks over the valley [world/vfx/bird_flocks]
+##   cold_breath         breath clouds in the cold [world/vfx/cold_breath]
+##   snow_field_scale    share of the falling snow flakes [world/weather/snow_field]
+##   soundscape          the placed town sounds (fountain, chickens, sparrows, bell ...) [world/audio/soundscape]
+##   window_glow_near    the near window glow layer, a second draw of every window card [window_glow]
+const AMBIENCE_CONFIG := {
+	"town_warmth_pools": [40, 40, 40, 40, 40],
+	"town_warmth_smokes": [6, 6, 6, 6, 6],
+	"air_motes_scale": [1.0, 1.0, 1.0, 1.0, 1.0],
+	"bird_flocks": [true, true, true, true, true],
+	"cold_breath": [true, true, true, true, true],
+	"snow_field_scale": [1.0, 1.0, 1.0, 1.0, 1.0],
+	"soundscape": [true, true, true, true, true],
+	"window_glow_near": [true, true, true, true, true],
+}
+
 var preset: int = Preset.HIGH:
 	set(value):
 		var clamped := clampi(value, 0, PRESET_NAMES.size() - 1)
@@ -720,6 +744,7 @@ func get_config() -> Dictionary:
 	var config: Dictionary = CONFIG[preset].duplicate()
 	var tier := season_tier()
 	for key: String in SEASON_CONFIG: config[key] = SEASON_CONFIG[key][tier]
+	for key: String in AMBIENCE_CONFIG: config[key] = AMBIENCE_CONFIG[key][preset]
 	if preview_mode:config.merge(PREVIEW_OVERRIDES, true)
 	if preview_mode:config["shadows_enabled"] = preview_shadows_enabled
 	config.merge(user_overrides, true)
@@ -739,6 +764,7 @@ func get_value(key: String, fallback: Variant = null) -> Variant:
 	if preview_mode and key == "shadows_enabled":return preview_shadows_enabled
 	if preview_mode and PREVIEW_OVERRIDES.has(key):return PREVIEW_OVERRIDES[key]
 	if SEASON_CONFIG.has(key):return SEASON_CONFIG[key][season_tier()]
+	if AMBIENCE_CONFIG.has(key):return AMBIENCE_CONFIG[key][preset]
 	return CONFIG[preset].get(key, fallback)
 
 
@@ -794,7 +820,41 @@ func cycle() -> void:
 ##   older mid-range discrete (GTX 9xx/10xx/16xx, RX 4xx/5xx/Vega)        -> Medium
 ##   everything else (RTX, RX 6000+, Arc)                                 -> High
 ## `adapter_type` is a RenderingDevice.DeviceType; `physical_ram` and `vram_used` are bytes.
+## Memory cap on the first-launch pick (perf overhaul 2026-11-21): the card rule below can pick a
+## tier whose resident memory does not fit the machine (8 GB of memory with any RTX card got High,
+## 8.7 GB resident: it swaps, and a swapping game runs at a few FPS whatever the card). The pick
+## steps down until the tier's resident memory plus SYSTEM_HEADROOM_GIB fits the physical memory.
+## Only the default of a first launch (and the opt-in "check my computer" prompt): a saved choice is
+## never changed and any tier can still be picked by hand. Rollback: MEMORY_CAPPED_PICK = false.
+const MEMORY_CAPPED_PICK := true
+## Peak resident main memory per tier in GiB: measured 2026-11-21, windowed, bench world, 45 s
+## settle, lane memory's runs after that night's memory cuts (High 7589 MB, Low 5142 MB,
+## Very Low 4295 MB). Medium was not measured: the mean of Low and High. Update as memory changes.
+const RESIDENT_GIB := {"Very Low": 4.19, "Low": 5.02, "Medium": 6.2, "High": 7.41}
+## What the operating system, a browser and a voice chat keep beside the game.
+const SYSTEM_HEADROOM_GIB := 3.0
+## Why the last pick_default_quality chose what it chose (logged by pick_for_this_machine).
+static var last_pick_reason := ""
+
 static func pick_default_quality(adapter: String, adapter_type: int, physical_ram: int, vram_used: int) -> String:
+	var by_card := _pick_by_card(adapter, adapter_type, physical_ram, vram_used)
+	last_pick_reason = "card rule"
+	if not MEMORY_CAPPED_PICK or physical_ram <= 0 or by_card == PRESET_NAMES[Preset.VERY_LOW]: return by_card
+	const GIB := 1073741824.0
+	var ram_gib := float(physical_ram) / GIB
+	var pick := by_card
+	var at := PRESET_NAMES.find(pick)
+	while at > Preset.VERY_LOW and float(RESIDENT_GIB.get(PRESET_NAMES[at], 0.0)) + SYSTEM_HEADROOM_GIB > ram_gib:
+		at -= 1
+	pick = PRESET_NAMES[at]
+	if pick != by_card:
+		last_pick_reason = "card rule gave %s; %s needs %.1f GiB + %.1f GiB for the system, the machine has %.1f GiB" % [
+			by_card, by_card, float(RESIDENT_GIB.get(by_card, 0.0)), SYSTEM_HEADROOM_GIB, ram_gib]
+	return pick
+
+
+## The tier from the card alone (and the memory floors of integrated cards); see the rule above.
+static func _pick_by_card(adapter: String, adapter_type: int, physical_ram: int, vram_used: int) -> String:
 	# A standalone headset (Quest 3: 8 GB shared, the Low tier OOM-killed the app 2026-09-29)
 	# always starts on the potato tier; the player can raise it in Settings.
 	if OS.has_feature("android"): return "Very Low"
@@ -834,9 +894,14 @@ static func _matches(text: String, pattern: String) -> bool:
 ## only ever the player's own choice, on any GPU).
 static func pick_for_this_machine() -> String:
 	var memory: Dictionary = OS.get_memory_info()
-	var pick := pick_default_quality(RenderingServer.get_video_adapter_name(), RenderingServer.get_video_adapter_type(),
-		int(memory.get("physical", 0)), int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)))
-	return PRESET_NAMES[Preset.HIGH] if pick == PRESET_NAMES[Preset.ULTRA] else pick
+	var adapter := RenderingServer.get_video_adapter_name()
+	var physical := int(memory.get("physical", 0))
+	var vram := int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED))
+	var pick := pick_default_quality(adapter, RenderingServer.get_video_adapter_type(), physical, vram)
+	pick = PRESET_NAMES[Preset.HIGH] if pick == PRESET_NAMES[Preset.ULTRA] else pick
+	print("[quality] first-launch pick %s (%s): card %s, type %d, video memory in use %d MiB, physical memory %.1f GiB" % [
+		pick, last_pick_reason, adapter, RenderingServer.get_video_adapter_type(), vram >> 20, float(physical) / 1073741824.0])
+	return pick
 
 
 ## Viewport-level knobs. Everything Environment-shaped is applied by

@@ -18,6 +18,12 @@ const SHOP_ITEMS := preload("res://world/shop/shop_items.gd")
 const MARKET := preload("res://world/mechanics/market/market.gd")
 const PLAYER_FORM := preload("res://world/life/player_form.gd")
 const DESKTOP_OWNER := preload("res://player/desktop_action_owner.gd")
+const CONTROL_CARD := preload("res://world/ui/control_card.gd")
+## Desktop control hints show as the corner card (control_card.gd), the layout of the bridal carry
+## controls. false = the row under the crosshair and the one-line flight hint, as before 2026-11-20.
+const CORNER_CARD := true
+const FLIGHT_ROWS := [["Space", "hold", "Flap"], ["Space", "release", "Glide"], ["S", "", "Brake"],
+	[["LMB", "RMB"], "", "Bank"], ["F", "", "Land"]]
 const ICON_PATH := "res://world/ui/prompts/%s.png"
 ## Prompt icon edge in metres at one metre from the eye (VR); it scales with distance.
 const ICON_M := 0.06
@@ -46,6 +52,10 @@ var _hand_items: Dictionary = {}
 var _flight: RefCounted
 var _flight3d: Label3D
 var _flight2d: Label
+var _card: CanvasLayer
+var _card_on := false
+var _card_rows: Array = []
+var _flight_on := false
 ## Labs only (tools/interaction/hint_shots.gd): show hints without capturing the mouse.
 var force_available := false
 
@@ -124,6 +134,7 @@ func _physics_process(delta: float) -> void:
 	var started := Time.get_ticks_usec() if CPU_PROFILE.enabled else 0
 	_physics_step(delta)
 	_fade(delta)
+	_card_step(delta)
 	if started > 0: CPU_PROFILE.record("interaction_hints", started)
 
 func _physics_step(delta: float) -> void:
@@ -207,7 +218,19 @@ func _clear() -> void:
 	_hide_flight()
 	_wanted.clear(); _target = null; _hand_items.clear(); _hide_prompt()
 
+## Desktop: the prompt and the flight controls as sections of the shared corner card.
+func _card_step(delta: float) -> void:
+	if not CORNER_CARD: return
+	var prompt := _card_on and not xr
+	var flight := _flight_on and not xr
+	if not is_instance_valid(_card):
+		if not prompt and not flight: return
+		_card = CONTROL_CARD.shared(self)
+	_card.section("flight", flight, "FLYING", FLIGHT_ROWS, delta)
+	_card.section("prompt", prompt, "", _card_rows, delta)
+
 func _hide_flight() -> void:
+	_flight_on = false
 	if is_instance_valid(_flight3d): _flight3d.hide()
 	if is_instance_valid(_flight2d): _flight2d.hide()
 
@@ -216,7 +239,9 @@ func _show_flight() -> void:
 	var words := "Wing stamina %d/8" % int(floor(_flight.charge))
 	if _flight.landing: words += " · Landing"
 	elif _flight.active:
-		words += " · Hold A: flap · B: land" if xr else " · Space: flap · Release: glide · S: brake · LMB/RMB: bank · F: land"
+		# Desktop controls go to the corner card; the stamina line stays where it was.
+		if not xr and CORNER_CARD: _flight_on = true
+		else: words += " · Hold A: flap · B: land" if xr else " · Space: flap · Release: glide · S: brake · LMB/RMB: bank · F: land"
 	else: words += " · Recovering"
 	if xr:
 		if _flight3d.text != words: _flight3d.text = words
@@ -229,7 +254,7 @@ func _exit_tree() -> void:
 	if is_instance_valid(_flight3d): _flight3d.queue_free()
 
 func _hide_prompt() -> void:
-	hide(); _prompt2d.get_parent().visible = false; _text = ""
+	hide(); _prompt2d.get_parent().visible = false; _text = ""; _card_on = false
 
 ## Same selection inputs as the real adapters; never calls take/sit/toggle/open.
 func selection() -> Dictionary:
@@ -351,7 +376,11 @@ func _held_hint() -> Dictionary:
 	elif (item as Node).get_node_or_null("BookItem") != null: use = "Read"
 	elif SHOP_ITEMS.kind(id) in ["outfit", "equipment"] and not PLAYER_FORM.is_pony(PLAYER_FORM.active(get_tree())): use = "Put on / take off" if id == "equipment:wing-sandals" else "Wear"
 	elif inventory.has_method("held_usable") and inventory.held_usable(item):
-		use = "Drink" if FOOD_CATALOG.has(id) and bool(FOOD_CATALOG.definition(id).get("drink", false)) else "Eat"
+		# The click's own word (briefcase_item_use.gd use_verb): only eaten food says Eat (thread 43712559).
+		var item_use: Variant = inventory.get("_item_use")
+		if item_use is RefCounted and (item_use as RefCounted).has_method("use_verb"): use = str((item_use as RefCounted).call("use_verb", item))
+		elif FOOD_CATALOG.can_consume(id) or id in ["apple", "carrot"]: use = "Drink" if bool(FOOD_CATALOG.definition(id).get("drink", false)) else "Eat"
+		else: use = "Use"
 	var text := ("Click · %s   " % use if use != "" else "") + "Q · Throw"
 	if inventory.has_method("desktop_place_offer") and not inventory.desktop_place_offer().is_empty(): text += "   Shift+Q · Place"
 	return {"target": item, "text": text, "point": (item as Node3D).global_position, "outline": null}
@@ -500,12 +529,33 @@ static func parse(text: String) -> Array:
 				result.append_array(after)
 				continue
 		var lower := control.to_lower()
-		if icons.is_empty() and not control.is_empty(): words = part
+		var action := words
+		var mode := "hold" if lower.begins_with("hold ") else "tap" if lower.begins_with("tap ") else "release" if lower.begins_with("release ") else ""
+		if icons.is_empty() and not control.is_empty(): words = part; action = part; mode = ""
 		elif lower.begins_with("hold ") and lower.ends_with(", let go"): words = "Hold, let go: " + words
 		elif lower.begins_with("hold "): words = "Hold: " + words
 		elif lower.begins_with("release "): words = "Release: " + words
-		result.append({"icons": icons, "text": words})
+		result.append({"icons": icons, "text": words, "keys": key_names(icons), "mode": mode, "action": action})
 	return result
+
+## Corner card rows [keys, mode, action] (control_card.gd) for a hint text.
+static func rows(text: String) -> Array:
+	var result: Array = []
+	for segment: Dictionary in parse(text):
+		result.append([segment.get("keys", []), str(segment.get("mode", "")), str(segment.get("action", segment.text))])
+	return result
+
+## Words for key caps from icon names: "key_e" E, "cap:G" G, "mouse_left" LMB, "key_shift" Shift.
+static func key_names(icons: Array) -> Array:
+	var names: Array = []
+	for icon: String in icons:
+		var word := icon.get_slice(":", 1) if icon.begins_with("cap:") else icon.get_slice("_", 1) if icon.contains("_") else icon
+		match icon:
+			"mouse_left": word = "LMB"
+			"mouse_right": word = "RMB"
+			"key_wasd": word = "WASD"
+		names.append(word.to_upper() if word.length() == 1 else word.capitalize() if word == word.to_lower() else word)
+	return names
 
 ## Key caps ["cap:G"] for a keyboard control without an icon: "G", "Tap B", "Hold B key",
 ## "Hold G, let go", "F5", "Ctrl+G" (known keys keep their icons). [] when any part is words
@@ -590,6 +640,7 @@ func _build_prompt(text: String) -> void:
 		text_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_prompt2d.add_child(text_label)
 	_prompt3d.set_meta("width", x)
+	_card_rows = rows(text)
 
 ## A dark key cap with the key in white, sized and placed like the drawn key icons
 ## (prompts/key_*.png), for keys that have no icon. Returns the next 3D x.
@@ -624,7 +675,8 @@ func _add_key_cap(key: String, x: float) -> float:
 func _place() -> void:
 	if not xr:
 		_prompt3d.visible = false
-		_prompt2d.get_parent().visible = _prompt2d.get_child_count() > 0
+		_card_on = CORNER_CARD and not _card_rows.is_empty()
+		_prompt2d.get_parent().visible = not CORNER_CARD and _prompt2d.get_child_count() > 0
 		return
 	_prompt2d.get_parent().visible = false
 	_prompt3d.visible = true

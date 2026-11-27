@@ -1,4 +1,5 @@
 extends Node
+const SHUTDOWN_WAITS := preload("res://world/shutdown_waits.gd")
 const CAPTURE := preload("res://world/ai/ai_capture.gd")
 ## Renders a line to a WAV in user://tts/ and hands the path over:
 ## `synthesize(text, speaker_id, emotion, on_done)`, `on_done(path, error)`.
@@ -181,7 +182,7 @@ func _retry_probe(serial: int, result: int, code: int) -> void:
 	if debug: print("[voice] stream probe attempt %d: result %d, HTTP %d" % [_probe_attempts, result, code])
 	if _probe_attempts >= PROBE_ATTEMPTS or not is_inside_tree(): return
 	var delay := minf(pow(2.0, _probe_attempts - 1), 10.0)
-	await get_tree().create_timer(delay).timeout
+	if not await SHUTDOWN_WAITS.seconds(self, delay): return
 	if not is_inside_tree() or serial != _probe_serial or not _stream_url.is_empty(): return
 	_probe()
 

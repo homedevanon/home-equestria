@@ -83,10 +83,18 @@ func _ground(at: Vector3) -> float:
 	if is_instance_valid(WorldTerrain.instance) and WorldTerrain.instance.has_ground(at): return WorldTerrain.instance.height_at(at)
 	return at.y - 0.2
 
+## Leaf piles lie about now. The piles' node is in its group all year (leaf_piles.gd joins it when
+## made), so the group alone said "yes" in every season and a held rake worked at its fast pace.
+func _leaves_about() -> bool:
+	if not is_inside_tree(): return false
+	var piles: Node = get_tree().get_first_node_in_group(LEAF_GROUP)
+	return piles != null and (not piles.has_method("is_active") or bool(piles.call("is_active")))
+
+
 func _tick() -> void:
 	var ui := _ui()
 	var side := held_side(ui)
-	var leaves := is_inside_tree() and get_tree().has_group(LEAF_GROUP)
+	var leaves := _leaves_about()
 	var working := leaves and side != "" and (side != "desktop" or _desktop_on)
 	_timer.wait_time = ACTIVE if leaves and side != "" else IDLE
 	if not working: _last = Vector3.INF; return
@@ -117,7 +125,7 @@ func _scattered_near(point: Vector3) -> bool:
 # ------------------------------------------------------------------ station node (desktop hold-click)
 
 func station_hint(ui: Node, side: String) -> Dictionary:
-	if side != "desktop" or held_side(ui) != "desktop" or not get_tree().has_group(LEAF_GROUP): return {}
+	if side != "desktop" or held_side(ui) != "desktop" or not _leaves_about(): return {}
 	var head := head_point(ui, side)
 	if not head.is_finite() or not _scattered_near(head): return {}
 	return {"target": self, "point": head, "text": "Hold click and sweep · Rake the leaves into a pile", "outline": null}
@@ -127,7 +135,7 @@ func station_use(ui: Node, side: String, down: bool) -> bool:
 	if not down:
 		if _desktop_on: _desktop_on = false; return true
 		return false
-	if held_side(ui) != "desktop" or not get_tree().has_group(LEAF_GROUP): return false
+	if held_side(ui) != "desktop" or not _leaves_about(): return false
 	_desktop_on = true
 	_last = Vector3.INF
 	_timer.wait_time = ACTIVE

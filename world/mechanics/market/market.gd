@@ -318,7 +318,7 @@ func sell_offer(pony_id: String, item_id: String, price: int) -> Dictionary:
 			_block().offers[pony_id] = {"kind": "sell", "item": item_id, "price": price, "display": display, "key": str(row[0]), "until_ms": Time.get_ticks_msec() + OFFER_MS}
 			context._changed()
 			_refresh_card(display, str(row[0]), price)
-			return {"status": "completed", "reason": "Anon can take the %s from your stall for %d bits for the next two minutes" % [str(ITEM_CATALOG.definition(item_id).get("name", item_id)).to_lower(), price]}
+			return {"status": "completed", "reason": "For the next two minutes Anon can take the %s from your stall for %d bits" % [str(ITEM_CATALOG.definition(item_id).get("name", item_id)).to_lower(), price]}
 	return {"status": "failed", "reason": "That is not on your stall"}
 
 ## [buy: ITEM, BITS]: when Anon hands her that item within OFFER_MS she pays him `price`.
@@ -332,7 +332,7 @@ func buy_offer(pony_id: String, item_id: String, price: int) -> Dictionary:
 	var key := "b%d" % int(Time.get_unix_time_from_system() * 1000000.0)
 	_block().offers[pony_id] = {"kind": "buy", "item": item_id, "price": price, "display": "", "key": key, "until_ms": Time.get_ticks_msec() + OFFER_MS}
 	context._changed()
-	return {"status": "completed", "reason": "If Anon hands you the %s in the next two minutes, you pay him %d bits" % [str(ITEM_CATALOG.definition(item_id).get("name", item_id)).to_lower(), price]}
+	return {"status": "completed", "reason": "If Anon gives you the %s in the next two minutes, you pay him %d bits" % [str(ITEM_CATALOG.definition(item_id).get("name", item_id)).to_lower(), price]}
 
 ## Her live [buy] offer for that item, or {}.
 func buy_offer_for(pony_id: String, item_id: String) -> Dictionary:
@@ -371,7 +371,7 @@ func complete_buy(pony: Node3D, pony_id: String, item_id: String) -> bool:
 	_fact("bought", {"actor": pony_id, "target": "player", "item": item, "count": 1, "amount": price, "ref": "buy"})
 	var director: Variant = game.get("director") if is_instance_valid(game) else null
 	if is_instance_valid(director) and (director as Node).has_method("told_paid"):
-		(director as Node).call("told_paid", pony_id, "Anon handed you the %s you offered to buy; you paid him %d bits." % [label, price])
+		(director as Node).call("told_paid", pony_id, "Anon gave you the %s you offered to buy. You paid him %d bits." % [label, price])
 	return true
 
 func _end_offer(pony_id: String) -> void:
@@ -577,7 +577,7 @@ func ai_row(pony_id: String, actor: Node3D) -> Dictionary:
 		result.caps.append("sell"); result.keys["sell_items"] = items; result.keys["sell_prices"] = prices
 		var names: PackedStringArray = []
 		for id: String in items: names.append("%s %d" % [str(ITEM_CATALOG.definition(id).get("name", id)).to_lower(), int(prices[id])])
-		result.lines.append("- Your stall here (bits): %s ([sell: ITEM, BITS] your price for Anon)." % ", ".join(names))
+		result.lines.append("- Your stall here (bits): %s ([sell: ITEM, BITS] to price for Anon)." % ", ".join(names))
 	var purse := _ledger_purse(pony_id)
 	if purse > 0 and camera.global_position.distance_to(actor.global_position) <= BUY_RANGE + 1.0:
 		var holding := anon_holding()

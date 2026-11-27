@@ -856,6 +856,8 @@ func _start_new_game(_season: int) -> void:
 	var season := 1
 	if not _clock.is_empty(): _clock.day = start_day
 	else: TimeOfDay.day = start_day
+	# The player's day count starts here: the first day of the new world reads "Day 1".
+	TimeOfDay.first_day = start_day
 	var saves := _save_api()
 	if saves == null:
 		_load_failed("game"); return

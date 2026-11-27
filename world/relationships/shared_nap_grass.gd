@@ -3,6 +3,7 @@ extends "res://world/life/couch.gd"
 ## No furniture, collision replacement, saved occupancy or automatic relationship acceptance.
 const SEAT := preload("res://world/life/seat.gd")
 const WATER := preload("res://world/water/water_contact.gd")
+const BED_FIT := preload("res://world/life/bed_fit.gd")
 const GROUND_OWNER := "leisure:grass:"
 var player: Node3D
 var _ending := false
@@ -151,8 +152,14 @@ func pony_transform(seat: Node3D, actor: Node3D = null) -> Transform3D:
 	var at := seat.global_position + Vector3.UP * .01 + (_size_shift(actor) if seats.size() > 1 and seat == seats[1] else Vector3.ZERO)
 	if temporary and actor != null:
 		var mode := NAP_COMPANY.closeness(actor)
-		if mode == "shoulder": at = to_global(Vector3(.18, .01, -.22))
-		elif mode == "snuggle": at = to_global(Vector3(.18, .01, -.20))
+		# Player board #56: these spots were fixed canon offsets, so a big mare (or one beside a tall
+		# Anon) lay inside him. Her side moves out by however much wider the pair is than at canon
+		# (BESIDE_GROUND, as the spot beside him), and a bigger body lies back by its extra reach so her
+		# head still lands at his shoulder (bed_fit.gd). Both are zero at canon sizes.
+		if mode == "shoulder" or mode == "snuggle":
+			var wider := maxf(0.0, BESIDE_GROUND * 0.5 * (_anon_scale() + _body_scale(actor)) - BESIDE_GROUND)
+			at = to_global(Vector3(.18 + wider, .01, -.22 if mode == "shoulder" else -.20))
+			at -= BED_FIT.extra_head_reach(Transform3D(global_basis, at), actor)
 	return Transform3D(global_basis.orthonormalized(), at)
 func hop_clear(actor: CharacterBody3D, from: Vector3, to: Vector3) -> bool:
 	# Ground arrival uses the same small Seating boarding arc, guarded against world obstacles.

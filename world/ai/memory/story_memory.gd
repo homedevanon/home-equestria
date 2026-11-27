@@ -225,16 +225,16 @@ func _cue_words(cue: String, present: Array) -> Array:
 
 # --- Running summary --------------------------------------------------------------------------
 
-const SUMMARY_SYSTEM := """You keep the memory of a pony life game. The player is Anon. Update the private story summary of each pony listed under PONIES with the new events.
-Events are grouped under [Known to: ...]; each pony knows ONLY the events in groups that name her. Never put something into a pony's summary she did not witness or was not told. "You" in an event means each pony it is known to.
-Write one block per listed pony, in this exact layout, plain text, no JSON, no markdown, no preamble:
+const SUMMARY_SYSTEM := """You maintain the memory for a pony life game where the player is Anon. Update the private story summary for every pony under PONIES using the new events.
+Events are grouped under [Known to: ...], and a pony ONLY knows the groups that name her. Never give a pony memories she neither saw nor heard about. "You" in an event refers to the ponies who know about it.
+Output one plain-text block per listed pony in this exact layout, with no JSON, markdown, or intro:
 PONY pony_id
-Anon: how she sees him now, in a few words (if she has met him)
-Encounters: 1-3 sentences on what happened between them
-Notable moments: short list separated by semicolons (promises, secrets, firsts, fights, gifts)
-Others: who else matters to her lately and why, one short sentence
-Future hooks: what she wants or plans next, one short sentence
-Keep each pony under 90 words. Merge her previous summary with the new events; keep what still matters, drop trivia, keep exact names, places and real promises. Drop bets, dares and running jokes once settled, stale for days or repeating without progress; never let one topic dominate."""
+Anon: a few words on how she sees him now (if they have met)
+Encounters: 1-3 sentences on what has happened between them
+Notable moments: a brief list separated by semicolons (promises, secrets, firsts, fights, gifts)
+Others: one short sentence on who else matters to her lately and why
+Future hooks: one short sentence on what she wants or plans next
+Stay under 90 words per pony. Fold the new events into her old summary, keeping what still matters along with exact names, places, and real promises, while cutting trivia. Clear out bets, dares, and running jokes once they are settled, stale for days, or stuck in a loop, and don't let any single topic take over."""
 
 func _covered() -> int:
 	return int(store.summary("through").through)
@@ -469,12 +469,12 @@ static func _block_finished(body: Array) -> bool:
 ## NEXT once said "make it happen in this reply or the next" and weak models invented off-screen
 ## events; DONE closes threads (player thread report 2026-10-29). ELSEWHERE picks from the TOWN NOW
 ## line (town_note(), town_talk.gd) instead of inventing town events (thread report 2026-11-03).
-const BRAIN_INSTRUCTION := """DIRECTOR NOTES (required this turn): start your reply with a private <brain>...</brain> block, plain text, at most 60 words, nobody hears it:
-WANT pony_id: what this pony wants right now, apart from Anon, never something Anon turned down (one line per pony present)
-ELSEWHERE: one true thing a pony under TOWN NOW is doing, as town talk in your own words; skip it when none is listed
-NEXT: one likely thing that could happen soon, grounded in who and what is here now; never an event about a pony or thing not present
-DONE: what is settled, dropped, turned down by Anon or no longer matters (optional)
-Setbacks must be fair: foreshadowed or the result of earlier facts. After </brain>, write the normal reply."""
+const BRAIN_INSTRUCTION := """DIRECTOR NOTES (required this turn): start with a private <brain>...</brain> block in plain text, 60 words max, that nobody hears:
+WANT pony_id: one line per pony here on what she wants right now outside of Anon, excluding anything he already turned down.
+ELSEWHERE: one true thing a pony under TOWN NOW is doing, phrased in your own words like town talk. Skip if none are listed.
+NEXT: one likely thing to happen soon based on who and what is here now. Never include an event about an absent pony or object.
+DONE: anything settled, dropped, turned down by Anon, or that no longer matters (optional).
+Any setback must be fair, either foreshadowed or caused by earlier facts. Write your normal reply after </brain>."""
 
 ## Anon turning down what she asked for settles it at once: her wants that share two or more words with
 ## her last line plus his answer close. A want otherwise stays ON YOUR MIND for a day unless a notes
@@ -597,7 +597,7 @@ func take_feelings(text: String, speaker: String) -> String:
 			context.set_relationship(speaker, other, float(r.familiarity) + 0.02, float(r.trust) + amount * 0.03, float(r.preference) + amount * 0.06)
 	return feel.sub(text, "", true).strip_edges()
 
-const FEEL_INSTRUCTION := "If this exchange changed how a speaker feels about ANOTHER PONY present (not Anon), add [feel: pony_id +1] or [feel: pony_id -1] to that speaker's line (+2/-2 for big moments). Most lines need none."
+const FEEL_INSTRUCTION := "If this exchange changes how a speaker feels about ANOTHER PONY here (excluding Anon), add [feel: pony_id +1] or [feel: pony_id -1] to her line, or +2/-2 for big moments. Most lines won't need one."
 
 func record_usage(kind: String, usage: Dictionary) -> void:
 	if not is_open() or usage.is_empty(): return

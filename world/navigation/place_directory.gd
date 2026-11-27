@@ -13,6 +13,18 @@ const MARKET_STALL := "Town/Market/kiosk_01_02"
 ## Apples live by, so AJ, Apple Bloom and Twilight walked the opposite way; player report
 ## 2026-10-28). "alt" adds the words ponies use for it ("the farm", "the orchard").
 const REGION_HOMESTEADS := {"sweet_apple_acres": {"landmark": "landmark:appleacres_barned_01", "alt": "farm orchard apple farm"}}
+## Scenery that shares one name gets its own (thread 43716663, 2026-11-16: Applejack's "the windmill"
+## was the Apples' one, both were labelled "Windmill", and every walk went to Carrot Top's). Keyed by
+## scenery id; the place id ("landmark:windmill_01") stays, so saves, day tables and meetings keep it.
+## "alt" adds words a pony may use for it; never "farm" (that is Sweet Apple Acres itself, REGION_HOMESTEADS).
+## Rollback: QUALIFY_SHARED_NAMES = false.
+const LANDMARK_NAMES := {
+	"windmill_01": {"label": "Carrot Top's windmill", "alt": "carrot windmill"},
+	"windmill_02": {"label": "Sweet Apple Acres windmill", "alt": "apples applejack windmill"}}
+const QUALIFY_SHARED_NAMES := true
+## Two landmarks still sharing a name (a mod's objects, say) farther apart than this are told apart by
+## the nearest uniquely named place ("TV by Fluttershy's cottage"); closer ones are one place.
+const SAME_PLACE_M := 25.0
 static var _cache: Array = []
 static var _stamp := -INF
 
@@ -55,9 +67,14 @@ static func entries(tree: SceneTree) -> Array:
 		# A walk-in building (the Day Spa) names where to meet with a NavigationAnchor child.
 		var anchor := node.get_node_or_null("NavigationAnchor") as Node3D
 		var at: Vector3 = anchor.global_position if anchor != null and anchor.is_inside_tree() else (node as Node3D).global_position
-		out.append({"id": "landmark:" + id, "label": label, "kind": "landmark", "position": at, "node": node})
+		var place := {"id": "landmark:" + id, "label": label, "kind": "landmark", "position": at, "node": node}
+		var own: Dictionary = LANDMARK_NAMES.get(id, {}) if QUALIFY_SHARED_NAMES else {}
+		if not own.is_empty():
+			place.label = str(own.label); place.alt = str(own.alt); place.shared_label = label
+		out.append(place)
 	# Generic repeated labels (benches, lamps, fair tents) are not destinations.
-	out = out.filter(func(e): return e.kind != "landmark" or int(seen.get(e.label, 0)) <= 2)
+	out = out.filter(func(e): return e.kind != "landmark" or int(seen.get(e.get("shared_label", e.label), 0)) <= 2)
+	if QUALIFY_SHARED_NAMES: _qualify_shared(out)
 	for town: Node in tree.get_nodes_in_group("town_roots"):
 		for key in TOWN_BUILDINGS:
 			var building := town.get_node_or_null(key) as Node3D
@@ -100,6 +117,38 @@ static func entries(tree: SceneTree) -> Array:
 	_cache = out.filter(func(e): return _live_entry(e, tree))
 	return _cache
 
+## Landmarks that still share a name and stand apart get the nearest uniquely named place in their
+## label ("Windmill by Carrot's house"), so each name the AI may say is one place. Runs on the 10 s
+## rebuild only. Places within SAME_PLACE_M of each other (a landmark and its own building) stay one.
+static func _qualify_shared(out: Array) -> void:
+	var groups := {}
+	var keys := {}
+	for e: Dictionary in out:
+		var key := "".join(name_words(str(e.label)))
+		keys[key] = int(keys.get(key, 0)) + 1
+		if e.kind == "landmark": groups.get_or_add(key, []).append(e)
+	for key: String in groups:
+		var group: Array = groups[key]
+		if group.size() < 2: continue
+		var apart := false
+		for e: Dictionary in group:
+			if Vector3(e.position).distance_to(Vector3(group[0].position)) > SAME_PLACE_M: apart = true
+		if not apart: continue
+		var used := {}
+		for e: Dictionary in group:
+			var near := ""
+			var best := INF
+			for other: Dictionary in out:
+				if other in group or other.kind not in ["landmark", HOUSE_KIND] or int(keys.get("".join(name_words(str(other.label))), 0)) != 1: continue
+				var d := Vector3(other.position).distance_to(Vector3(e.position))
+				if d < best: best = d; near = str(other.label)
+			e.shared_label = e.get("shared_label", e.label)
+			var named := "%s by %s" % [e.label, near] if not near.is_empty() else ""
+			# Both nearest the same neighbour: numbered instead, so the names still differ.
+			if named.is_empty() or used.has(named): named = "%s %d" % [e.label, group.find(e) + 1]
+			used[named] = true
+			e.label = named
+
 static func find(tree: SceneTree, id: String) -> Dictionary:
 	for e: Dictionary in entries(tree):
 		if e.id == id: return e
@@ -121,7 +170,11 @@ static func name_words(text: String) -> PackedStringArray:
 ## while she still said "let's go"). `labels` maps id -> label text. A word few places share
 ## ("balloon") outweighs a common one ("ponyville"); at least half the name's words must match
 ## unless the whole name matches run together ("sugar cube corner").
-static func match_name(raw: String, ids: Array, labels: Dictionary) -> String:
+## `refuse_ambiguous` (model tags, pony_action_schema.gd validate): a name that fits two differently
+## named landmarks equally ("windmill" for Carrot Top's and Sweet Apple Acres) is "" instead of the
+## first one listed, so she is asked which one she means. Ties among regions and houses keep the first
+## listed as before ("the farm" stays Sweet Apple Acres, not far-off Rock Farm). Other callers keep the first.
+static func match_name(raw: String, ids: Array, labels: Dictionary, refuse_ambiguous := false) -> String:
 	var wanted := raw.strip_edges()
 	if wanted in ids: return wanted
 	var lowered := wanted.to_lower().replace(" ", "_")
@@ -146,6 +199,7 @@ static func match_name(raw: String, ids: Array, labels: Dictionary) -> String:
 			shared[word] = int(shared.get(word, 0)) + 1
 	var best := ""
 	var best_score := 0.0
+	var rival := ""
 	for key: String in bags:
 		var bag: PackedStringArray = bags[key]
 		var score := 0.0
@@ -161,8 +215,29 @@ static func match_name(raw: String, ids: Array, labels: Dictionary) -> String:
 		if score <= 0.0: continue
 		# Ties go to a landmark over a house named after its residents.
 		if not key.begins_with(HOUSE_KIND + ":"): score += .01
-		if score > best_score: best = key; best_score = score
+		if score > best_score + .001: best = key; best_score = score; rival = ""
+		elif absf(score - best_score) <= .001 and key.begins_with("landmark:") and not _same_name(labels, key, best): rival = key
+	if refuse_ambiguous and not rival.is_empty() and best.begins_with("landmark:"): return ""
 	return best
+
+## Two ids named alike: one label is the other's start (the Town Hall's building and its interior,
+## "Ponyville Town Hall" and "Ponyville Town Hall" + its alt words; coordinator _place_labels joins
+## label and alt into one string).
+static func _same_name(labels: Dictionary, a: String, b: String) -> bool:
+	var one := "".join(name_words(str(labels.get(a, a))))
+	var two := "".join(name_words(str(labels.get(b, b))))
+	return one.begins_with(two) or two.begins_with(one)
+
+## The places a name fits equally well, when it fits more than one differently named place (for the
+## "which one?" repair); empty when it is one place or none.
+static func ambiguous_names(raw: String, ids: Array, labels: Dictionary) -> PackedStringArray:
+	var out := PackedStringArray()
+	if not match_name(raw, ids, labels, true).is_empty() or match_name(raw, ids, labels).is_empty(): return out
+	for id: Variant in ids:
+		var key := str(id)
+		var alone := {key: labels.get(key, "")}
+		if not match_name(raw, [key], alone).is_empty(): out.append(key)
+	return out
 
 ## A standable point for the place. Houses go inside (house travel handles the door);
 ## landmarks and regions give their position, height from the terrain when unknown.

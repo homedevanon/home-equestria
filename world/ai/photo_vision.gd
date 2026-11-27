@@ -12,7 +12,7 @@ const MODES := ["off", "same", "separate"]
 const MAX_SIDE := 768
 const SHOWN_NOTE := "(Anon is holding up a photo he took so you can see it.)"
 const DESCRIBED_NOTE := "(Anon is holding up a photo he took so you can see it. The photo shows: %s)"
-const DESCRIBE_SYSTEM := "You describe photos for someone who cannot see them. In two or three plain sentences say who and what is in the picture, where it seems to be, and the main colours. Characters are ponies from My Little Pony: Friendship is Magic; name one only when you are sure who she is. No preamble."
+const DESCRIBE_SYSTEM := "You describe photos for someone who can't see them. In two or three plain sentences, say who and what is in the picture, where it seems to be, and the main colors. The characters are ponies from My Little Pony: Friendship is Magic. Only name one if you're sure who she is. Skip any intro."
 const DESCRIBE_ASK := "Describe this photo."
 ## Paintings and drawings from the easel (M-AI-13) are shown the same way; with_note() then says he
 ## painted it instead of took it, so no request is added and the photo wording stays as it was.

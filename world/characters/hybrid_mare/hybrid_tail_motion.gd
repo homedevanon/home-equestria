@@ -1,31 +1,38 @@
-extends SkeletonModifier3D
+extends PonyTailMotionNative
 ## Pinned native tail with damped joints and contact constraints.
+##
+## Native step (2026-11-21, lane tail of the native pony step; captures/perf_2026-11-21/port_tail.md):
+## the per-step body below also exists in PonyTailMotionNative.native_step()
+## (native/pony_solver/src/tail_motion_native.cpp), line for line. The hot state is the native base's
+## properties, under the names these variables had: pony, springs, aside_goal, _previous_velocity,
+## _history, _skipped_delta, _read_bones, _to, _from_rotation, _to_rotation, _steps, _ray_floor,
+## _plane_floor, _aside, _settled, _quiet, _recheck, _settle_mount, _settle_reach, _last_mount,
+## _last_angles, _settled_writes, _wake_now, _pose_dirty, _solo, _solo_children. While the native
+## step runs, the springs' state is held natively and reading `springs` writes it back first, so
+## every caller of `tail_motion.springs` sees the current tail. native_step() returns false (and
+## _script_step() below runs) for springs it does not mirror (a replaced script, the GDScript-only
+## solver). Bit-identical to the script in the parity fixtures; about 3.3 us instead of 10 to 11 us per
+## NEAR pony per step (rig_batch_costs.gd). Rollback: NATIVE_STEP = false (or `--tail-native=off`;
+## `--tail-native=on` forces it for one run). With it off the script body runs on the native
+## properties, about 5 us per pony slower than before the port; the full rollback is the script as it
+## was, archive/native-pony-step-tail-2026-11-21/hybrid_tail_motion.gd.before.
+## Constants used by the native step are copied there; change both.
+const NATIVE_STEP := true
+static var _native_on: bool = _native_wanted()
 const SPRINGS := preload("res://world/characters/hybrid_mare/hybrid_tail_physics.gd")
-var pony: Node3D
-var springs: RefCounted
-var _previous_velocity := Vector3.ZERO
-var _history := false
-var _skipped_delta := 0.0
 var _pose:Array[Transform3D]=[]
-var _read_bones:=PackedInt32Array()
 var _body_ends:=PackedInt32Array()
 ## Tail bone poses of the last two integrations (the springs only rotate the joints; offsets and
-## scales stay at rest) and the steps since the latest.
-var _to: Array[Transform3D] = []
-var _from_rotation: Array[Quaternion] = []
-var _to_rotation: Array[Quaternion] = []
-var _steps := 0
+## scales stay at rest) and the steps since the latest: _to, _from_rotation, _to_rotation, _steps.
 ## Tail floor contacts: real rays on the solver; in the clip tiers the plane her own floor rays
-## measured (six rays every 50 ms per pony were two thirds of a clip pony's rays).
-var _ray_floor := Callable()
-var _plane_floor := Callable()
-## Swing the whole tail aside about her up axis (radians; + puts the tip toward her right), eased.
+## measured (six rays every 50 ms per pony were two thirds of a clip pony's rays): _ray_floor,
+## _plane_floor.
+## Swing the whole tail aside about her up axis (radians; + puts the tip toward her right), eased:
+## aside_goal, eased by _aside.
 ## The spa table sets it so the player's hands reach the back hoof the tail lay over (dev
 ## 2026-10-29: "her tail is in the way, it should move out of the way"). Applied after the springs,
 ## so their own angles and floor contacts are unchanged; clamped inside mTail1's bend limit.
-var aside_goal := 0.0
 const ASIDE_SPEED := 1.2
-var _aside := 0.0
 
 ## Settled tail (0.1.0 perf pass). Standing still with the springs at rest, an integration and
 ## contact pass only rebuild the pose the tail already holds (about 28 us each, 20-60 times a
@@ -43,16 +50,9 @@ const SETTLE_TURN := 0.008
 const QUIET_SPEED := 0.02
 const QUIET_SPIN := 0.02
 const QUIET_STEP := 0.0005
-var _settled := false
-var _quiet := 0.0
-var _recheck := 0.0
-var _settle_mount := Transform3D.IDENTITY
-var _settle_reach := 0.0
-var _last_mount := Transform3D.IDENTITY
-var _last_angles := PackedVector3Array()
-## Settled writes since settling: the first rewrites the held pose over the last in-between one.
-var _settled_writes := 0
-var _wake_now := false
+## State: _settled, _quiet, _recheck, _settle_mount, _settle_reach, _last_mount, _last_angles, and
+## _settled_writes (settled writes since settling: the first rewrites the held pose over the last
+## in-between one), _wake_now.
 ## Skipped hair pass (0.1.0 perf pass). With the tail settled and nothing else posing the hair rig
 ## (no hair-link write, no other pose write: Skeleton3D's pose_updated), rewriting the held pose
 ## only re-skinned the same mane and tail every tick. Writing nothing lets Skeleton3D end the pass
@@ -60,9 +60,13 @@ var _wake_now := false
 ## modifier on it, an aside swing, or petting hands (pony_touch_body reads the rig directly when no
 ## skin pass ran) writes as before. Rollback: HAIR_PASS_SKIP = false.
 const HAIR_PASS_SKIP := true
-var _pose_dirty := true
-var _solo := false
-var _solo_children := -1
+## State: _pose_dirty, _solo, _solo_children.
+
+
+static func _native_wanted() -> bool:
+	var args := OS.get_cmdline_user_args()
+	if "--tail-native=off" in args: return false
+	return (NATIVE_STEP or "--tail-native=on" in args) and TAIL_SETTLE and HAIR_PASS_SKIP
 
 func bind(owner_pony: Node3D) -> void:
 	pony = owner_pony
@@ -84,17 +88,19 @@ func bind(owner_pony: Node3D) -> void:
 	_ray_floor = springs.floor_probe
 	if pony.has_method("clip_floor_hit"):
 		_plane_floor = Callable(pony, "clip_floor_hit")
-	_pose.clear();_read_bones.clear();_body_ends.clear()
+	_pose.clear();_body_ends.clear()
+	var read_bones:=PackedInt32Array()
 	var sk:=get_skeleton()
 	for i in sk.get_bone_count():_pose.append(sk.get_bone_rest(i))
 	# Only the mount and its ancestors: apply_pose() rewrites every tail joint from its rest.
 	for tip in springs.bones:
 		var bone:int=sk.get_bone_parent(tip)
 		while bone>=0:
-			if bone not in _read_bones and bone not in springs.bones:_read_bones.append(bone)
+			if bone not in read_bones and bone not in springs.bones:read_bones.append(bone)
 			bone=sk.get_bone_parent(bone)
+	_read_bones=read_bones
 	for name in ["pony_hips","pony_spine3"]:_body_ends.append(pony.skeleton.find_bone(name))
-	_settled = false; _quiet = 0.0; _settled_writes = 0; _last_angles.clear(); _wake_now = false
+	_settled = false; _quiet = 0.0; _settled_writes = 0; _last_angles = PackedVector3Array(); _wake_now = false
 	_pose_dirty = true; _solo_children = -1
 	if not sk.pose_updated.is_connected(_on_pose_updated): sk.pose_updated.connect(_on_pose_updated)
 
@@ -118,6 +124,12 @@ func _on_pose_updated() -> void:
 const PROFILE := preload("res://tools/crowd_cpu_profile.gd")
 
 func _process_modification_with_delta(delta: float) -> void:
+	if _native_on and not PROFILE.enabled and native_step(delta): return
+	_script_step(delta)
+
+
+## The step as it was, on the native base's properties: the fallback and rollback path.
+func _script_step(delta: float) -> void:
 	if springs == null or not is_instance_valid(pony) or not pony.is_inside_tree(): return
 	var dirty := _pose_dirty
 	_pose_dirty = false

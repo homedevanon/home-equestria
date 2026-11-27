@@ -93,12 +93,17 @@ func set_fall(amount: float, wind: float, push: Vector3, hidden: bool) -> void:
 	var line := (Vector3.DOWN + Vector3(push.x, 0.0, push.z) * SLANT).normalized()
 	_velocity = line * lerpf(SPEED.x, SPEED.y, wind)
 	var shown := clampf(amount * lerpf(DENSITY.x, DENSITY.y, wind), 0.0, 1.0)
+	# Quality key snow_field_scale (autoload/quality.gd AMBIENCE_CONFIG, 1 on every tier today):
+	# the share of the flakes drawn.
+	var quality: Node = get_node_or_null("/root/Quality")
+	if quality != null: shown *= clampf(float(quality.call("get_value", "snow_field_scale", 1.0)), 0.0, 1.0)
 	for layer: Array in _layers:
 		var instance := layer[0] as MultiMeshInstance3D
 		var material := layer[1] as ShaderMaterial
 		var row: Dictionary = layer[2]
-		instance.visible = on and not hidden
-		instance.multimesh.visible_instance_count = int(round(shown * float(row.flakes)))
+		var count := int(round(shown * float(row.flakes)))
+		instance.visible = on and not hidden and count > 0
+		instance.multimesh.visible_instance_count = count
 		material.set_shader_parameter("fall_direction", line)
 		material.set_shader_parameter("grain", lerpf(GRAIN.x, GRAIN.y, wind))
 		material.set_shader_parameter("streak", lerpf(STREAK.x, STREAK.y, wind) * float(row.streak))

@@ -18,16 +18,16 @@ var lingering := false
 ## answered after NUDGE_AFTER seconds she tries once more, then says a puzzled goodbye.
 const NUDGE_AFTER := 7.0
 const GIVE_UP_AFTER := 12.0
-const NUDGE := "[Observed situation, not player speech] You walked up to Anon and said something a few seconds ago, but he has not answered or reacted at all. Check whether he is listening, in character: a short 'Hello?', his name, a wave, or a playful poke at him ignoring you. One short sentence; no action tags needed."
-const GIVE_UP := "Anon has not answered you at all, even after you tried again. Say a short, slightly puzzled or teasing goodbye in character and head off."
+const NUDGE := "[Observed situation, not player speech] A few seconds ago you walked up to Anon and spoke to him, without getting any reaction. In one short sentence, check if he is listening in character. Try a quick 'Hello?', his name, a wave, or a playful remark about being ignored. You don't need action tags."
+const GIVE_UP := "Anon still hasn't answered, even after you tried again. Say a brief, slightly puzzled or teasing goodbye in character and head off."
 ## Knocking (player bug board #31, conversation_director.answer_knock): a pony who is home walks
 ## out to the player at her door and greets him, no dice and regardless of the approach settings.
-const KNOCK := "[Observed situation, not player speech] Anon knocked on your front door and you came out to answer it. He is standing at your door now. Greet him in character and ask what brings him by. One or two short sentences; no action tags needed."
+const KNOCK := "[Observed situation, not player speech] Anon knocked on your front door, and you just came out to answer it. He's standing there now. Say hello in character and ask what brings him by, in a short sentence or two without action tags."
 var knocked := false
 ## Sometimes she walks up with a favour to ask (world/mechanics/asks/asks.gd): only when she has no
 ## open favour and may ask one now, so her [ask] capability is really there when she arrives.
 const FAVOUR_CHANCE := 0.25
-const FAVOUR := "[Observed situation, not player speech] You noticed Anon nearby and walked over because you would like to ask him a small favour, something you really need today. You have now reached him. Greet him and ask it in your own words, in character, and add [ask: WANT, REWARD]. One or two short sentences."
+const FAVOUR := "[Observed situation, not player speech] You spotted Anon nearby and walked over to ask him a small favour you really need today. Now that you are with him, say hello and ask in your own words, in character. Include [ask: WANT, REWARD]. Keep it to one or two short sentences."
 var knock_goal := Vector3.INF
 var nudged := false
 var said_at := 0.0   # director clock when her last line finished

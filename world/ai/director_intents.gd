@@ -4,6 +4,8 @@ extends RefCounted
 ## from elsewhere, so callers did not change. `host` is the owning conversation_director node; shared state stays there.
 
 const GROUP := preload("res://world/ai/pony_group_conversation.gd")
+const BOND := preload("res://world/relationships/bond_rules.gd")
+const BOND_PROMPT := preload("res://world/relationships/bond_prompt.gd")
 
 var host: Node
 
@@ -27,15 +29,18 @@ func queue_generated_intent(id: String, intent: String, key: String, valid: Call
 
 ## Compatibility for old callers: their text is context for generation, never spoken directly.
 func queue_authored_line(id: String, text: String, key: String, valid: Callable, finished := Callable()) -> bool:
-	return queue_generated_intent(id, "Explain the following situation in your own words; this is context, never a verbatim script: " + text, key, valid, finished)
+	return queue_generated_intent(id, "Put this situation into your own words. Treat it as background and never repeat it word for word: " + text, key, valid, finished)
 
 
 func request_relationship_intent(id: String, intent: Dictionary, valid: Callable, finished := Callable()) -> bool:
 	var kind := str(intent.get("kind",""))
 	var purpose := ""
-	if kind == "after_kiss": purpose = "You have just enjoyed an affectionate kiss. If still wanted, invite another kiss naturally in your own words. If you choose another kiss, include [kiss_player]; if you decline or only speak, omit it."
-	elif kind == "relationship_offer": purpose = "Consider making one genuine relationship offer now. Requested offer kind: %s. Activity if relevant: %s. Use the relationship_offer action tag for the offer you actually make; do not claim an existing offer or accepted relationship." % [intent.get("offer_kind",""),intent.get("activity","")]
+	if kind == "after_kiss": purpose = "You just shared a sweet kiss. If you want another, ask for one in your own words and include [kiss_player]. Leave the tag out if you pass or just talk."
+	elif kind == "relationship_offer": purpose = "Consider making a genuine relationship offer right now. Requested kind: %s. Activity, if relevant: %s. Tag the offer you make with the relationship_offer action tag, and don't claim an offer or relationship already exists." % [intent.get("offer_kind",""),intent.get("activity","")]
+	# Relationship overhaul 2026-11-21 (design 5.3): the turn the game gives her to speak up.
+	elif kind == "bond_ask" and BOND.DYNAMIC: purpose = BOND_PROMPT.intent_text(intent)
 	else: return false
+	if purpose.is_empty(): return false
 	return queue_generated_intent(id,purpose,"relationship-intent:%s:%s" % [id,JSON.stringify(intent)],valid,finished)
 
 
@@ -88,7 +93,7 @@ func _tick_authored() -> void:
 		host._prefetch_index = -1; host._prefetch_result = {}; host._group_index = -1
 		host.state = "thinking"
 		var messages: Array = host.characters[id].history.duplicate(true)
-		messages.append({"role":"user","content":"[Current game purpose, not player speech or a quotation] " + str(row.intent) + " Generate fresh in-character dialogue for only its unfinished part, using the witnessed sentences in the system context. Do not restart or copy context as a script. If unable to speak, this purpose remains pending."})
+		messages.append({"role":"user","content":"[Current game purpose, not player speech or a quotation] " + str(row.intent) + " Write fresh in-character dialogue for the unfinished part only, picking up from the witnessed lines in the system context. Do not start over or read the context like a script. If you cannot speak, this purpose stays pending."})
 		host._next_purpose = "story_purpose"
 		if not host._complete_solo(host.system_prompt(id),messages,host._on_reply.bind(host._turn_id)): host._finish_silence()
 		return
@@ -101,7 +106,7 @@ func _generated_intent_frame(id: String) -> String:
 		var row: Dictionary = host._authored_lines[key]
 		if str(row.id) != id or bool(row.get("delivered", false)) or not _authored_valid(row): continue
 		var frame := "PENDING GENERATION PURPOSE (game facts and intention, never quoted dialogue): " + str(row.intent)
-		frame += " Answer the player's current interruption naturally, then continue the unfinished purpose. Do not restart the introduction or repeat facts they already heard. A reply to a question alone is not proof the purpose was completed."
+		frame += " Answer the player's interruption naturally, then get back to what you were here to do. Skip the intro and any facts they already heard. Just answering a question does not count as finishing your purpose."
 		var heard: Array = row.get("heard", [])
 		if not heard.is_empty(): frame += " Sentences from this purpose that actually finished in the listener's presence (do not recite again): " + JSON.stringify(heard)
 		frames.append(frame)

@@ -1,6 +1,7 @@
 extends RefCounted
 ## A bounded exchange proposal. No generated beat is history until it is heard.
 const ACTION_SCHEMA := preload("res://world/ai/pony_action_schema.gd")
+const BOND := preload("res://world/relationships/bond_rules.gd")
 const MAX_MEMBERS := 6
 const MAX_BEATS := 4
 const MAX_AMBIENT_BEATS := 12
@@ -115,6 +116,7 @@ func decode_lines(text: String, turn: int, contexts: Dictionary) -> Dictionary:
 	var quiet_members: Array[String] = []
 	for raw_line in text.split("\n", false):
 		var line := raw_line.strip_edges().trim_prefix("-").strip_edges()
+		if BOND.DYNAMIC: line = tags_after_name(line)
 		var colon := line.find(":")
 		if colon <= 0: continue
 		var speaker := line.left(colon).strip_edges().to_lower().replace(" ", "_").trim_prefix("**").trim_suffix("**")
@@ -150,6 +152,25 @@ func decode_lines(text: String, turn: int, contexts: Dictionary) -> Dictionary:
 	if checked.is_empty() and control_only: return {"error": "Exchange contains only control syntax and no spoken answer"}
 	if ambient and not checked.is_empty() and checked[0].speaker_id != members[0]: return {"error": "The selected initiator must speak first"}
 	return {"beats": checked}
+
+## "[felt: pleased] applejack: Howdy." becomes "applejack: [felt: pleased] Howdy." (relationship
+## overhaul 2026-11-21, design 4.1): the first colon of a line that begins with a tag is the tag's own,
+## so the line would be lost whole. Tag syntax only: the line's words are not read. A line whose
+## leading tags are not followed by a participant's name is returned unchanged.
+func tags_after_name(line: String) -> String:
+	if not line.begins_with("["): return line
+	var lead := ""
+	var rest := line
+	while rest.begins_with("["):
+		var close := rest.find("]")
+		if close < 0: return line
+		lead += rest.left(close + 1) + " "
+		rest = rest.substr(close + 1).strip_edges()
+	var colon := rest.find(":")
+	if colon <= 0: return line
+	var speaker := rest.left(colon).strip_edges().to_lower().replace(" ", "_").trim_prefix("**").trim_suffix("**")
+	if speaker not in members: return line
+	return rest.left(colon + 1) + " " + lead + rest.substr(colon + 1).strip_edges()
 
 func shared_heard(characters: Dictionary) -> Array:
 	if members.is_empty(): return []

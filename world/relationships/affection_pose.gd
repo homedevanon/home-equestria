@@ -57,6 +57,9 @@ var _head_up := Vector3.UP
 var _motion := 0.0
 var _sway: Dictionary = {}
 var _rng := RandomNumberGenerator.new()
+## Physics frame whose pass the native body batch took over (rig_batch.gd); this script's pass
+## returns at once in that frame. 0: never.
+var rig_batch_step := 0
 ## Foreleg bones per side: upperArm, lowerArm, carpus (wrist), hoof tip.
 var _legs: Array[Dictionary] = []
 ## A supported rear raises the torso about the hips; it never translates her body toward his
@@ -71,6 +74,40 @@ var _rear_plants: Array[Vector3] = []
 var _hoof_goals: Array[Vector3] = [Vector3.INF, Vector3.INF]
 var _hips := -1
 var _hind: Array[Dictionary] = []
+
+## Kneeling (dev 2026-11-25): his mouth is lower than her neck reaches (he crouches, sits or
+## lies down). Her body tips chest-down about her hind hips and sinks, her hind hooves stay
+## where they stood, and her forelegs fold under her until she rests on her knees. 0: standing,
+## 1: as low as she goes. The opposite of the supported rear, and never together with it.
+## Rotations only, every joint inside its limit (_turn); nothing stretches.
+const KNEEL_PITCH := deg_to_rad(17.0)
+## Metres her whole body sinks at a full kneel (times her size); her forelegs' own folded
+## height stops it sooner.
+const KNEEL_SINK := .15
+## How far below her resting lips his mouth may be before her body joins her neck (metres).
+const KNEEL_NECK := .04
+## Her knee joint's centre stays this far above the ground (the skin round it), metres.
+const KNEEL_KNEE := .03
+## The fold her foreleg ends in: forearm a little behind upright, cannon folded back under it.
+const KNEEL_FOREARM := deg_to_rad(-5.0)
+## Share of her knee's own bending range the full fold uses.
+const KNEEL_FOLD_SHARE := .97
+## On the way down her forearm swings this far forward (from straight down) while her knee
+## folds, which keeps her hoof under her elbow; this share of the fold is that first part.
+const KNEEL_KNEE_FORWARD := deg_to_rad(66.0)
+const KNEEL_FIRST := .4
+## Share of her pastern's own bending range that tucks her hoof at the end.
+const KNEEL_PASTERN_SHARE := .6
+var _kneel_now := 0.0
+var _kneel_speed := 0.0
+var _kneel_plants: Array[Vector3] = []
+## Set by pony_affection.gd while she has to turn or step: she rises first.
+var kneel_block := false
+## True while his mouth is low enough that she kneels or is about to.
+var kneel_wanted := false
+## Test probes set this; the kneel then leaves its measurements in kneel_report.
+var kneel_trace := false
+var kneel_report := {}
 
 ## The kiss chain, root to tip, and the bones that carry her head toward his lips (tip first).
 var _chain: Array[int] = []
@@ -99,10 +136,26 @@ const EYE_HALF := .032
 ## nose is never drawn in the headset, so she keeps her posed lean.
 const HEAD_DROP := .10
 const CHIN_MAX := 45.0
+## Neck forward: the most her muzzle tips up or down (radians) to keep her lips at his mouth's
+## height while her neck leans.
+const LEAN_TIP_UP := deg_to_rad(28.0)
+const LEAN_TIP_DOWN := deg_to_rad(8.0)
+## The most her whole neck leans forward, and back, from its rest (radians, shared by neck1 and
+## neck2; each bone's own joint limit still applies). Her head joint has to take the lean back
+## out to keep her head level, plus the chin-up, inside its own 30°: a neck that leans further
+## than this leaves her head no room and her muzzle drops.
+## How fast her neck lean and the tip of her muzzle may change (radians a second).
+const LEAN_RATE := deg_to_rad(70.0)
+var _neck_lean := 0.0
+var _neck_tip := 0.0
+const LEAN_MAX := deg_to_rad(22.0)
+const LEAN_BACK := deg_to_rad(10.0)
 ## How far (metres) her neck draws her head back toward her chest when he leans in.
 const BACK_GIVE := .03
 ## Follow state (world). Where her lips are heading, how fast, her head angle and its spin.
 var _goal := Vector3.INF
+## Where her lips should be this frame (world); the kneel keeps _goal near it.
+var _want := Vector3.INF
 var _goal_speed := Vector3.ZERO
 var _aim := Quaternion.IDENTITY
 var _spin := Vector3.ZERO
@@ -157,9 +210,18 @@ const KISS_FILE := "res://world/relationships/kiss_pose.json"
 ## rear_time sets its rise time and rear_neck reserves a little neck lift before rising.
 ## hooves enables shoulder/chest support during that rise; it never moves her chest toward his.
 ## hoof_width/hoof_drop place his shoulders relative to the eye, in metres.
-const KISS_DEFAULTS := {"turn": 0.0, "nod": -45.0, "tilt": 15.0, "hold": 1.0, "lips": [-0.01, 0.0, 0.0],
-	"reach": .10, "eye_clear": .03, "nose_clear": .045, "mane_clear": .02,
-	"pursuit_time": .28, "pursuit_speed": .5, "turn_rate": 110.0, "step_after": .06, "body_turn": 20.0,
+## Neck forward (dev 2026-11-22: "her head goes down and then UP like she's pushing her neck down
+## and then tilting her head up instead of leaning her horse neck forwards"): the 45° chin-up put
+## her head joint 15 cm under his mouth and folded her neck back to tip her muzzle up. Now her
+## muzzle points at his mouth along his line of sight with a small chin-up (nod), she stops
+## walking in sooner (step_after, step_done: metres of forward reach at which she starts and
+## stops stepping) and her neck leans forward from its base for the rest (reach). neck_forward 1:
+## her chest bows only when her neck alone cannot bring her lips to his (a low mouth); 0: the
+## chest joins every pass, as before. KISS_POSTURE_BEFORE holds the earlier values.
+const KISS_DEFAULTS := {"turn": 0.0, "nod": -12.0, "tilt": 15.0, "hold": 1.0, "lips": [-0.01, 0.0, 0.0],
+	"reach": .18, "eye_clear": .03, "nose_clear": .045, "mane_clear": .02,
+	"pursuit_time": .28, "pursuit_speed": .5, "turn_rate": 110.0, "step_after": .09, "step_done": .065, "body_turn": 20.0,
+	"neck_forward": 1.0,
 	"sway_turn": 7.0, "sway_nod": 5.0, "sway_tilt": 6.0, "sway_reach": .006, "sway_side": .008, "sway_speed": 1.0,
 	"side_switch": 8.0,
 	"rear": 1.0, "rear_time": 1.0, "rear_neck": .015, "hooves": 1.0, "hoof_width": .13, "hoof_drop": .19}
@@ -173,6 +235,13 @@ static func shoulder_points(eye_world: Vector3, face_world: Basis, settings: Dic
 	var points: Array[Vector3] = [neck - right * float(settings.hoof_width), neck + right * float(settings.hoof_width)]
 	return points
 static var kiss_pose: Dictionary = {}
+## The kiss posture before the neck-forward change, for comparison and rollback: these values in
+## kiss_pose.json, or posture_before(true) for this run.
+const KISS_POSTURE_BEFORE := {"nod": -45.0, "reach": .10, "step_after": .06, "step_done": .025, "neck_forward": 0.0}
+
+static func posture_before(on: bool) -> void:
+	var settings := kiss_settings()
+	for key: String in KISS_POSTURE_BEFORE: settings[key] = (KISS_POSTURE_BEFORE if on else KISS_DEFAULTS)[key]
 
 static func kiss_settings() -> Dictionary:
 	if kiss_pose.is_empty(): load_kiss_pose()
@@ -237,6 +306,7 @@ func kiss_face() -> bool:
 	return amount > .001 and (kissing or _fading)
 
 func _process_modification_with_delta(_delta: float) -> void:
+	if rig_batch_step > 0 and rig_batch_step == Engine.get_physics_frames() and Engine.is_in_physics_frame(): return
 	if not is_instance_valid(mare):return
 	var sk := get_skeleton()
 	if head>=0 and _applied<=.001 and bind_mouth.is_finite():
@@ -251,7 +321,7 @@ func _process_modification_with_delta(_delta: float) -> void:
 	_applied = 0.0
 	# Face offsets are consumed by leans/kisses and a rear's landing, not idle fidgets.
 	# Keep the initial binding available and refresh every active/fading pose pass.
-	if not _face_bound or amount>.001 or _rear_now>0.0: _face_points()
+	if not _face_bound or amount>.001 or _rear_now>0.0 or _kneel_now>0.0: _face_points()
 	var kiss_now := amount>.001 and head>=0 and target.is_finite() and kissing and eye.is_finite()
 	if not kiss_now:
 		_motion = move_toward(_motion, 0.0, _delta)
@@ -271,6 +341,7 @@ func _process_modification_with_delta(_delta: float) -> void:
 	elif amount<=.001:
 		_fading = false; _goal = Vector3.INF
 		if _rear_now>.0:_rear_pose(sk,_delta,false,1.0,kiss_settings())
+		if _kneel_now>.0:_kneel_pose(sk,_delta,false,kiss_settings())
 	if buck_amount>.001:
 		var axis := (sk.global_basis.inverse()*mare.global_basis.x).normalized()
 		for name: String in ["pony_flank_L","pony_flank_R"]:
@@ -334,6 +405,7 @@ func _kiss(sk: Skeleton3D, delta: float, live: bool) -> void:
 	var his := _last_face
 	_rest_axes(sk)
 	_rear_pose(sk, delta, live, weight, settings)
+	_kneel_pose(sk, delta, live, settings)
 	var carried_feet: Array[Vector3] = []
 	if mare.is_held():
 		for leg in _legs: carried_feet.append(sk.get_bone_global_pose(int(leg.tip)).origin)
@@ -360,7 +432,9 @@ func _kiss(sk: Skeleton3D, delta: float, live: bool) -> void:
 		var lips: Array = settings.lips
 		# How far she can tip her muzzle up here: a mouth low against her, or him looking down
 		# steeply, leaves less (HEAD_DROP, CHIN_MAX); she leans and turns further instead.
-		var chin := -float(settings.nod)*(1.0-.6*pause) + 6.0*(1.0-absf(_side_now))
+		# Carried in his hands she keeps the earlier chin-up: that pose was tuned around it.
+		var nod_set := float(KISS_POSTURE_BEFORE.nod) if mare.is_held() and float(settings.get("neck_forward", 0.0))>0.0 else float(settings.nod)
+		var chin := -nod_set*(1.0-.6*pause) + 6.0*(1.0-absf(_side_now))
 		var low_chin := chin-clampf(chin-_chin_room(head_world, his), 0.0, 30.0)
 		var used := minf(minf(chin,30.0), _chin_room(head_world, his, .08)) if mare.is_held() else low_chin
 		# A breather draws her lips 7 cm back from his, eases her lean and lowers her muzzle to gaze.
@@ -382,6 +456,7 @@ func _kiss(sk: Skeleton3D, delta: float, live: bool) -> void:
 		posed_aim = aim
 		# She chases the pose: lips on a critically damped spring with a top speed, head on a
 		# spring with a top turn rate. Nothing snaps to his head.
+		_want = want
 		_follow_goal(want, float(settings.pursuit_time), float(settings.pursuit_speed), delta)
 		_follow_aim(aim, float(settings.pursuit_time), deg_to_rad(float(settings.turn_rate)), delta)
 	# His eyes come first and at once: pushed back along his line of sight, no lag.
@@ -408,7 +483,13 @@ func _kiss(sk: Skeleton3D, delta: float, live: bool) -> void:
 	var ahead := extend.dot(ahead_axis)
 	var reach_now := float(settings.reach)
 	var goal := _goal if mare.is_held() else _goal-ahead_axis*(ahead-clampf(ahead, -BACK_GIVE, reach_now))
-	_carry(sk, to_sk*goal, aim_sk, 24 if mare.is_held() else 10)
+	if not mare.is_held() and float(settings.get("neck_forward", 0.0))>0.0:
+		aim_sk = _lean_neck(sk, to_sk*goal, aim_sk, delta)
+		# The carry then settles the sideways part; her chest joins only for what her neck
+		# leaves more than 1.5 cm short (a low mouth, a high one, a far one).
+		# Knelt, her neck and withers have further to reach down than standing.
+		_carry(sk, to_sk*goal, aim_sk, 12 if _kneel_now>.001 else 4)
+	else: _carry(sk, to_sk*goal, aim_sk, 24 if mare.is_held() else 10)
 	_hold_head(sk, aim_sk)
 	# Whatever her joint limits did to the head angle, her face stays clear of his eyes.
 	for i in 2:
@@ -418,8 +499,11 @@ func _kiss(sk: Skeleton3D, delta: float, live: bool) -> void:
 		_yield(forward*short, forward)
 		_carry(sk, to_sk*goal, aim_sk, 3)
 		_hold_head(sk, aim_sk)
+	# Knelt as low as she goes and still above him, her face can stay near his eyes with no step
+	# back to clear them: the room she gives must not carry her goal away from his mouth.
+	if (_kneel_now>.001 or kneel_wanted) and _want.is_finite(): _goal = _want+(_goal-_want).limit_length(.12)
 	var solved := sk.global_transform*sk.get_bone_global_pose(head)
-	limited = solved.basis.orthonormalized().get_rotation_quaternion().angle_to(_aim)
+	limited = solved.basis.orthonormalized().get_rotation_quaternion().angle_to(sk.global_basis.orthonormalized().get_rotation_quaternion()*aim_sk)
 	_reach_error = goal-solved*mouth_in_head
 	miss = _reach_error.length()
 	# Chest flex must not swing the already-dangling carried forelegs behind her body.
@@ -512,10 +596,15 @@ func _carry(sk: Skeleton3D, goal: Vector3, aim: Quaternion, passes: int) -> void
 	var low_spine := sk.find_bone("pony_spine1")
 	var low_share := smoothstep(.10, .18, -neck_demand.y) if mare.is_held() else 0.0
 	if low_share>.001: carriers.append(low_spine)
+	# Neck forward: on the ground her neck does the reaching. Her chest joins a pass only while
+	# her lips are still more than 1.5 cm short after the neck bones have turned.
+	var neck_first: bool = not mare.is_held() and float(kiss_settings().get("neck_forward", 0.0))>0.0
+	var short := .015/maxf(sk.global_basis.get_scale().x, .01)
 	for step in passes:
 		for bone: int in carriers:
 			var head_pose := sk.get_bone_global_pose(head)
 			var place := goal-head_pose.basis*mouth_in_head
+			if neck_first and bone not in [_neck1, _neck2] and head_pose.origin.distance_to(place)<short: continue
 			var pose := sk.get_bone_global_pose(bone)
 			var from := head_pose.origin-pose.origin
 			var to := place-pose.origin
@@ -529,9 +618,64 @@ func _carry(sk: Skeleton3D, goal: Vector3, aim: Quaternion, passes: int) -> void
 				var bent := anim.angle_to(now)
 				var cap := CHEST_MAX*low_share if bone==low_spine else ((CRADLE_CHEST_MAX if _cradled() else PI) if mare.is_held() else CHEST_MAX)
 				if bent>cap: sk.set_bone_pose_rotation(bone, anim.slerp(now, cap/bent))
-				_aim_along(sk, aim, [_neck1, _neck2, head], [.34, .5, 1.0])
-			elif bone==_neck1: _aim_along(sk, aim, [_neck2, head], [.5, 1.0])
+				if neck_first: _keep_aim(sk, aim, [_neck1, _neck2, head], [.34, .5, 1.0])
+				else: _aim_along(sk, aim, [_neck1, _neck2, head], [.34, .5, 1.0])
+			elif bone==_neck1:
+				if neck_first: _keep_aim(sk, aim, [_neck2, head], [.5, 1.0])
+				else: _aim_along(sk, aim, [_neck2, head], [.5, 1.0])
 			else: _hold_head(sk, aim)
+
+## Neck forward: her neck leans as one piece from its base (neck1 and neck2 turn the same way
+## about her own left-right axis, 60 % and 40 %) to carry her lips to `goal`, her head joint
+## keeping her head on `aim`. A leaning neck carries her head on an arc, a little lower the
+## further it leans, so her muzzle then tips up or down by what her lips are still short. Both
+## angles are found by narrowing a range (the lip error has one low point in each); every bone
+## is held inside its joint limit at every try. Returns the head angle she ends on.
+func _lean_neck(sk: Skeleton3D, goal: Vector3, aim: Quaternion, delta: float) -> Quaternion:
+	if _neck1<0 or _neck2<0: return aim
+	if amount<.02:
+		_neck_lean = 0.0; _neck_tip = 0.0
+	var axis := (sk.global_basis.inverse()*mare.global_basis.x).normalized()
+	var rest1 := sk.get_bone_pose_rotation(_neck1)
+	var rest2 := sk.get_bone_pose_rotation(_neck2)
+	# Each angle is looked for only close to where it was a frame ago (LEAN_RATE): her neck
+	# moves there, it never jumps to another answer.
+	var step := LEAN_RATE*delta
+	var lean_from := _neck_lean
+	var tip_from := _neck_tip
+	# First the lean, then the tip of her muzzle, then the lean again.
+	for turn_now in 3:
+		var low := maxf(tip_from-step, -LEAN_TIP_DOWN) if turn_now==1 else maxf(lean_from-step, -LEAN_MAX)
+		var high := minf(tip_from+step, LEAN_TIP_UP) if turn_now==1 else minf(lean_from+step, LEAN_BACK)
+		for i in 5:
+			var a := lerpf(low, high, 1.0/3.0)
+			var b := lerpf(low, high, 2.0/3.0)
+			var miss_a := _lean_miss(sk, goal, aim, axis, rest1, rest2, _neck_lean if turn_now==1 else a, a if turn_now==1 else _neck_tip)
+			var miss_b := _lean_miss(sk, goal, aim, axis, rest1, rest2, _neck_lean if turn_now==1 else b, b if turn_now==1 else _neck_tip)
+			if miss_a<miss_b: high = b
+			else: low = a
+		if turn_now==1: _neck_tip = (low+high)*.5
+		else: _neck_lean = (low+high)*.5
+	_lean_miss(sk, goal, aim, axis, rest1, rest2, _neck_lean, _neck_tip)
+	return Quaternion(axis, _neck_tip)*aim
+
+## Poses her neck at `lean` and her head at `aim` tipped by `tip`; returns how far her lips are
+## then from `goal`.
+func _lean_miss(sk: Skeleton3D, goal: Vector3, aim: Quaternion, axis: Vector3, rest1: Quaternion, rest2: Quaternion, lean: float, tip: float) -> float:
+	sk.set_bone_pose_rotation(_neck1, rest1)
+	sk.set_bone_pose_rotation(_neck2, rest2)
+	_turn(sk, _neck1, Quaternion(axis, lean*.6))
+	_turn(sk, _neck2, Quaternion(axis, lean*.4))
+	_hold_head(sk, Quaternion(axis, tip)*aim)
+	return (goal-sk.get_bone_global_pose(head)*mouth_in_head).length()
+
+## Neck forward: after a neck or chest bone has leaned, her head joint alone puts her head back
+## on its angle, so the lean stays in her neck (a horse reaching forward) instead of the next
+## neck bone bending back against it. Only what her head joint cannot take inside its limit
+## goes back along `bones`, as before.
+func _keep_aim(sk: Skeleton3D, aim: Quaternion, bones: Array[int], shares: Array[float]) -> void:
+	_hold_head(sk, aim)
+	if _turn_of(sk, head).angle_to(aim)>deg_to_rad(1.5): _aim_along(sk, aim, bones, shares)
 
 ## She is bridal carried (pony_carry.gd cradle_goal).
 func _cradled() -> bool:
@@ -756,6 +900,168 @@ func _rear_pose(sk: Skeleton3D, delta: float, live: bool, _weight: float, settin
 		_limb_to(sk, tip, flank, plants[k], 36)
 		embrace["plant_error_"+side] = sk.get_bone_global_pose(tip).origin.distance_to(plants[k])
 	_support_forelegs(sk, to_sk, settings, angle/MAX_REAR)
+
+## Kneel just far enough to bring her resting lips down to his mouth; her neck does the rest.
+## Held bodies, seated or lying ponies and a rearing pony do not kneel. The Kissing mod switches
+## the game's rear off (settings.rear) while its own rear has her body: the kneel yields too.
+func _kneel_pose(sk: Skeleton3D, delta: float, live: bool, settings: Dictionary) -> void:
+	if _hips < 0 or _hind.size() != 2 or _legs.size() != 2: return
+	var scale := maxf(sk.global_basis.get_scale().x, .01)
+	var allowed: bool = live and float(settings.get("kneel", 1.0))>0.0 and float(settings.rear)>0.0 and not kneel_block \
+		and not mare.is_held() and mare.grounded() and (mare.posture == null or not mare.posture.active()) \
+		and _rear_now<=.001 and not rear_wanted
+	var to_sk := sk.global_transform.affine_inverse()
+	var forward := (-mare.global_basis.z).normalized()
+	var up := Vector3.UP
+	var axis := forward.cross(up).normalized()
+	var hinge := (sk.get_bone_global_pose(sk.find_bone("pony_flank_L")).origin+sk.get_bone_global_pose(sk.find_bone("pony_flank_R")).origin)*.5
+	var desired := 0.0
+	if allowed and amount>.8:
+		var resting_lips := sk.global_transform*sk.get_bone_global_rest(head)*mouth_in_head
+		# Her neck holds her head level whatever her body does, so what the tip lowers is the
+		# base of her neck, not her lips at the end of it.
+		var arc := sk.global_transform*sk.get_bone_global_rest(_neck1 if _neck1>=0 else head).origin-sk.global_transform*hinge
+		var drop := resting_lips.y-target.y-KNEEL_NECK*scale
+		# She starts to kneel standing still; once down she follows him without waiting.
+		if drop>0.0 and (_kneel_now>.001 or (mare.actual_speed<=.025 and mare._blend<=.05)):
+			var low := 0.0; var high := 1.0
+			for i in 12:
+				var mid := (low+high)*.5
+				var tipped := KNEEL_PITCH*mid
+				var lowered := arc.dot(forward)*sin(tipped)+arc.dot(up)*(1.0-cos(tipped))+KNEEL_SINK*scale*mid
+				if lowered<drop: low=mid
+				else: high=mid
+			desired=(low+high)*.5
+	kneel_wanted=desired>.02
+	# Critically damped, as the rear: no constant-speed start or stop.
+	var omega := 4.0/maxf(float(settings.get("kneel_time", .7)),.2)
+	var decay := exp(-omega*delta)
+	var change := _kneel_now-desired
+	var temp := (_kneel_speed+omega*change)*delta
+	_kneel_speed=(_kneel_speed-omega*temp)*decay
+	_kneel_now=clampf(desired+(change+temp)*decay,0.0,1.0)
+	if mare.is_held(): _kneel_now=0.0; _kneel_speed=0.0
+	if _kneel_now<.003 and desired<.001: _kneel_now=0.0; _kneel_speed=0.0; _kneel_plants.clear()
+	if _kneel_now<=0.0: return
+	# Hind soles and the ground under her forehooves, before her body moves.
+	if _kneel_plants.is_empty():
+		# A hind hoof caught mid-step is set down level with the other.
+		var floor_y := INF
+		for leg in _hind: floor_y=minf(floor_y,(sk.global_transform*sk.get_bone_global_pose(int(leg.tip)).origin).y)
+		for leg in _hind:
+			var sole := sk.global_transform*sk.get_bone_global_pose(int(leg.tip)).origin
+			_kneel_plants.append(Vector3(sole.x, floor_y, sole.z))
+	var ground := INF
+	for leg in _legs: ground=minf(ground,(sk.global_transform*sk.get_bone_global_pose(int(leg.tip)).origin).y)
+	var axis_sk := (to_sk.basis*axis).normalized()
+	var turn := Basis(axis_sk, -KNEEL_PITCH*_kneel_now)
+	var root_bone := _hips
+	while sk.get_bone_parent(root_bone)>=0: root_bone=sk.get_bone_parent(root_bone)
+	var root_pose := sk.get_bone_global_pose(root_bone)
+	root_pose.origin=hinge+turn*(root_pose.origin-hinge)+to_sk.basis*(Vector3.DOWN*(KNEEL_SINK*scale*_kneel_now))
+	root_pose.basis=turn*root_pose.basis
+	sk.set_bone_global_pose(root_bone, root_pose)
+	# Her forelegs fold to stand on the ground. Folded all the way and still too long: her body
+	# stays that much higher (the fold, not the sink, is the limit).
+	var short := 0.0
+	for leg in _legs: short=maxf(short,_fold_foreleg(sk, leg, axis_sk, forward, ground, scale))
+	if short>.001:
+		root_pose.origin+=to_sk.basis*(Vector3.UP*short)
+		sk.set_bone_global_pose(root_bone, root_pose)
+		for leg in _legs: _fold_foreleg(sk, leg, axis_sk, forward, ground, scale)
+	for k in _hind.size():
+		var side := "L" if k==0 else "R"
+		var flank := sk.find_bone("pony_flank_"+side)
+		_turn(sk, flank, turn.get_rotation_quaternion().inverse())
+		_limb_to(sk, int(_hind[k].tip), flank, to_sk*_kneel_plants[k], 36)
+	if kneel_trace:
+		kneel_report={"kneel": _kneel_now, "wanted": desired, "short": short, "ground": ground}
+		for k in 2:
+			var side := "L" if k==0 else "R"
+			var world := sk.global_transform
+			kneel_report["fore_"+side]=[(world*sk.get_bone_global_pose(int(_legs[k].lower)).origin).y-ground,
+				(world*sk.get_bone_global_pose(int(_legs[k].carpus)).origin).y-ground, (world*sk.get_bone_global_pose(int(_legs[k].tip)).origin).y-ground]
+			kneel_report["hind_"+side]=(world*sk.get_bone_global_pose(int(_hind[k].tip)).origin).distance_to(_kneel_plants[k])
+		kneel_report["chest"]=(sk.global_transform*sk.get_bone_global_pose(chest[0]).origin).y-ground if not chest.is_empty() else 0.0
+
+## Fold one foreleg until its lowest point (knee or hoof) stands on `ground`: the knee goes
+## forward as the cannon folds back under it, then the forearm comes upright onto the knee.
+## Each joint turns about its own hinge (pony_joint_limits.gd), inside that hinge's range, and
+## keeps the sideways set the animation gave it. Returns how far (world metres) the fully
+## folded leg still reaches below the ground.
+func _fold_foreleg(sk: Skeleton3D, leg: Dictionary, axis_sk: Vector3, forward: Vector3, ground: float, scale: float) -> float:
+	var lower := int(leg.lower); var carpus := int(leg.carpus); var tip := int(leg.tip)
+	if _foreleg_low(sk, carpus, tip, scale)>=ground: return 0.0
+	var limits: Variant = mare.get("joint_limits")
+	var hinges: Array[Dictionary] = []
+	for bone: int in [lower, carpus, sk.get_bone_children(carpus)[0] if sk.get_bone_children(carpus).size()>0 else -1]:
+		var hinge := _hinge_of(sk, limits, bone)
+		if hinge.is_empty(): break
+		hinge["bone"] = bone
+		hinges.append(hinge)
+	if hinges.size()<2:
+		# A rig without a limit table for these joints: no fold, her body stays higher.
+		return maxf(0.0, ground-_foreleg_low(sk, carpus, tip, scale))
+	var elbow: Dictionary = hinges[0]
+	# Radians her forearm swings forward (seen from her side) for each radian of elbow bend.
+	var forearm_from := _sagittal(sk, lower, carpus, forward)
+	var probe := deg_to_rad(12.0)*(1.0 if float(elbow.upper)-float(elbow.angle)>float(elbow.angle)-float(elbow.lower) else -1.0)
+	_set_hinge(sk, lower, elbow, float(elbow.angle)+probe)
+	var rate := (_sagittal(sk, lower, carpus, forward)-forearm_from)/probe
+	if absf(rate)<.2: rate=1.0 if rate>=0.0 else -1.0
+	var low := 0.0; var high := 1.0
+	for i in 9:
+		var mid := (low+high)*.5
+		_fold_to(sk, lower, carpus, hinges, forearm_from, rate, mid)
+		if _foreleg_low(sk, carpus, tip, scale)<ground: low=mid
+		else: high=mid
+	_fold_to(sk, lower, carpus, hinges, forearm_from, rate, high)
+	return maxf(0.0, ground-_foreleg_low(sk, carpus, tip, scale))
+
+## The fold has two parts, and through both the leg only ever gets shorter. First her knee
+## goes forward and her cannon folds back under it, her hoof staying below her elbow. Then,
+## her knee folded as far as it goes, her forearm comes down upright onto the knee and her hoof
+## slides back behind it.
+func _fold_to(sk: Skeleton3D, lower: int, carpus: int, hinges: Array[Dictionary], forearm_from: float, rate: float, folded: float) -> void:
+	var first := clampf(folded/KNEEL_FIRST, 0.0, 1.0)
+	var second := clampf((folded-KNEEL_FIRST)/(1.0-KNEEL_FIRST), 0.0, 1.0)
+	var forearm := lerpf(lerpf(forearm_from, maxf(forearm_from, KNEEL_KNEE_FORWARD), first), KNEEL_FOREARM, second)
+	_set_hinge(sk, lower, hinges[0], float(hinges[0].angle)+(forearm-forearm_from)/rate)
+	# Her knee folds toward the wide end of its range: the way that joint bends.
+	var knee: Dictionary = hinges[1]
+	var end := float(knee.lower) if absf(float(knee.lower))>absf(float(knee.upper)) else float(knee.upper)
+	_set_hinge(sk, carpus, knee, lerpf(float(knee.angle), end*KNEEL_FOLD_SHARE, first))
+	# Then her pastern tucks her hoof up behind the knee she rests on.
+	if hinges.size()>2:
+		var pastern: Dictionary = hinges[2]
+		var tuck := float(pastern.lower) if absf(float(pastern.lower))>absf(float(pastern.upper)) else float(pastern.upper)
+		_set_hinge(sk, int(pastern.bone), pastern, lerpf(float(pastern.angle), tuck*KNEEL_PASTERN_SHARE, second))
+
+## A joint's bend about its own hinge now, and what the animation set it sideways (swing).
+## Empty when the rig's limit table does not carry the bone.
+func _hinge_of(_sk: Skeleton3D, limits: Variant, bone: int) -> Dictionary:
+	if limits == null or bone<0 or not limits.joints.has(bone): return {}
+	var joint: Dictionary = limits.joints[bone]
+	var parent := Basis(joint.parent)
+	var turned := (parent*Basis(_sk.get_bone_pose_rotation(bone))*Basis(joint.rest).inverse()*parent.inverse()).get_rotation_quaternion()
+	var split: Dictionary = limits._split(turned, joint.axis)
+	return {"parent": parent, "rest": Basis(joint.rest), "axis": Vector3(joint.axis), "lower": float(joint.lower), "upper": float(joint.upper),
+		"angle": float(split.angle), "swing": Quaternion(split.swing)}
+
+func _set_hinge(sk: Skeleton3D, bone: int, hinge: Dictionary, angle: float) -> void:
+	var bent := Quaternion(hinge.swing)*Quaternion(Vector3(hinge.axis), clampf(angle, float(hinge.lower), float(hinge.upper)))
+	sk.set_bone_pose_rotation(bone, (Basis(hinge.parent).inverse()*Basis(bent)*Basis(hinge.parent)*Basis(hinge.rest)).get_rotation_quaternion())
+
+## The angle of the line from bone `from` to bone `to`, seen from her side: 0 straight down,
+## positive toward her front (radians).
+func _sagittal(sk: Skeleton3D, from: int, to: int, forward: Vector3) -> float:
+	var line := sk.global_basis*(sk.get_bone_global_pose(to).origin-sk.get_bone_global_pose(from).origin)
+	return atan2(line.dot(forward), -line.y)
+
+## World height of the lowest part of her lower foreleg: her knee's skin or her hoof tip.
+func _foreleg_low(sk: Skeleton3D, carpus: int, tip: int, scale: float) -> float:
+	return minf((sk.global_transform*sk.get_bone_global_pose(carpus).origin).y-KNEEL_KNEE*scale,
+		(sk.global_transform*sk.get_bone_global_pose(tip).origin).y)
 
 ## Measure future kissing reach without committing the torso or touching the planted feet.
 func _rear_neutral(sk: Skeleton3D, hinge: Vector3, turn: Basis) -> Vector3:

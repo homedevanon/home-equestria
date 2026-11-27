@@ -14,7 +14,17 @@ static func _is_window_part(node: Node) -> bool:
 ## Same as town_render_budget.gd SMALL_CASTER (not preloaded: that script preloads house_interior).
 const SMALL_CASTER := 1.6
 
+## Trial shared_window_meshes (2026-11-24, --try=shared_window_meshes; off by default): houses of one
+## design get the same merged window mesh object per group, so the renderer can send equal windows of
+## several houses as one draw. Key (group id, material, every piece's mesh, surface and snapped
+## house-local transform) -> WeakRef to the ArrayMesh, so meshes still free when the world reloads.
+const TRY := preload("res://world/perf/try_switch.gd")
+static var _shared := {}
+static var _shared_built := 0
+static var _shared_reused := 0
+
 static func merge(house: Node3D) -> int:
+	var shared := TRY.on("shared_window_meshes")
 	var groups := {}
 	var order: Array = []
 	var boxes: Array = []
@@ -46,7 +56,8 @@ static func merge(house: Node3D) -> int:
 				order.append(id)
 			var entry: Dictionary = groups[id]
 			if node.mesh.surface_get_primitive_type(surface) != Mesh.PRIMITIVE_TRIANGLES: continue
-			(entry.tool as SurfaceTool).append_from(node.mesh, surface, local)
+			if shared: (entry.get_or_add("pieces", []) as Array).append([node.mesh, surface, local])
+			else: (entry.tool as SurfaceTool).append_from(node.mesh, surface, local)
 			entry.count += 1
 		# Most pieces carry their collider (a "<name>_col" StaticBody3D child): keep the node and
 		# its collision, drop only its drawing.
@@ -61,13 +72,41 @@ static func merge(house: Node3D) -> int:
 		var tool: SurfaceTool = entry.tool
 		if key[0] != null: tool.set_material(key[0])
 		var mi := MeshInstance3D.new(); mi.name = "MergedWindows%d" % index; index += 1
-		mi.mesh = tool.commit()
+		mi.mesh = _shared_commit(id, key, entry.pieces, tool) if shared else tool.commit()
 		mi.material_overlay = key[1]; mi.layers = key[2]; mi.cast_shadow = key[3]
 		mi.visibility_range_begin = key[4]; mi.visibility_range_end = key[5]
 		mi.visibility_range_end_margin = key[6]; mi.visibility_range_fade_mode = key[7]; mi.gi_mode = key[8]
 		house.add_child(mi)
 	house.set_meta("window_glass_boxes", boxes)
 	return merged
+
+## Trial shared_window_meshes: the mesh another house built from the same pieces with the same
+## material object, or a new one built exactly as merge() builds it (pieces appended in order, then
+## the material, then commit).
+static func _shared_commit(id: String, key: Array, pieces: Array, tool: SurfaceTool) -> ArrayMesh:
+	var texts: PackedStringArray = [id, str(key[0].get_instance_id() if key[0] != null else 0)]
+	for piece: Array in pieces:
+		var t: Transform3D = piece[2]
+		var numbers := PackedStringArray()
+		for v: Vector3 in [t.basis.x, t.basis.y, t.basis.z, t.origin]:
+			for c in 3: numbers.append(str(snappedf(v[c], 0.0001) + 0.0))  # (+ 0.0 turns -0 into 0)
+		texts.append("%d:%d:%s" % [(piece[0] as Mesh).get_instance_id(), int(piece[1]), ",".join(numbers)])
+	var text := "|".join(texts)
+	var ref: WeakRef = _shared.get(text)
+	var found: ArrayMesh = ref.get_ref() as ArrayMesh if ref != null else null
+	if found != null and found.get_surface_count() > 0 and found.surface_get_material(0) == key[0]:
+		_shared_reused += 1
+		return found
+	for piece: Array in pieces: tool.append_from(piece[0], int(piece[1]), piece[2])
+	if key[0] != null: tool.set_material(key[0])
+	var mesh := tool.commit()
+	_shared[text] = weakref(mesh)
+	_shared_built += 1
+	return mesh
+
+## Trial shared_window_meshes: how many group meshes were built and how many were reused.
+static func shared_stats() -> Dictionary:
+	return {"built": _shared_built, "reused": _shared_reused, "keys": _shared.size()}
 
 ## A material's stored settings (textures and other resources by identity), so equal copies match.
 static var _signatures := {}

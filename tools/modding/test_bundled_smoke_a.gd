@@ -340,11 +340,12 @@ func _check_parked(world_id: String, grooming_on: bool) -> void:
 # ---------------------------------------------------------------- flowing manes (MOD-03)
 
 func _check_flowing_manes() -> void:
-	var patch: Node = root.get_node_or_null("Mods/flowing_manes_patch")
+	# Since 1.0.1 the warm-up is the mod's own child node (it was devanon's patch entry before).
+	var patch: Node = root.get_node_or_null("Mods/flowing_manes/Warmup")
 	result.flowing = {"warm_seen_under_cover": warm_seen_under_cover, "patch": patch != null}
 	if patch == null:
-		result.notes.append("flowing_manes: no warm-up patch running; its shaders are made when Celestia or Luna appears")
-		check(false, "flowing manes' hair shaders are warmed while the loading cover is up (no patch entry)")
+		result.notes.append("flowing_manes: no warm-up running; its shaders are made when Celestia or Luna appears")
+		check(false, "flowing manes' hair shaders are warmed while the loading cover is up (no warm-up node)")
 		return
 	var warmed: Array = patch.get("warmed")
 	result.flowing.warmed = warmed

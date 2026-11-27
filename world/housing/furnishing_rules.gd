@@ -12,6 +12,8 @@ const SURFACES := {
 	"goods:floor-cushion": "floor", "goods:pillow": "floor",
 	"goods:clock": "floor", "goods:cottage-tea-set": "floor",
 	"goods:table-lamp": "floor", "goods:potted-plant": "floor",
+	# Anon's rubbish bucket (world/inventory/assets/rubbish_bucket_item.gd): stands where it is placed at home.
+	"rubbish-bucket": "floor",
 	"goods:curtains": "wall", "goods:picture": "wall",
 }
 
@@ -26,10 +28,17 @@ static func wall(id: String) -> bool:
 static func sizes(id: String) -> Array:
 	return PRINT_SIZES if REGISTRY.is_photo(REGISTRY.art_id(id)) else [1.0]
 
+## Sizes a saved placement may carry. It must not depend on which world's paintings are open: the
+## title checks checkpoints before any world is (docs/THREAD_FIX_SAVES_2026_11_19.md, a photo hung
+## large made every later save "invalid" there). Any finished picture may carry a print size; only
+## photos are offered one (sizes()).
+static func storable_sizes(id: String) -> Array:
+	return PRINT_SIZES if id.begins_with("art:") else [1.0]
+
 static func valid_loan(loan: Dictionary) -> bool:
 	if not loan.has("furnishing_home"): return true
 	if loan.has("furnishing_size"):
 		var size: Variant = loan.furnishing_size
-		if not (size is float or size is int) or not float(size) in sizes(str(loan.get("id", ""))): return false
+		if not (size is float or size is int) or not float(size) in storable_sizes(str(loan.get("id", ""))): return false
 	var home: Variant = loan.furnishing_home
 	return home is String and not home.is_empty() and home.length() <= 120 and has(str(loan.get("id", ""))) and loan.has("world_transform") and not loan.get("equipped", false)
