@@ -29,7 +29,7 @@ On 0.0.4-maredev or newer: press Update on the title screen or in the pause menu
 MEGA (0.3.2-maredev full game):
 - Windows: https://mega.nz/file/v8JSxYDa#o34dtapXX6fGvze41fyo-o5yIzFIcyNtCVXdkvUbPzk
 - Linux: https://mega.nz/file/z8BjGahL#qqigwSfIJlJh-UQ-mtTaApRe4BDh89KRpnEDXwkJiko
-- Quest: https://mega.nz/file/K1ZV1abT#APyCit5nB96uZNHS1Z_RhsgI3DEDx8QiP5kTCXORbPE
+- Quest: https://mega.nz/file/uooWwB4a#U3AFeDz1XL5jpLP8fmRa_9UL5RIkM3HNWh5ibKeHBk0
 
 The release pages explain every file, how to join the two-part downloads and their SHA-256.
 
