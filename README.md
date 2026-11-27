@@ -26,10 +26,10 @@ On 0.0.4-maredev or newer: press Update on the title screen or in the pause menu
 | Install by hand on Linux | Linux from MEGA, **or** both `linux.tar.gz` parts from the [0.3.2-maredev release](https://github.com/homedevanon/home-equestria/releases/tag/0.3.2-maredev) |
 | Edit the game from source | `Source code` (or clone the repo) **plus** all three `source-data` zips from the [0.3.2-maredev release](https://github.com/homedevanon/home-equestria/releases/tag/0.3.2-maredev), extracted into the repo root next to `project.godot` (they hold the ground, foliage and other generated data git leaves out) |
 
-MEGA (still the 0.3.1-maredev full game while 0.3.2 uploads; press Update in game afterwards):
-- Windows: https://mega.nz/file/LphQRDCI#NaDL4GSu0c16abynxJ7BKFsOdExiO8dWXlb7Jszz37Q
-- Linux: https://mega.nz/file/u0pwSKbC#3WL3O_IyPp7MdekUt73fkr-wkBOe4UemnOjsBgoVh7Q
-- Quest: https://mega.nz/file/itpCBbJR#OtX1J2rcq2JkepBTWaHYRXwKFaFrcgZv-q4a4vpP1Xw
+MEGA (0.3.2-maredev full game):
+- Windows: https://mega.nz/file/v8JSxYDa#o34dtapXX6fGvze41fyo-o5yIzFIcyNtCVXdkvUbPzk
+- Linux: https://mega.nz/file/z8BjGahL#qqigwSfIJlJh-UQ-mtTaApRe4BDh89KRpnEDXwkJiko
+- Quest: https://mega.nz/file/K1ZV1abT#APyCit5nB96uZNHS1Z_RhsgI3DEDx8QiP5kTCXORbPE
 
 The release pages explain every file, how to join the two-part downloads and their SHA-256.
 
